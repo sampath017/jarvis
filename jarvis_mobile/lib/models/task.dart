@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 enum Category { bike, work, garden, health, general }
 
 class Task {
@@ -52,12 +54,19 @@ class Task {
   }
 
   factory Task.fromJson(Map<String, dynamic> json) {
+    DateTime? parseDate(dynamic value) {
+      if (value == null) return null;
+      if (value is Timestamp) return value.toDate();
+      if (value is String) return DateTime.tryParse(value);
+      return null;
+    }
+
     return Task(
       id: json['id'],
       title: json['title'],
       notes: json['notes'] ?? '',
-      dueDate: json['dueDate'] != null ? DateTime.parse(json['dueDate']) : null,
-      reminderTime: json['reminderTime'] != null ? DateTime.parse(json['reminderTime']) : null,
+      dueDate: parseDate(json['dueDate']),
+      reminderTime: parseDate(json['reminderTime']),
       isCompleted: json['isCompleted'] ?? false,
       category: Category.values.firstWhere(
         (e) => e.name == json['category'],

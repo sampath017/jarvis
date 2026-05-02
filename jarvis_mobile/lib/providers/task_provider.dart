@@ -22,7 +22,14 @@ class TaskListNotifier extends AsyncNotifier<List<Task>> {
   Future<void> addTask(Task task) async {
     final previousState = state;
     if (state.hasValue) {
-      state = AsyncValue.data([...state.value!, task]);
+      final existingIndex = state.value!.indexWhere((t) => t.id == task.id);
+      if (existingIndex != -1) {
+        final newList = List<Task>.from(state.value!);
+        newList[existingIndex] = task;
+        state = AsyncValue.data(newList);
+      } else {
+        state = AsyncValue.data([...state.value!, task]);
+      }
     }
 
     try {

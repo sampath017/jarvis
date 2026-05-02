@@ -3,21 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import '../../models/task.dart';
 import '../../providers/task_provider.dart';
-import 'edit_task_bottom_sheet.dart';
+import '../screens/task_details_screen.dart';
 
 class TaskItem extends ConsumerWidget {
   final Task task;
 
   const TaskItem({Key? key, required this.task}) : super(key: key);
-
-  void _showEditSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => EditTaskBottomSheet(task: task),
-    );
-  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -35,7 +26,11 @@ class TaskItem extends ConsumerWidget {
     }
 
     return InkWell(
-      onTap: () => _showEditSheet(context),
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (context) => TaskDetailsScreen(task: task)),
+        );
+      },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
         child: Row(
@@ -48,10 +43,20 @@ class TaskItem extends ConsumerWidget {
               customBorder: const CircleBorder(),
               child: Padding(
                 padding: const EdgeInsets.all(4.0),
-                child: Icon(
-                  task.isCompleted ? Icons.check_circle : Icons.radio_button_unchecked,
-                  color: task.isCompleted ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurfaceVariant,
-                  size: 28,
+                child: Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: task.isCompleted ? const Color(0xFF2563EB) : const Color(0xFF555555),
+                      width: 2,
+                    ),
+                    color: task.isCompleted ? const Color(0xFF2563EB) : Colors.transparent,
+                  ),
+                  child: task.isCompleted
+                      ? const Icon(Icons.check, size: 16, color: Colors.white)
+                      : null,
                 ),
               ),
             ),
@@ -66,7 +71,7 @@ class TaskItem extends ConsumerWidget {
                     style: TextStyle(
                       fontSize: 16,
                       decoration: task.isCompleted ? TextDecoration.lineThrough : null,
-                      color: task.isCompleted ? Theme.of(context).colorScheme.onSurfaceVariant : Theme.of(context).colorScheme.onSurface,
+                      color: task.isCompleted ? const Color(0xFF555555) : const Color(0xFFF0F0F2),
                     ),
                   ),
                   if (task.notes.isNotEmpty || dateTimeStr != null || task.category != Category.general)

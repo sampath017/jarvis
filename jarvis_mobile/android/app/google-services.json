@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "734223678080",
+    "project_id": "jarvis-tasks-backend",
+    "storage_bucket": "jarvis-tasks-backend.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:734223678080:android:8b87047cdb043e529f0465",
+        "android_client_info": {
+          "package_name": "com.example.jarvis_mobile"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "734223678080-2f6vr1p7p281k7eoc5n8eoiiae7gvf6e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB5I3s6cCwX54fZIpTUvkqSAVoQQtFmM7o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "734223678080-2f6vr1p7p281k7eoc5n8eoiiae7gvf6e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
