@@ -5,10 +5,15 @@ import '../widgets/chat_history_view.dart';
 import '../widgets/task_item.dart';
 import '../widgets/note_card.dart';
 import '../widgets/add_task_bottom_sheet.dart';
+import 'chat_tab.dart';
 import '../../providers/task_provider.dart';
 import '../../providers/note_provider.dart';
 import '../../models/note.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/chat_provider.dart';
+import '../../providers/chat_threads_provider.dart';
+import '../../models/chat_thread.dart';
+import '../../providers/api_provider.dart';
 import 'note_details_screen.dart';
 import 'package:uuid/uuid.dart';
 
@@ -25,7 +30,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       setState(() {}); // To update FAB and Drawer selection
     });
@@ -85,32 +90,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with SingleTickerProvid
           tabs: const [
             Tab(text: 'Tasks'),
             Tab(text: 'Notes'),
+            Tab(text: 'Chat'),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search, color: Color(0xFFF0F0F2)),
-            onPressed: () {},
-          ),
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: const Color(0xFF2563EB),
-            child: ClipOval(
-              child: Image.network(
-                ref.watch(authStateProvider).value?.photoURL ?? '',
-                errorBuilder: (context, error, stackTrace) => Text(
-                  ref.watch(authStateProvider).value?.displayName?.substring(0, 1).toUpperCase() ?? 'U',
-                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                ),
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-                  return const Center(child: SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1)));
-                },
-              ),
-            ),
-          ),
-          const SizedBox(width: 16),
-        ],
       ),
       body: Stack(
         children: [
@@ -119,24 +101,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with SingleTickerProvid
             children: [
               _buildTasksTab(),
               _buildNotesTab(),
+              const ChatTab(),
             ],
-          ),
-          // Global Assistant Stack
-          Positioned(
-            bottom: 20,
-            left: 20,
-            right: 20,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                ChatHistoryView(),
-                AskJavrisBar(),
-              ],
-            ),
           ),
         ],
       ),
-      floatingActionButton: Padding(
+      floatingActionButton: _tabController.index == 2 ? null : Padding(
         padding: const EdgeInsets.only(bottom: 90.0), // Above the Javris bar
         child: FloatingActionButton(
           onPressed: () {
@@ -264,9 +234,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with SingleTickerProvid
             Navigator.pop(context);
           }),
           const Divider(color: Color(0xFF222222), indent: 16, endIndent: 16),
+          _buildDrawerItem(Icons.chat_bubble_outline, 'Chat', _tabController.index == 2, () {
+            _tabController.animateTo(2);
+            Navigator.pop(context);
+          }),
+          const Divider(color: Color(0xFF222222), indent: 16, endIndent: 16),
           _buildDrawerItem(Icons.settings_outlined, 'Settings', false, () {}),
           _buildDrawerItem(Icons.help_outline, 'Help & Feedback', false, () {}),
-          const Spacer(),
           const Divider(color: Color(0xFF222222), indent: 16, endIndent: 16),
           _buildDrawerItem(Icons.logout, 'Sign Out', false, () {
             ref.read(authServiceProvider).signOut();
@@ -277,11 +251,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with SingleTickerProvid
     );
   }
 
-  Widget _buildDrawerItem(IconData icon, String title, bool selected, VoidCallback onTap) {
+  Widget _buildDrawerItem(IconData icon, String title, bool selected, VoidCallback onTap, {VoidCallback? onLongPress}) {
     return ListTile(
       leading: Icon(icon, color: selected ? const Color(0xFF2563EB) : const Color(0xFF888888)),
       title: Text(
         title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: selected ? const Color(0xFF2563EB) : const Color(0xFFF0F0F2),
           fontWeight: selected ? FontWeight.bold : FontWeight.normal,
@@ -291,6 +267,59 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with SingleTickerProvid
       selected: selected,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       onTap: onTap,
+      onLongPress: onLongPress,
+    );
+  }
+
+  void _showRenameChatDialog(BuildContext context, WidgetRef ref, ChatThread thread) {
+    final controller = TextEditingController(text: thread.title);
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF18181C),
+          title: const Text('Rename Chat Session', style: TextStyle(color: Colors.white, fontSize: 16)),
+          content: TextField(
+            controller: controller,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              hintText: 'Enter new name',
+              hintStyle: TextStyle(color: Colors.grey),
+              enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF333333))),
+              focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFF2563EB))),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () {
+                if (controller.text.trim().isNotEmpty) {
+                  // If it's the current chat, use the provider's rename method
+                  if (ref.read(chatProvider).currentThread?.id == thread.id) {
+                    ref.read(chatProvider.notifier).renameThread(controller.text.trim());
+                  } else {
+                    // Otherwise update via API service directly
+                    final updatedThread = ChatThread(
+                      id: thread.id,
+                      title: controller.text.trim(),
+                      updatedAt: DateTime.now(),
+                      messages: thread.messages,
+                    );
+                    ref.read(apiServiceProvider).saveChatThread(updatedThread).then((_) {
+                      ref.invalidate(chatThreadsProvider);
+                    });
+                  }
+                }
+                Navigator.pop(context);
+              },
+              child: const Text('Save', style: TextStyle(color: Color(0xFF2563EB))),
+            ),
+          ],
+        );
+      },
     );
   }
 }

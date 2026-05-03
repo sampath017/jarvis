@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 enum Category { bike, work, garden, health, general }
 
+enum LocationTrigger { onExit, onEnter }
+
 class Task {
   final String id;
   final String title;
@@ -10,6 +12,11 @@ class Task {
   final DateTime? reminderTime;
   final bool isCompleted;
   final Category category;
+  // Location-based reminder fields
+  final String? locationName;
+  final double? latitude;
+  final double? longitude;
+  final LocationTrigger? locationTrigger;
 
   Task({
     required this.id,
@@ -19,7 +26,15 @@ class Task {
     this.reminderTime,
     this.isCompleted = false,
     this.category = Category.general,
+    this.locationName,
+    this.latitude,
+    this.longitude,
+    this.locationTrigger,
   });
+
+  /// Whether this task has a geofence-based reminder attached.
+  bool get hasLocationReminder =>
+      locationName != null && latitude != null && longitude != null;
 
   Task copyWith({
     String? id,
@@ -29,6 +44,10 @@ class Task {
     DateTime? reminderTime,
     bool? isCompleted,
     Category? category,
+    String? locationName,
+    double? latitude,
+    double? longitude,
+    LocationTrigger? locationTrigger,
   }) {
     return Task(
       id: id ?? this.id,
@@ -38,6 +57,10 @@ class Task {
       reminderTime: reminderTime ?? this.reminderTime,
       isCompleted: isCompleted ?? this.isCompleted,
       category: category ?? this.category,
+      locationName: locationName ?? this.locationName,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      locationTrigger: locationTrigger ?? this.locationTrigger,
     );
   }
 
@@ -50,6 +73,12 @@ class Task {
       'reminderTime': reminderTime?.toIso8601String(),
       'isCompleted': isCompleted,
       'category': category.name,
+      if (locationName != null) 'locationName': locationName,
+      if (latitude != null) 'latitude': latitude,
+      if (longitude != null) 'longitude': longitude,
+      if (locationTrigger != null)
+        'locationTrigger':
+            locationTrigger == LocationTrigger.onExit ? 'ON_EXIT' : 'ON_ENTER',
     };
   }
 
@@ -58,6 +87,15 @@ class Task {
       if (value == null) return null;
       if (value is Timestamp) return value.toDate();
       if (value is String) return DateTime.tryParse(value);
+      return null;
+    }
+
+    LocationTrigger? parseTrigger(dynamic value) {
+      if (value == null) return null;
+      if (value is String) {
+        if (value == 'ON_EXIT') return LocationTrigger.onExit;
+        if (value == 'ON_ENTER') return LocationTrigger.onEnter;
+      }
       return null;
     }
 
@@ -72,6 +110,10 @@ class Task {
         (e) => e.name == json['category'],
         orElse: () => Category.general,
       ),
+      locationName: json['locationName'],
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
+      locationTrigger: parseTrigger(json['locationTrigger']),
     );
   }
 }

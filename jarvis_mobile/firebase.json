@@ -1,1 +1,28 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"jarvis-tasks-backend","appId":"1:734223678080:android:8b87047cdb043e529f0465","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"jarvis-tasks-backend","configurations":{"android":"1:734223678080:android:8b87047cdb043e529f0465","web":"1:734223678080:web:438f84e627be86909f0465","windows":"1:734223678080:web:bfc87a6b8271bc639f0465"}}}}},"firestore":{"database":"(default)","location":"nam5","rules":"firestore.rules","indexes":"firestore.indexes.json"}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "gen-lang-client-0513238373",
+          "appId": "1:738377286533:android:1897a2728fb8399d4f3aec",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "gen-lang-client-0513238373",
+          "configurations": {
+            "android": "1:738377286533:android:1897a2728fb8399d4f3aec",
+            "web": "1:738377286533:web:782d680520a255674f3aec"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "database": "(default)",
+    "location": "nam5",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

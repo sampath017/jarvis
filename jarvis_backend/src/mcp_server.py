@@ -15,8 +15,12 @@ def _fix_date(date_str: str) -> str:
     return date_str
 
 @mcp.tool()
-def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: str = None) -> str:
-    """Add a new task to Jarvis. Dates should be in ISO format (YYYY-MM-DDTHH:MM:SS)."""
+def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: str = None,
+            location_name: str = None, latitude: float = None, longitude: float = None,
+            location_trigger: str = None) -> str:
+    """Add a new task to Jarvis. Dates should be in ISO format (YYYY-MM-DDTHH:MM:SS).
+    For location-based reminders, provide location_name, latitude, longitude, and 
+    location_trigger ('ON_EXIT' or 'ON_ENTER'). Example: 'Remind me to buy milk when I leave the office'."""
     task_id = str(uuid.uuid4())
     due_date = _fix_date(due_date)
     reminder_time = _fix_date(reminder_time)
@@ -29,8 +33,21 @@ def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: s
         "dueDate": due_date,
         "reminderTime": reminder_time
     }
+    # Add location-based reminder fields if provided
+    if location_name:
+        task_data["locationName"] = location_name
+    if latitude is not None and longitude is not None:
+        task_data["latitude"] = latitude
+        task_data["longitude"] = longitude
+    if location_trigger and location_trigger in ("ON_EXIT", "ON_ENTER"):
+        task_data["locationTrigger"] = location_trigger
+    
     db.collection("tasks").document(task_id).set(task_data)
-    return f"Task '{title}' added successfully."
+    
+    result = f"Task '{title}' added successfully."
+    if location_name:
+        result += f" Location reminder set: {location_trigger or 'ON_EXIT'} '{location_name}'."
+    return result
 
 @mcp.tool()
 def list_tasks(include_completed: bool = False) -> str:
@@ -44,7 +61,15 @@ def list_tasks(include_completed: bool = False) -> str:
     tasks = []
     for doc in docs:
         d = doc.to_dict()
-        tasks.append(f"- [{ 'x' if d.get('isCompleted') else ' ' }] {d.get('title')} (ID: {d.get('id')})")
+        task_str = f"- [{ 'x' if d.get('isCompleted') else ' ' }] {d.get('title')} (ID: {d.get('id')})"
+        if d.get("dueDate"):
+            task_str += f" [Due: {d.get('dueDate')}]"
+        if d.get("reminderTime"):
+            task_str += f" [Reminder: {d.get('reminderTime')}]"
+        if d.get("locationName"):
+            trigger = d.get('locationTrigger', 'ON_EXIT')
+            task_str += f" [Location: {trigger} '{d.get('locationName')}']"
+        tasks.append(task_str)
     
     if not tasks:
         return "You have no active tasks."
@@ -85,8 +110,10 @@ def delete_task(task_id: str) -> str:
     return f"Task {task_id} deleted successfully."
 
 @mcp.tool()
-def update_task(task_id: str, is_completed: bool = None, title: str = None, due_date: str = None, reminder_time: str = None) -> str:
-    """Update an existing task. Use this to mark tasks as completed or change times."""
+def update_task(task_id: str, is_completed: bool = None, title: str = None, due_date: str = None, reminder_time: str = None,
+               location_name: str = None, latitude: float = None, longitude: float = None,
+               location_trigger: str = None) -> str:
+    """Update an existing task. Use this to mark tasks as completed, change times, or add/change a location-based reminder."""
     task_ref = db.collection("tasks").document(task_id)
     if not task_ref.get().exists:
         return f"Task {task_id} not found."
@@ -100,6 +127,13 @@ def update_task(task_id: str, is_completed: bool = None, title: str = None, due_
         update_data["dueDate"] = _fix_date(due_date)
     if reminder_time is not None:
         update_data["reminderTime"] = _fix_date(reminder_time)
+    if location_name is not None:
+        update_data["locationName"] = location_name
+    if latitude is not None and longitude is not None:
+        update_data["latitude"] = latitude
+        update_data["longitude"] = longitude
+    if location_trigger is not None and location_trigger in ("ON_EXIT", "ON_ENTER"):
+        update_data["locationTrigger"] = location_trigger
     
     if update_data:
         task_ref.update(update_data)

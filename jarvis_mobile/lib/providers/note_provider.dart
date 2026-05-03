@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/note.dart';
 import '../services/api_service.dart';
-import 'task_provider.dart';
+import 'api_provider.dart';
 
 final noteListProvider = AsyncNotifierProvider<NoteListNotifier, List<Note>>(() {
   return NoteListNotifier();

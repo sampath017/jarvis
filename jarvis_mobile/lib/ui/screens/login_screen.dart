@@ -103,8 +103,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Image.network(
-                            'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1200px-Google_%22G%22_logo.svg.png',
+                            'https://img.icons8.com/color/48/000000/google-logo.png',
                             height: 24,
+                            width: 24,
                           ),
                           const SizedBox(width: 12),
                           const Text(

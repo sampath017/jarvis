@@ -140,6 +140,34 @@ class _TaskDetailsScreenState extends ConsumerState<TaskDetailsScreen> {
               child: Text(_currentTask.category.name, style: const TextStyle(color: Color(0xFFF0F0F2))),
               onTap: () {},
             ),
+            if (_currentTask.hasLocationReminder) ...[
+              const SizedBox(height: 16),
+              _buildDetailRow(Icons.location_on, 'Location Reminder',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _currentTask.locationName ?? 'Unknown',
+                      style: const TextStyle(color: Color(0xFFF0F0F2), fontSize: 16, fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E3A5F),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        _currentTask.locationTrigger == LocationTrigger.onExit
+                            ? '🔔 Notify when I LEAVE'
+                            : '🔔 Notify when I ARRIVE',
+                        style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),

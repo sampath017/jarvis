@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'ui/screens/home_screen.dart';
 import 'ui/screens/login_screen.dart';
 import 'providers/auth_provider.dart';
+import 'services/geofence_service.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -16,6 +17,9 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Start the geofence monitoring service
+  await GeofenceService().init();
 
   if (DEBUG_BYPASS) {
     // Attempt to sign in anonymously automatically

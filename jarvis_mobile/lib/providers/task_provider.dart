@@ -1,10 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/task.dart';
 import '../services/api_service.dart';
+import 'api_provider.dart';
 
-final apiServiceProvider = Provider<ApiService>((ref) {
-  return ApiService();
-});
+
 
 final taskListProvider = AsyncNotifierProvider<TaskListNotifier, List<Task>>(() {
   return TaskListNotifier();

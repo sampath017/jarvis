@@ -4,16 +4,6 @@ import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 
-/// Default [FirebaseOptions] for use with your Firebase apps.
-///
-/// Example:
-/// ```dart
-/// import 'firebase_options.dart';
-/// // ...
-/// await Firebase.initializeApp(
-///   options: DefaultFirebaseOptions.currentPlatform,
-/// );
-/// ```
 class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) {
@@ -23,11 +13,17 @@ class DefaultFirebaseOptions {
       case TargetPlatform.android:
         return android;
       case TargetPlatform.iOS:
-        return ios;
+        throw UnsupportedError(
+          'DefaultFirebaseOptions have not been configured for iOS - '
+          'you can reconfigure this by running the FlutterFire CLI again.',
+        );
       case TargetPlatform.macOS:
-        return macos;
+        throw UnsupportedError(
+          'DefaultFirebaseOptions have not been configured for macOS - '
+          'you can reconfigure this by running the FlutterFire CLI again.',
+        );
       case TargetPlatform.windows:
-        return windows;
+        return web; // Windows uses web config
       case TargetPlatform.linux:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for linux - '
@@ -41,49 +37,19 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyASRqsmuBfL1WEsvh_ZGRU3x1Ld2Jz5NHE',
-    appId: '1:734223678080:web:438f84e627be86909f0465',
-    messagingSenderId: '734223678080',
-    projectId: 'jarvis-tasks-backend',
-    authDomain: 'jarvis-tasks-backend.firebaseapp.com',
-    storageBucket: 'jarvis-tasks-backend.firebasestorage.app',
+    apiKey: 'AIzaSyCLataEz-wpVABwr3xlabUnUA4VYfJ1Zg0',
+    appId: '1:738377286533:web:782d680520a255674f3aec',
+    messagingSenderId: '738377286533',
+    projectId: 'gen-lang-client-0513238373',
+    authDomain: 'gen-lang-client-0513238373.firebaseapp.com',
+    storageBucket: 'gen-lang-client-0513238373.firebasestorage.app',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyB5I3s6cCwX54fZIpTUvkqSAVoQQtFmM7o',
-    appId: '1:734223678080:android:8b87047cdb043e529f0465',
-    messagingSenderId: '734223678080',
-    projectId: 'jarvis-tasks-backend',
-    storageBucket: 'jarvis-tasks-backend.firebasestorage.app',
+    apiKey: 'AIzaSyBY0Gv-tmWwid-PpLZK9OpBfcURWMukgF8',
+    appId: '1:738377286533:android:1897a2728fb8399d4f3aec',
+    messagingSenderId: '738377286533',
+    projectId: 'gen-lang-client-0513238373',
+    storageBucket: 'gen-lang-client-0513238373.firebasestorage.app',
   );
-
-  static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyClahIngKWfB48GoO9zqoAJ4xNHejSooQ8',
-    appId: '1:232452968168:ios:ec48dd365fe334e574835d',
-    messagingSenderId: '232452968168',
-    projectId: 'fittune-e9ef7',
-    storageBucket: 'fittune-e9ef7.firebasestorage.app',
-    iosClientId: '232452968168-80e23ggmfb9vun0rshtdpc97djq1cjdo.apps.googleusercontent.com',
-    iosBundleId: 'com.example.jarvisMobile',
-  );
-
-  static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyClahIngKWfB48GoO9zqoAJ4xNHejSooQ8',
-    appId: '1:232452968168:ios:ec48dd365fe334e574835d',
-    messagingSenderId: '232452968168',
-    projectId: 'fittune-e9ef7',
-    storageBucket: 'fittune-e9ef7.firebasestorage.app',
-    iosClientId: '232452968168-80e23ggmfb9vun0rshtdpc97djq1cjdo.apps.googleusercontent.com',
-    iosBundleId: 'com.example.jarvisMobile',
-  );
-
-  static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyASRqsmuBfL1WEsvh_ZGRU3x1Ld2Jz5NHE',
-    appId: '1:734223678080:web:bfc87a6b8271bc639f0465',
-    messagingSenderId: '734223678080',
-    projectId: 'jarvis-tasks-backend',
-    authDomain: 'jarvis-tasks-backend.firebaseapp.com',
-    storageBucket: 'jarvis-tasks-backend.firebasestorage.app',
-  );
-
 }

@@ -130,6 +130,30 @@ class TaskItem extends ConsumerWidget {
                             ),
                           ),
                         ),
+                      if (task.hasLocationReminder)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E3A5F),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFF2563EB).withValues(alpha: 0.4)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.location_on, size: 14, color: Color(0xFF60A5FA)),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${task.locationName} · ${task.locationTrigger == LocationTrigger.onExit ? 'ON EXIT' : 'ON ENTER'}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF93C5FD),
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 ],

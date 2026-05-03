@@ -18,7 +18,7 @@ def initialize_firebase():
         # 2. Fallback to Application Default Credentials (ADC)
         if not firebase_admin._apps:
             # Explicitly set the project ID to avoid mismatch with ADC quota project
-            firebase_admin.initialize_app(options={'projectId': 'jarvis-tasks-backend'})
+            firebase_admin.initialize_app(options={'projectId': 'gen-lang-client-0513238373'})
         return firestore.client()
     except Exception as e:
         print(f"\n[ERROR] Firebase Initialization Failed: {e}")

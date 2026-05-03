@@ -5,6 +5,7 @@ import '../../providers/task_provider.dart';
 import '../../providers/note_provider.dart';
 import '../../providers/chat_provider.dart';
 import '../../services/api_service.dart';
+import '../../providers/api_provider.dart';
 
 class AskJavrisBar extends ConsumerStatefulWidget {
   const AskJavrisBar({Key? key}) : super(key: key);
@@ -46,13 +47,14 @@ class _AskJavrisBarState extends ConsumerState<AskJavrisBar> with SingleTickerPr
 
     try {
       // Add user message to chat
-      ref.read(chatProvider.notifier).addMessage(message, true);
+      await ref.read(chatProvider.notifier).addMessage(message, true);
       _textController.clear();
 
-      final response = await ref.read(apiServiceProvider).askAI(message);
+      final currentThread = ref.read(chatProvider).currentThread!;
+      final response = await ref.read(apiServiceProvider).askAI(message, currentThread.id, threadTitle: currentThread.title);
       
       // Add AI response to chat
-      ref.read(chatProvider.notifier).addMessage(response, false);
+      await ref.read(chatProvider.notifier).addMessage(response, false);
 
       // Refresh providers in case AI made changes
       ref.invalidate(taskListProvider);
@@ -125,7 +127,7 @@ class _AskJavrisBarState extends ConsumerState<AskJavrisBar> with SingleTickerPr
                           ),
                         ],
                       ),
-                      child: chatState.isVisible && chatState.messages.isNotEmpty
+                      child: chatState.isVisible && (chatState.currentThread?.messages.isNotEmpty ?? false)
                         ? const Icon(Icons.keyboard_arrow_down, size: 16, color: Colors.white)
                         : null,
                     );
