@@ -1,15 +1,18 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/task.dart';
 import '../models/note.dart';
 import '../models/chat_thread.dart';
 
 class ApiService {
-  final CollectionReference _tasksCollection = FirebaseFirestore.instance.collection('tasks');
-  final CollectionReference _notesCollection = FirebaseFirestore.instance.collection('notes');
-  final CollectionReference _chatsCollection = FirebaseFirestore.instance.collection('chats');
+  final CollectionReference _tasksCollection = FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'jarvis').collection('tasks');
+  final CollectionReference _notesCollection = FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'jarvis').collection('notes');
+  final CollectionReference _chatsCollection = FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'jarvis').collection('chats');
+  
+  static const String baseUrl = 'http://localhost:8000'; // Change to your Cloud Run URL after deployment
 
   // Tasks
   Future<List<Task>> fetchTasks() async {
@@ -139,7 +142,7 @@ class ApiService {
       }
 
       final response = await http.post(
-        Uri.parse('http://localhost:8000/ask'), // Change to your backend URL
+        Uri.parse('$baseUrl/ask'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'message': message, 
@@ -160,10 +163,11 @@ class ApiService {
       throw Exception('Failed to connect to AI assistant: $e');
     }
   }
+
   Future<void> submitFeedback(String threadId, int score) async {
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:8000/feedback'),
+        Uri.parse('$baseUrl/feedback'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'thread_id': threadId,

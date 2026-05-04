@@ -1,0 +1,17 @@
+.gcloudignore
+.git
+.gitignore
+.venv/
+node_modules/
+__pycache__/
+*.sqlite
+*.log
+.pytest_cache/
+# Keep dependency and config files
+!uv.lock
+!pyproject.toml
+# Keep source code
+!src/
+!README.md
+!Dockerfile
+!.env

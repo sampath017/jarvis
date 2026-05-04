@@ -114,32 +114,66 @@ class _TaskDetailsScreenState extends ConsumerState<TaskDetailsScreen> {
             ),
             const Divider(color: Color(0xFF222222), height: 32),
             // Date/Time
-            _buildDetailRow(Icons.event_outlined, 'Date & Time', 
+            _buildDetailRow(Icons.event_outlined, 'Deadline', 
               child: Text(
                 _currentTask.dueDate != null 
-                  ? DateFormat('EEEE, MMM d').format(_currentTask.dueDate!)
-                  : 'Set date',
+                  ? DateFormat('EEEE, MMM d, h:mm a').format(_currentTask.dueDate!)
+                  : 'Set deadline',
                 style: const TextStyle(color: Color(0xFFF0F0F2)),
               ),
               onTap: () async {
                 final date = await showDatePicker(
                   context: context,
                   initialDate: _currentTask.dueDate ?? DateTime.now(),
-                  firstDate: DateTime.now(),
+                  firstDate: DateTime.now().subtract(const Duration(days: 365)),
                   lastDate: DateTime(2100),
                 );
                 if (date != null) {
-                  setState(() {
-                    _currentTask = _currentTask.copyWith(dueDate: date);
-                  });
+                  final time = await showTimePicker(
+                    context: context,
+                    initialTime: TimeOfDay.fromDateTime(_currentTask.dueDate ?? DateTime.now()),
+                  );
+                  if (time != null) {
+                    setState(() {
+                      _currentTask = _currentTask.copyWith(
+                        dueDate: DateTime(date.year, date.month, date.day, time.hour, time.minute),
+                      );
+                    });
+                  }
+                }
+              }
+            ),
+            const Divider(color: Color(0xFF222222), height: 32),
+            _buildDetailRow(Icons.notifications_active_outlined, 'Reminder', 
+              child: Text(
+                _currentTask.reminderTime != null 
+                  ? DateFormat('EEEE, MMM d, h:mm a').format(_currentTask.reminderTime!)
+                  : 'Set reminder',
+                style: const TextStyle(color: Color(0xFFF0F0F2)),
+              ),
+              onTap: () async {
+                final date = await showDatePicker(
+                  context: context,
+                  initialDate: _currentTask.reminderTime ?? DateTime.now(),
+                  firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                  lastDate: DateTime(2100),
+                );
+                if (date != null) {
+                  final time = await showTimePicker(
+                    context: context,
+                    initialTime: TimeOfDay.fromDateTime(_currentTask.reminderTime ?? DateTime.now()),
+                  );
+                  if (time != null) {
+                    setState(() {
+                      _currentTask = _currentTask.copyWith(
+                        reminderTime: DateTime(date.year, date.month, date.day, time.hour, time.minute),
+                      );
+                    });
+                  }
                 }
               }
             ),
             const SizedBox(height: 16),
-            _buildDetailRow(Icons.label_outline, 'List', 
-              child: Text(_currentTask.category.name, style: const TextStyle(color: Color(0xFFF0F0F2))),
-              onTap: () {},
-            ),
             if (_currentTask.hasLocationReminder) ...[
               const SizedBox(height: 16),
               _buildDetailRow(Icons.location_on, 'Location Reminder',

@@ -5,6 +5,8 @@ if hasattr(sys.stdout, "reconfigure"):
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import os
+from .logger import logger
 from src.mcp_server import add_task, list_tasks, add_note, list_notes
 from src.agent import run_agent
 
@@ -19,10 +21,11 @@ mcp_session_manager = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global mcp_session_manager
-    print("Initializing Google Tools MCP Server connection...")
+    logger.info("Initializing Google Tools MCP Server connection...")
     try:
-        # Use .cmd for Windows global npm packages
-        server_params = StdioServerParameters(command="google-tools-mcp.cmd", args=[])
+        # Use 'google-tools-mcp' for Linux, '.cmd' for Windows
+        cmd = "google-tools-mcp" if os.name != "nt" else "google-tools-mcp.cmd"
+        server_params = StdioServerParameters(command=cmd, args=[])
         stdio_ctx = stdio_client(server_params)
         read, write = await stdio_ctx.__aenter__()
         
@@ -39,11 +42,11 @@ async def lifespan(app: FastAPI):
             if any(k in t.name.lower() for k in allowed_keywords)
         ]
         
-        print(f"Filtered to {len(mcp_registry.mcp_tools_list)} safe MCP tools: {[t.name for t in mcp_registry.mcp_tools_list]}")
+        logger.info(f"Filtered to {len(mcp_registry.mcp_tools_list)} safe MCP tools: {[t.name for t in mcp_registry.mcp_tools_list]}")
         
         mcp_session_manager = (stdio_ctx, session_ctx)
     except Exception as e:
-        print(f"Failed to initialize MCP Server: {e}")
+        logger.error(f"Failed to initialize MCP Server: {e}")
         
     yield
     
@@ -72,7 +75,8 @@ class ChatResponse(BaseModel):
     response: str
 
 @app.post("/ask", response_model=ChatResponse)
-async def ask_javris(request: ChatRequest):
+async def ask_agent(request: ChatRequest):
+    logger.info(f"Received request on /ask: {request.message[:50]}...")
     try:
         response = await run_agent(
             request.message, 
@@ -83,10 +87,9 @@ async def ask_javris(request: ChatRequest):
         )
         return ChatResponse(response=response)
     except Exception as e:
-        print(f"ERROR IN BACKEND: {str(e)}")
+        logger.error(f"ERROR IN BACKEND: {str(e)}")
         import traceback
-        traceback.print_exc()
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 class FeedbackRequest(BaseModel):
@@ -107,7 +110,7 @@ async def submit_feedback(request: FeedbackRequest):
         client.flush()
         return {"status": "success"}
     except Exception as e:
-        print(f"ERROR IN FEEDBACK: {str(e)}")
+        logger.error(f"ERROR IN FEEDBACK: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Firestore Crud Fallbacks (optional, since Flutter app talks to Firestore directly) ---
@@ -116,6 +119,6 @@ async def submit_feedback(request: FeedbackRequest):
 async def health():
     return {"status": "ok", "service": "javris-backend"}
 
-if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)

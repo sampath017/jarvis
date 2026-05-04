@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "langchain>=1.2.17",
     "langchain-google-genai>=4.2.2",
+    "langchain-google-vertexai>=2.0.0",
     "langchain-mcp-adapters>=0.2.2",
     "langfuse>=4.5.1",
     "langgraph>=1.1.10",

@@ -1,6 +1,7 @@
 import os
 from typing import Annotated, TypedDict, List, Union
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
@@ -9,6 +10,7 @@ from src.firebase_config import db
 from datetime import datetime
 import uuid
 from langfuse.langchain import CallbackHandler
+from src.logger import logger
 
 
 # Define the state
@@ -28,8 +30,9 @@ def add_task_tool(title: str, notes: str = "", due_date: str = None, reminder_ti
                   location_name: str = None, latitude: float = None, longitude: float = None,
                   location_trigger: str = None) -> str:
     """Add a new task to Jarvis. Dates should be in ISO format (YYYY-MM-DDTHH:MM:SS).
+    'due_date' is the absolute deadline. 'reminder_time' is when to notify the user.
     For location-based reminders, provide location_name, latitude, longitude, and
-    location_trigger ('ON_EXIT' or 'ON_ENTER'). Use well-known coordinates for common places."""
+    location_trigger ('ON_EXIT' or 'ON_ENTER')."""
     return add_task(title, notes, due_date, reminder_time, location_name, latitude, longitude, location_trigger)
 
 @tool
@@ -243,12 +246,20 @@ tools = [add_task_tool, list_tasks_tool, add_note_tool, list_notes_tool, delete_
 import src.mcp_registry
 
 # --- Graph ---
-def get_model():
-    # Use Gemini 3 Flash for maximum performance
     all_tools = tools + src.mcp_registry.mcp_tools_list
+    
+    if os.environ.get("USE_VERTEX_AI") == "true":
+        logger.info("Using Vertex AI Chat model (Enterprise)")
+        return ChatVertexAI(
+            model="gemini-1.5-flash", # Vertex names are slightly different
+            temperature=0,
+            project=os.environ.get("GOOGLE_CLOUD_PROJECT")
+        ).bind_tools(all_tools)
+        
     return ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0).bind_tools(all_tools)
 
 def call_model(state: AgentState):
+    logger.debug("Entering 'agent' node: generating model response...")
     messages = state['messages']
     
     # Inject current date context and robust instructions
@@ -286,14 +297,21 @@ def call_model(state: AgentState):
         "   Always use human-readable names (addresses, area names, landmarks).\n"
         "6. DATE PRESENTATION: When mentioning dates or times to the user, ALWAYS convert them into human-readable, "
         "   conversational formats (e.g., 'Tomorrow at 5:00 PM', 'Next Monday', 'May 4th'). Do NOT show raw ISO timestamps.\n"
-        "7. RESPONSIVENESS: Be concise, helpful, and proactive. Use Markdown formatting to make your responses readable.\n"
-        "8. LOCATION-BASED REMINDERS: When a user says things like 'remind me to buy milk when I leave the office' or "
+        "7. FIELD ACCURACY: ONLY use the fields defined in the tool schemas (title, notes, due_date, reminder_time). "
+        "   NEVER invent or mention non-existent fields like 'Priority', 'Category', or 'Tags'.\n"
+        "8. DEADLINE VS REMINDER: 'due_date' is the absolute deadline (when the task must be finished). "
+        "   'reminder_time' is for notifications. You can set both. If the user says 'Remind me tomorrow at 5pm about the project due Friday', "
+        "   set reminder_time to tomorrow 5pm and due_date to Friday.\n"
+        "9. TITLE CLEANLINESS: The 'title' field should ONLY contain the name of the task. "
+        "   DO NOT include deadlines, reminders, or other metadata inside the title string itself.\n"
+        "9. RESPONSIVENESS: Be concise, helpful, and proactive. Use Markdown formatting to make your responses readable.\n"
+        "10. LOCATION-BASED REMINDERS: When a user says things like 'remind me to buy milk when I leave the office' or "
         "   'notify me to pick up groceries when I'm near the supermarket', create a task with location fields. "
         "   Use location_trigger='ON_EXIT' for 'when I leave' and 'ON_ENTER' for 'when I arrive/am near'. "
         "   You MUST provide latitude/longitude coordinates for the location. If the user says 'my current location', "
         "   'here', or 'home' without coordinates, use the USER'S CURRENT LOCATION provided above. "
         "   Always confirm the location name and trigger type in your response.\n"
-        "9. PROACTIVE LOCATION INTELLIGENCE: When the user asks 'where am I?', 'what's nearby?', "
+        "11. PROACTIVE LOCATION INTELLIGENCE: When the user asks 'where am I?', 'what's nearby?', "
         "   or anything about their surroundings, ALWAYS call get_location_context_tool with their coordinates. "
         "   This gives you their resolved address AND any nearby location-based tasks. "
         "   When the user mentions a place name you don't have coordinates for, use reverse_geocode_tool to look it up. "
@@ -310,12 +328,20 @@ def call_model(state: AgentState):
     
     model = get_model()
     response = model.invoke(full_messages)
+    
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        logger.info(f"Model decided to call tools: {[t['name'] for t in response.tool_calls]}")
+    else:
+        logger.info("Model provided final text response.")
+        
     return {"messages": [response]}
 
 def should_continue(state: AgentState):
     last_message = state['messages'][-1]
     if last_message.tool_calls:
+        logger.debug("Routing to 'tools' node...")
         return "tools"
+    logger.debug("Routing to END...")
     return END
 
 def get_workflow():
@@ -379,5 +405,5 @@ async def run_agent(query: str, thread_id: str = "javris_user_1", thread_title: 
         
         return str(content)
     except Exception as e:
-        print(f"AGENT EXECUTION ERROR: {str(e)}")
-        return f"I encountered an error while processing your request: {str(e)}"
+        logger.error(f"AGENT EXECUTION ERROR: {str(e)}")
+        return f"Internal Error: {str(e)}"

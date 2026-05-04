@@ -1,7 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-enum Category { bike, work, garden, health, general }
-
 enum LocationTrigger { onExit, onEnter }
 
 class Task {
@@ -11,7 +9,6 @@ class Task {
   final DateTime? dueDate;
   final DateTime? reminderTime;
   final bool isCompleted;
-  final Category category;
   // Location-based reminder fields
   final String? locationName;
   final double? latitude;
@@ -25,7 +22,6 @@ class Task {
     this.dueDate,
     this.reminderTime,
     this.isCompleted = false,
-    this.category = Category.general,
     this.locationName,
     this.latitude,
     this.longitude,
@@ -43,7 +39,6 @@ class Task {
     DateTime? dueDate,
     DateTime? reminderTime,
     bool? isCompleted,
-    Category? category,
     String? locationName,
     double? latitude,
     double? longitude,
@@ -56,7 +51,6 @@ class Task {
       dueDate: dueDate ?? this.dueDate,
       reminderTime: reminderTime ?? this.reminderTime,
       isCompleted: isCompleted ?? this.isCompleted,
-      category: category ?? this.category,
       locationName: locationName ?? this.locationName,
       latitude: latitude ?? this.latitude,
       longitude: longitude ?? this.longitude,
@@ -72,7 +66,6 @@ class Task {
       'dueDate': dueDate?.toIso8601String(),
       'reminderTime': reminderTime?.toIso8601String(),
       'isCompleted': isCompleted,
-      'category': category.name,
       if (locationName != null) 'locationName': locationName,
       if (latitude != null) 'latitude': latitude,
       if (longitude != null) 'longitude': longitude,
@@ -106,10 +99,6 @@ class Task {
       dueDate: parseDate(json['dueDate']),
       reminderTime: parseDate(json['reminderTime']),
       isCompleted: json['isCompleted'] ?? false,
-      category: Category.values.firstWhere(
-        (e) => e.name == json['category'],
-        orElse: () => Category.general,
-      ),
       locationName: json['locationName'],
       latitude: (json['latitude'] as num?)?.toDouble(),
       longitude: (json['longitude'] as num?)?.toDouble(),

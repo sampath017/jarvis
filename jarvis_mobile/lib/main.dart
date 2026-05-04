@@ -7,6 +7,7 @@ import 'providers/auth_provider.dart';
 import 'services/geofence_service.dart';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 
 // SET THIS TO TRUE TO SKIP LOGIN SCREEN
@@ -17,6 +18,16 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Use the named database 'jarvis' as seen in the Firebase Console
+  // We call instanceFor to ensure the instance is initialized for this databaseId
+  FirebaseFirestore.instanceFor(
+    app: Firebase.app(),
+    databaseId: 'jarvis',
+  );
+
+  // Disable Firestore debug logging
+  FirebaseFirestore.setLoggingEnabled(false);
 
   // Start the geofence monitoring service
   await GeofenceService().init();

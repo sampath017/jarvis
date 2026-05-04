@@ -2,6 +2,7 @@ from fastmcp import FastMCP
 from src.firebase_config import db
 from datetime import datetime
 import uuid
+from src.logger import logger
 
 # Initialize FastMCP server
 mcp = FastMCP("Javris")
@@ -19,8 +20,11 @@ def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: s
             location_name: str = None, latitude: float = None, longitude: float = None,
             location_trigger: str = None) -> str:
     """Add a new task to Jarvis. Dates should be in ISO format (YYYY-MM-DDTHH:MM:SS).
+    The 'title' should only contain the name of the task.
+    'due_date' is the absolute deadline for the task.
+    'reminder_time' is when the user wants to be notified (can be before the deadline).
     For location-based reminders, provide location_name, latitude, longitude, and 
-    location_trigger ('ON_EXIT' or 'ON_ENTER'). Example: 'Remind me to buy milk when I leave the office'."""
+    location_trigger ('ON_EXIT' or 'ON_ENTER')."""
     task_id = str(uuid.uuid4())
     due_date = _fix_date(due_date)
     reminder_time = _fix_date(reminder_time)
@@ -42,6 +46,7 @@ def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: s
     if location_trigger and location_trigger in ("ON_EXIT", "ON_ENTER"):
         task_data["locationTrigger"] = location_trigger
     
+    logger.info(f"Firebase: Adding task '{title}' (ID: {task_id})")
     db.collection("tasks").document(task_id).set(task_data)
     
     result = f"Task '{title}' added successfully."
@@ -52,6 +57,7 @@ def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: s
 @mcp.tool()
 def list_tasks(include_completed: bool = False) -> str:
     """List all tasks from Jarvis."""
+    logger.info(f"Firebase: Listing tasks (include_completed={include_completed})")
     tasks_ref = db.collection("tasks")
     if not include_completed:
         docs = tasks_ref.where("isCompleted", "==", False).stream()
@@ -85,12 +91,14 @@ def add_note(title: str, content: str) -> str:
         "content": content,
         "createdAt": datetime.now()
     }
+    logger.info(f"Firebase: Adding note '{title}' (ID: {note_id})")
     db.collection("notes").document(note_id).set(note_data)
     return f"Note '{title}' added successfully."
 
 @mcp.tool()
 def list_notes() -> str:
     """List all notes from Jarvis."""
+    logger.info("Firebase: Listing notes")
     notes_ref = db.collection("notes")
     docs = notes_ref.order_by("createdAt", direction="DESCENDING").stream()
     
@@ -106,6 +114,7 @@ def list_notes() -> str:
 @mcp.tool()
 def delete_task(task_id: str) -> str:
     """Delete a task from Jarvis using its ID."""
+    logger.info(f"Firebase: Deleting task (ID: {task_id})")
     db.collection("tasks").document(task_id).delete()
     return f"Task {task_id} deleted successfully."
 
@@ -114,6 +123,7 @@ def update_task(task_id: str, is_completed: bool = None, title: str = None, due_
                location_name: str = None, latitude: float = None, longitude: float = None,
                location_trigger: str = None) -> str:
     """Update an existing task. Use this to mark tasks as completed, change times, or add/change a location-based reminder."""
+    logger.info(f"Firebase: Updating task (ID: {task_id})")
     task_ref = db.collection("tasks").document(task_id)
     if not task_ref.get().exists:
         return f"Task {task_id} not found."
@@ -143,6 +153,7 @@ def update_task(task_id: str, is_completed: bool = None, title: str = None, due_
 @mcp.tool()
 def get_note(note_id: str) -> str:
     """Get the full content of a note by its ID."""
+    logger.info(f"Firebase: Retrieving note (ID: {note_id})")
     doc = db.collection("notes").document(note_id).get()
     if doc.exists:
         d = doc.to_dict()
@@ -152,6 +163,7 @@ def get_note(note_id: str) -> str:
 @mcp.tool()
 def update_note(note_id: str, title: str = None, content: str = None) -> str:
     """Update an existing note's title or content."""
+    logger.info(f"Firebase: Updating note (ID: {note_id})")
     note_ref = db.collection("notes").document(note_id)
     if not note_ref.get().exists:
         return f"Note {note_id} not found."
@@ -170,6 +182,7 @@ def update_note(note_id: str, title: str = None, content: str = None) -> str:
 @mcp.tool()
 def delete_note(note_id: str) -> str:
     """Delete a note from Jarvis using its ID."""
+    logger.info(f"Firebase: Deleting note (ID: {note_id})")
     db.collection("notes").document(note_id).delete()
     return f"Note {note_id} deleted successfully."
 

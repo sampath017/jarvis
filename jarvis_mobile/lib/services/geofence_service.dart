@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/task.dart';
@@ -139,7 +140,7 @@ class GeofenceService {
       _adjustPollingRate(position.speed);
 
       // Fetch all incomplete tasks that have location data
-      final snapshot = await FirebaseFirestore.instance
+      final snapshot = await FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'jarvis')
           .collection('tasks')
           .where('isCompleted', isEqualTo: false)
           .get();

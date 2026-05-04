@@ -2,6 +2,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import os
 from dotenv import load_dotenv
+from .logger import logger
 
 load_dotenv()
 
@@ -19,10 +20,10 @@ def initialize_firebase():
         if not firebase_admin._apps:
             # Explicitly set the project ID to avoid mismatch with ADC quota project
             firebase_admin.initialize_app(options={'projectId': 'gen-lang-client-0513238373'})
-        return firestore.client()
+        return firestore.client(database_id='jarvis')
     except Exception as e:
-        print(f"\n[ERROR] Firebase Initialization Failed: {e}")
-        print("[TIP] Run 'gcloud auth application-default login' or place your service-account.json in the jarvis_backend folder.\n")
+        logger.error(f"Firebase Initialization Failed: {e}")
+        logger.info("Run 'gcloud auth application-default login' or place your service-account.json in the jarvis_backend folder.")
         raise e
 
 db = initialize_firebase()

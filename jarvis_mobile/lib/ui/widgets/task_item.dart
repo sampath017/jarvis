@@ -74,7 +74,7 @@ class TaskItem extends ConsumerWidget {
                       color: task.isCompleted ? const Color(0xFF555555) : const Color(0xFFF0F0F2),
                     ),
                   ),
-                  if (task.notes.isNotEmpty || dateTimeStr != null || task.category != Category.general)
+                  if (task.notes.isNotEmpty || dateTimeStr != null)
                     const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -100,21 +100,6 @@ class TaskItem extends ConsumerWidget {
                                 ),
                               ),
                             ],
-                          ),
-                        ),
-                      if (task.category != Category.general)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.secondaryContainer,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Text(
-                            task.category.name,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Theme.of(context).colorScheme.onSecondaryContainer,
-                            ),
                           ),
                         ),
                       if (task.notes.isNotEmpty)

@@ -45,6 +45,7 @@ dependencies:
   flutter_markdown: ^0.7.7+1
   geolocator: ^14.0.0
   flutter_local_notifications: ^19.0.0
+  logger: ^2.7.0
 
 dev_dependencies:
   flutter_test:
@@ -56,6 +57,22 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.4
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/images/app_icon.png"
+  min_sdk_android: 21
+
+flutter_native_splash:
+  color: "#0B1120"
+  image: "assets/images/app_icon.png"
+  android_12:
+    image: "assets/images/app_icon.png"
+    color: "#0B1120"
+  fullscreen: true
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

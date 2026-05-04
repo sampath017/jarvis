@@ -14,7 +14,6 @@ class AddTaskBottomSheet extends ConsumerStatefulWidget {
 class _AddTaskBottomSheetState extends ConsumerState<AddTaskBottomSheet> {
   final _titleController = TextEditingController();
   final _notesController = TextEditingController();
-  Category _selectedCategory = Category.general;
   DateTime? _dueDate;
   TimeOfDay? _reminderTime;
   bool _showDetails = false;
@@ -45,7 +44,6 @@ class _AddTaskBottomSheetState extends ConsumerState<AddTaskBottomSheet> {
       id: const Uuid().v4(),
       title: _titleController.text.trim(),
       notes: _notesController.text.trim(),
-      category: _selectedCategory,
       dueDate: _dueDate,
       reminderTime: finalReminderTime,
     );
@@ -151,11 +149,6 @@ class _AddTaskBottomSheetState extends ConsumerState<AddTaskBottomSheet> {
                       ],
                     ),
                   ),
-                if (_selectedCategory != Category.general)
-                  ActionChip(
-                    label: Text(_selectedCategory.name),
-                    onPressed: () {},
-                  ),
               ],
             ),
             const SizedBox(height: 16),
@@ -177,21 +170,6 @@ class _AddTaskBottomSheetState extends ConsumerState<AddTaskBottomSheet> {
                       icon: const Icon(Icons.event),
                       tooltip: 'Add date/time',
                       onPressed: _pickDateAndTime,
-                    ),
-                    PopupMenuButton<Category>(
-                      icon: const Icon(Icons.label_outline),
-                      tooltip: 'Select List/Category',
-                      onSelected: (cat) {
-                        setState(() {
-                          _selectedCategory = cat;
-                        });
-                      },
-                      itemBuilder: (context) => Category.values.map((cat) {
-                        return PopupMenuItem(
-                          value: cat,
-                          child: Text(cat.name),
-                        );
-                      }).toList(),
                     ),
                   ],
                 ),

@@ -1,4 +1,4 @@
-package com.example.jarvis_mobile
+package com.sampath017.jarvis
 
 import io.flutter.embedding.android.FlutterActivity
 
