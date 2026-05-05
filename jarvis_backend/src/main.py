@@ -6,54 +6,74 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from .logger import logger
 from src.mcp_server import add_task, list_tasks, add_note, list_notes
 from src.agent import run_agent
 
 from contextlib import asynccontextmanager
+import asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 import src.mcp_registry as mcp_registry
 
-mcp_session_manager = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mcp_session_manager
-    logger.info("Initializing Google Tools MCP Server connection...")
+    app.state.mcp_session = None
+    mcp_registry.mcp_tools_list = []
+
+    async def init_mcp():
+        logger.info("Initializing Google Tools MCP Server in background...")
+        try:
+            server_params = StdioServerParameters(
+                command="google-tools-mcp",
+                env={**os.environ}
+            )
+            logger.info("Connecting to MCP server...")
+            async with stdio_client(server_params) as (read, write):
+                logger.info("Stdio connection established. Starting session...")
+                async with ClientSession(read, write) as session:
+                    async with asyncio.timeout(180): # Timeout only applies to handshake
+                        logger.info("Initializing session...")
+                        await session.initialize()
+                        logger.info("Session initialized. Loading tools...")
+                        
+                        # Load and register tools
+                        all_tools = await load_mcp_tools(session)
+                        allowed_keywords = ['calendar', 'event']
+                        mcp_registry.mcp_tools_list = [
+                            t for t in all_tools
+                            if any(k in t.name.lower() for k in allowed_keywords)
+                        ]
+                        
+                        logger.info(f"✅ MCP ready with {len(mcp_registry.mcp_tools_list)} tools.")
+                        app.state.mcp_session = session
+                    
+                    # Keep session alive indefinitely after successful init
+                    await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            logger.info("MCP initialization background task cancelled.")
+        except asyncio.TimeoutError:
+            logger.error("❌ MCP initialization timed out.")
+        except Exception as e:
+            logger.error(f"❌ MCP initialization failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    # Start MCP in the background
+    mcp_task = asyncio.create_task(init_mcp())
+
+    yield  # ← Server is live here, port 8080 is bound immediately ✅
+
+    # Shutdown
+    logger.info("Shutting down... cancelling MCP task.")
+    mcp_task.cancel()
     try:
-        # Use 'google-tools-mcp' for Linux, '.cmd' for Windows
-        cmd = "google-tools-mcp" if os.name != "nt" else "google-tools-mcp.cmd"
-        server_params = StdioServerParameters(command=cmd, args=[])
-        stdio_ctx = stdio_client(server_params)
-        read, write = await stdio_ctx.__aenter__()
-        
-        session_ctx = ClientSession(read, write)
-        session = await session_ctx.__aenter__()
-        
-        await session.initialize()
-        all_tools = await load_mcp_tools(session)
-        # Filter tools to prevent Gemini strict schema errors (e.g. from complex Sheets tools) 
-        # and to focus on the user's explicit needs (Calendar only)
-        allowed_keywords = ['calendar', 'event']
-        mcp_registry.mcp_tools_list = [
-            t for t in all_tools
-            if any(k in t.name.lower() for k in allowed_keywords)
-        ]
-        
-        logger.info(f"Filtered to {len(mcp_registry.mcp_tools_list)} safe MCP tools: {[t.name for t in mcp_registry.mcp_tools_list]}")
-        
-        mcp_session_manager = (stdio_ctx, session_ctx)
-    except Exception as e:
-        logger.error(f"Failed to initialize MCP Server: {e}")
-        
-    yield
-    
-    if mcp_session_manager:
-        stdio_ctx, session_ctx = mcp_session_manager
-        await session_ctx.__aexit__(None, None, None)
-        await stdio_ctx.__aexit__(None, None, None)
+        await mcp_task
+    except asyncio.CancelledError:
+        pass
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
@@ -119,6 +139,7 @@ async def submit_feedback(request: FeedbackRequest):
 async def health():
     return {"status": "ok", "service": "javris-backend"}
 
+if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)

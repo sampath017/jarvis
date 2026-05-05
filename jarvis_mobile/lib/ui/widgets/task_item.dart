@@ -129,7 +129,7 @@ class TaskItem extends ConsumerWidget {
                               const Icon(Icons.location_on, size: 14, color: Color(0xFF60A5FA)),
                               const SizedBox(width: 4),
                               Text(
-                                '${task.locationName} · ${task.locationTrigger == LocationTrigger.onExit ? 'ON EXIT' : 'ON ENTER'}',
+                                '${task.locationName} · ${task.triggerType == LocationTrigger.onExit ? 'ON EXIT' : 'ON ENTER'}',
                                 style: const TextStyle(
                                   fontSize: 11,
                                   color: Color(0xFF93C5FD),

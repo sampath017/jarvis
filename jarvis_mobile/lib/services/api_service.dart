@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../models/task.dart';
 import '../models/note.dart';
 import '../models/chat_thread.dart';
@@ -12,7 +13,13 @@ class ApiService {
   final CollectionReference _notesCollection = FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'jarvis').collection('notes');
   final CollectionReference _chatsCollection = FirebaseFirestore.instanceFor(app: Firebase.app(), databaseId: 'jarvis').collection('chats');
   
-  static const String baseUrl = 'http://localhost:8000'; // Change to your Cloud Run URL after deployment
+  static final String baseUrl = dotenv.get(
+    'API_URL', 
+    fallback: const String.fromEnvironment(
+      'API_URL', 
+      defaultValue: 'https://jarvis-backend-738377286533.asia-south1.run.app'
+    )
+  );
 
   // Tasks
   Future<List<Task>> fetchTasks() async {

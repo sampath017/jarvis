@@ -18,13 +18,13 @@ def _fix_date(date_str: str) -> str:
 @mcp.tool()
 def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: str = None,
             location_name: str = None, latitude: float = None, longitude: float = None,
-            location_trigger: str = None) -> str:
+            radius: float = 150.0, trigger_type: str = None) -> str:
     """Add a new task to Jarvis. Dates should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     The 'title' should only contain the name of the task.
     'due_date' is the absolute deadline for the task.
     'reminder_time' is when the user wants to be notified (can be before the deadline).
-    For location-based reminders, provide location_name, latitude, longitude, and 
-    location_trigger ('ON_EXIT' or 'ON_ENTER')."""
+    For location-based reminders, provide location_name, latitude, longitude, radius (default 150m),
+    and trigger_type ('ON_EXIT' or 'ON_ENTER')."""
     task_id = str(uuid.uuid4())
     due_date = _fix_date(due_date)
     reminder_time = _fix_date(reminder_time)
@@ -40,18 +40,23 @@ def add_task(title: str, notes: str = "", due_date: str = None, reminder_time: s
     # Add location-based reminder fields if provided
     if location_name:
         task_data["locationName"] = location_name
+    
     if latitude is not None and longitude is not None:
-        task_data["latitude"] = latitude
-        task_data["longitude"] = longitude
-    if location_trigger and location_trigger in ("ON_EXIT", "ON_ENTER"):
-        task_data["locationTrigger"] = location_trigger
+        task_data["geofence_coords"] = {
+            "lat": latitude,
+            "lng": longitude
+        }
+        task_data["radius"] = radius
+        
+    if trigger_type and trigger_type in ("ON_EXIT", "ON_ENTER"):
+        task_data["trigger_type"] = trigger_type
     
     logger.info(f"Firebase: Adding task '{title}' (ID: {task_id})")
     db.collection("tasks").document(task_id).set(task_data)
     
     result = f"Task '{title}' added successfully."
     if location_name:
-        result += f" Location reminder set: {location_trigger or 'ON_EXIT'} '{location_name}'."
+        result += f" Geofence set: {trigger_type or 'ON_EXIT'} '{location_name}' (radius: {radius}m)."
     return result
 
 @mcp.tool()
@@ -73,7 +78,7 @@ def list_tasks(include_completed: bool = False) -> str:
         if d.get("reminderTime"):
             task_str += f" [Reminder: {d.get('reminderTime')}]"
         if d.get("locationName"):
-            trigger = d.get('locationTrigger', 'ON_EXIT')
+            trigger = d.get('trigger_type', 'ON_EXIT')
             task_str += f" [Location: {trigger} '{d.get('locationName')}']"
         tasks.append(task_str)
     
@@ -121,7 +126,7 @@ def delete_task(task_id: str) -> str:
 @mcp.tool()
 def update_task(task_id: str, is_completed: bool = None, title: str = None, due_date: str = None, reminder_time: str = None,
                location_name: str = None, latitude: float = None, longitude: float = None,
-               location_trigger: str = None) -> str:
+               radius: float = None, trigger_type: str = None) -> str:
     """Update an existing task. Use this to mark tasks as completed, change times, or add/change a location-based reminder."""
     logger.info(f"Firebase: Updating task (ID: {task_id})")
     task_ref = db.collection("tasks").document(task_id)
@@ -139,11 +144,16 @@ def update_task(task_id: str, is_completed: bool = None, title: str = None, due_
         update_data["reminderTime"] = _fix_date(reminder_time)
     if location_name is not None:
         update_data["locationName"] = location_name
+    
     if latitude is not None and longitude is not None:
-        update_data["latitude"] = latitude
-        update_data["longitude"] = longitude
-    if location_trigger is not None and location_trigger in ("ON_EXIT", "ON_ENTER"):
-        update_data["locationTrigger"] = location_trigger
+        update_data["geofence_coords"] = {
+            "lat": latitude,
+            "lng": longitude
+        }
+    if radius is not None:
+        update_data["radius"] = radius
+    if trigger_type is not None and trigger_type in ("ON_EXIT", "ON_ENTER"):
+        update_data["trigger_type"] = trigger_type
     
     if update_data:
         task_ref.update(update_data)

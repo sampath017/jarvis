@@ -9,11 +9,12 @@ class Task {
   final DateTime? dueDate;
   final DateTime? reminderTime;
   final bool isCompleted;
-  // Location-based reminder fields
+  // Geofencing fields
   final String? locationName;
   final double? latitude;
   final double? longitude;
-  final LocationTrigger? locationTrigger;
+  final double? radius;
+  final LocationTrigger? triggerType;
 
   Task({
     required this.id,
@@ -25,7 +26,8 @@ class Task {
     this.locationName,
     this.latitude,
     this.longitude,
-    this.locationTrigger,
+    this.radius,
+    this.triggerType,
   });
 
   /// Whether this task has a geofence-based reminder attached.
@@ -42,7 +44,8 @@ class Task {
     String? locationName,
     double? latitude,
     double? longitude,
-    LocationTrigger? locationTrigger,
+    double? radius,
+    LocationTrigger? triggerType,
   }) {
     return Task(
       id: id ?? this.id,
@@ -54,7 +57,8 @@ class Task {
       locationName: locationName ?? this.locationName,
       latitude: latitude ?? this.latitude,
       longitude: longitude ?? this.longitude,
-      locationTrigger: locationTrigger ?? this.locationTrigger,
+      radius: radius ?? this.radius,
+      triggerType: triggerType ?? this.triggerType,
     );
   }
 
@@ -67,11 +71,15 @@ class Task {
       'reminderTime': reminderTime?.toIso8601String(),
       'isCompleted': isCompleted,
       if (locationName != null) 'locationName': locationName,
-      if (latitude != null) 'latitude': latitude,
-      if (longitude != null) 'longitude': longitude,
-      if (locationTrigger != null)
-        'locationTrigger':
-            locationTrigger == LocationTrigger.onExit ? 'ON_EXIT' : 'ON_ENTER',
+      if (latitude != null && longitude != null)
+        'geofence_coords': {
+          'lat': latitude,
+          'lng': longitude,
+        },
+      if (radius != null) 'radius': radius,
+      if (triggerType != null)
+        'trigger_type':
+            triggerType == LocationTrigger.onExit ? 'ON_EXIT' : 'ON_ENTER',
     };
   }
 
@@ -92,6 +100,8 @@ class Task {
       return null;
     }
 
+    final coords = json['geofence_coords'] as Map<String, dynamic>?;
+
     return Task(
       id: json['id'],
       title: json['title'],
@@ -100,9 +110,10 @@ class Task {
       reminderTime: parseDate(json['reminderTime']),
       isCompleted: json['isCompleted'] ?? false,
       locationName: json['locationName'],
-      latitude: (json['latitude'] as num?)?.toDouble(),
-      longitude: (json['longitude'] as num?)?.toDouble(),
-      locationTrigger: parseTrigger(json['locationTrigger']),
+      latitude: coords != null ? (coords['lat'] as num?)?.toDouble() : null,
+      longitude: coords != null ? (coords['lng'] as num?)?.toDouble() : null,
+      radius: (json['radius'] as num?)?.toDouble(),
+      triggerType: parseTrigger(json['trigger_type']),
     );
   }
 }

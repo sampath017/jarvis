@@ -192,7 +192,7 @@ class _TaskDetailsScreenState extends ConsumerState<TaskDetailsScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        _currentTask.locationTrigger == LocationTrigger.onExit
+                        _currentTask.triggerType == LocationTrigger.onExit
                             ? '🔔 Notify when I LEAVE'
                             : '🔔 Notify when I ARRIVE',
                         style: const TextStyle(color: Color(0xFF93C5FD), fontSize: 12),

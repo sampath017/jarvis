@@ -28,12 +28,12 @@ from src.mcp_server import add_task, list_tasks, add_note, list_notes, delete_ta
 @tool
 def add_task_tool(title: str, notes: str = "", due_date: str = None, reminder_time: str = None,
                   location_name: str = None, latitude: float = None, longitude: float = None,
-                  location_trigger: str = None) -> str:
+                  radius: float = 150.0, trigger_type: str = None) -> str:
     """Add a new task to Jarvis. Dates should be in ISO format (YYYY-MM-DDTHH:MM:SS).
     'due_date' is the absolute deadline. 'reminder_time' is when to notify the user.
-    For location-based reminders, provide location_name, latitude, longitude, and
-    location_trigger ('ON_EXIT' or 'ON_ENTER')."""
-    return add_task(title, notes, due_date, reminder_time, location_name, latitude, longitude, location_trigger)
+    For location-based reminders, provide location_name, latitude, longitude, radius (default 150m),
+    and trigger_type ('ON_EXIT' or 'ON_ENTER')."""
+    return add_task(title, notes, due_date, reminder_time, location_name, latitude, longitude, radius, trigger_type)
 
 @tool
 def list_tasks_tool(include_completed: bool = False) -> str:
@@ -73,9 +73,9 @@ def delete_note_tool(note_id: str) -> str:
 @tool
 def update_task_tool(task_id: str, is_completed: bool = None, title: str = None, due_date: str = None, reminder_time: str = None,
                      location_name: str = None, latitude: float = None, longitude: float = None,
-                     location_trigger: str = None) -> str:
+                     radius: float = None, trigger_type: str = None) -> str:
     """Update a task. Use this to change titles, mark as completed, change dates/reminders, or add/modify location-based reminders."""
-    return update_task(task_id, is_completed, title, due_date, reminder_time, location_name, latitude, longitude, location_trigger)
+    return update_task(task_id, is_completed, title, due_date, reminder_time, location_name, latitude, longitude, radius, trigger_type)
 
 @tool
 def reverse_geocode_tool(latitude: float, longitude: float) -> str:
@@ -209,16 +209,18 @@ def get_location_context_tool(latitude: float, longitude: float) -> str:
         nearby_tasks = []
         for doc in tasks_ref:
             task = doc.to_dict()
-            t_lat = task.get("latitude")
-            t_lng = task.get("longitude")
-            if t_lat and t_lng:
-                dist = haversine(latitude, longitude, float(t_lat), float(t_lng))
-                nearby_tasks.append({
-                    "title": task.get("title"),
-                    "location": task.get("locationName"),
-                    "trigger": task.get("locationTrigger"),
-                    "distance_m": round(dist),
-                })
+            coords = task.get("geofence_coords")
+            if coords:
+                t_lat = coords.get("lat")
+                t_lng = coords.get("lng")
+                if t_lat and t_lng:
+                    dist = haversine(latitude, longitude, float(t_lat), float(t_lng))
+                    nearby_tasks.append({
+                        "title": task.get("title"),
+                        "location": task.get("locationName"),
+                        "trigger": task.get("trigger_type"),
+                        "distance_m": round(dist),
+                    })
         
         if nearby_tasks:
             nearby_tasks.sort(key=lambda x: x["distance_m"])
@@ -245,18 +247,21 @@ tools = [add_task_tool, list_tasks_tool, add_note_tool, list_notes_tool, delete_
          reverse_geocode_tool, get_location_context_tool]
 import src.mcp_registry
 
-# --- Graph ---
+def get_model():
+    # Use Gemini 3 Flash for maximum performance
+    model_id = os.environ.get("GOOGLE_MODEL_ID", "gemini-3-flash-preview")
+    logger.info(f"Using model: {model_id}")
     all_tools = tools + src.mcp_registry.mcp_tools_list
     
     if os.environ.get("USE_VERTEX_AI") == "true":
         logger.info("Using Vertex AI Chat model (Enterprise)")
         return ChatVertexAI(
-            model="gemini-1.5-flash", # Vertex names are slightly different
+            model=model_id,
             temperature=0,
             project=os.environ.get("GOOGLE_CLOUD_PROJECT")
         ).bind_tools(all_tools)
         
-    return ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0).bind_tools(all_tools)
+    return ChatGoogleGenerativeAI(model=model_id, temperature=0).bind_tools(all_tools)
 
 def call_model(state: AgentState):
     logger.debug("Entering 'agent' node: generating model response...")
@@ -306,11 +311,13 @@ def call_model(state: AgentState):
         "   DO NOT include deadlines, reminders, or other metadata inside the title string itself.\n"
         "9. RESPONSIVENESS: Be concise, helpful, and proactive. Use Markdown formatting to make your responses readable.\n"
         "10. LOCATION-BASED REMINDERS: When a user says things like 'remind me to buy milk when I leave the office' or "
-        "   'notify me to pick up groceries when I'm near the supermarket', create a task with location fields. "
-        "   Use location_trigger='ON_EXIT' for 'when I leave' and 'ON_ENTER' for 'when I arrive/am near'. "
+        "   'notify me to pick up groceries when I'm near the supermarket', create a task with geofencing fields. "
+        "   Use trigger_type='ON_EXIT' for 'when I leave' and 'ON_ENTER' for 'when I arrive/am near'. "
         "   You MUST provide latitude/longitude coordinates for the location. If the user says 'my current location', "
         "   'here', or 'home' without coordinates, use the USER'S CURRENT LOCATION provided above. "
-        "   Always confirm the location name and trigger type in your response.\n"
+        "   Default radius is 150m, but you can adjust it if the user mentions a specific range. "
+        "   Always confirm the location name and trigger type in your response. "
+        "   Note: The mobile app will handle the actual native geofence trigger; your job is to save the fields correctly.\n"
         "11. PROACTIVE LOCATION INTELLIGENCE: When the user asks 'where am I?', 'what's nearby?', "
         "   or anything about their surroundings, ALWAYS call get_location_context_tool with their coordinates. "
         "   This gives you their resolved address AND any nearby location-based tasks. "

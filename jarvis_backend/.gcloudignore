@@ -7,6 +7,7 @@ __pycache__/
 *.sqlite
 *.log
 .pytest_cache/
+
 # Keep dependency and config files
 !uv.lock
 !pyproject.toml
