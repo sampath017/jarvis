@@ -1,0 +1,44 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+build/
+
+# Gradle files
+.gradle/
+gradle/
+
+# Local configuration file
+local.properties
+
+# Android Studio files
+*.iml
+.idea/
+*.iws
+.DS_Store
+
+# Log Files
+*.log
+
+# Model binary (too large for git)
+*.bin
+
+# Android specific
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Google Services
+google-services.json
