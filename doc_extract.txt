@@ -1,0 +1,369 @@
+Business & Technical Requirements Document (BRD)
+Jarvis Context-Aware Mobile Agent
+
+1. Executive Summary
+The objective of this project is to build Jarvis, a hyper-personalized, context-aware mobile agent capable of triggering actions based on the user’s physical context.
+Jarvis must understand not only broad movement categories, but also precise physical states and transitions—for example:
+Identifying that the user is riding their Royal Enfield Hunter 350, rather than travelling in a car or taxi.
+Detect when the user parks near a grocery shop.
+Recognizing that a short walk or shopping interval is part of the same journey.
+Maintain session continuity when the user returns to the motorcycle.
+To minimize battery consumption and memory usage on the target device, Jarvis will use:
+A tiered wake-up sensor pipeline for efficient physical detection.
+Deterministic edge processing for extracting meaningful signal features.
+A dual-tier cloud reasoning pipeline for semantic interpretation and agentic execution.
+Strict transmission of lightweight JSON metadata instead of high-frequency raw sensor data.
+
+2. Core Problem Statement
+2.1 Hardware-Level Contextual Blindness
+Standard Android operating-system APIs provide only coarse activity classifications, such as:
+These classifications are insufficient for Jarvis because they cannot reliably distinguish between:
+Travelling in an Uber or car.
+Riding a bus.
+Riding the user’s personal motorcycle.
+Riding a different motorcycle.
+Being stationary while the device continues reporting a vehicle-related state.
+Jarvis therefore requires an additional mechanism for identifying the specific vibration and motion characteristics of the user’s Royal Enfield Hunter 350.
+
+2.2 Battery Wake-Lock Dilemma
+Continuously polling the device’s accelerometer and gyroscope at approximately 50 Hz would require frequent CPU activity and potentially persistent wake locks.
+This approach could result in:
+Excessive battery consumption.
+Increased CPU utilization.
+Device heating.
+Higher memory pressure.
+Aggressive background-app termination by Android or device-specific battery optimization.
+Degradation of the user’s normal day-to-day device experience.
+The system must therefore avoid continuous high-frequency sensor monitoring.
+
+2.3 Hardware Limitations
+The primary target device is the Poco X4 Pro 5G, powered by the Qualcomm Snapdragon 695.
+The device does not provide sufficient sustained compute and memory headroom to run local Small Language Models in the 1B–3B parameter range continuously in the background without negatively affecting:
+Application responsiveness.
+Available RAM.
+Battery life.
+Thermal performance.
+Overall, daily usability.
+For this reason, semantic reasoning and natural-language orchestration will be handled through cloud-hosted models instead of continuously running local models.
+
+3. Proposed Solution: Tiered Telemetry and Cloud Reasoning
+Jarvis will separate the system into two broad responsibilities:
+On-Device Responsibilities
+Low-power activity detection.
+Short-duration sensor sampling.
+Deterministic signal processing.
+Local state tracking.
+Event filtering and batching.
+Transmission of compact context packets.
+Cloud Responsibilities
+Conflict resolution.
+Semantic place interpretation.
+Context enrichment.
+User-intent understanding.
+Agentic planning.
+Strict function-call generation.
+Backend CRUD orchestration.
+This separation allows the mobile device to perform lightweight, deterministic operations while cloud-hosted language models handle computationally intensive semantic reasoning.
+
+3.1 Hybrid Sensor Pipeline
+The hybrid sensor pipeline uses a tiered activation model.
+Stage 1: Low-Power OS Trigger
+Jarvis remains dormant or operates in a minimal background state until Android Activity Recognition produces a relevant transition event.
+Example:
+This operating system-level event acts as the initial wake-up signal. It prevents Jarvis from continuously sampling high-frequency sensors while the user is stationary or performing unrelated activities.
+
+Stage 2: Short IMU Burst
+After receiving a relevant activity transition, the native Android application wakes and captures a strictly bounded burst of raw motion data.
+Initial Sampling Configuration
+The burst duration and sampling frequency should be configurable, so they can be tuned during field testing.
+
+Stage 3: Deterministic Edge Feature Extraction
+Instead of transmitting raw high-frequency sensor streams to the backend, the mobile application calculates compact features locally.
+Time-Domain Features
+Potential time-domain features include:
+Mean.
+Median.
+Minimum and maximum values.
+Variance.
+Standard deviation.
+Root Mean Square.
+Peak-to-peak amplitude.
+Zero-crossing rate.
+Signal magnitude area.
+Acceleration-magnitude statistics.
+Gyroscope-magnitude statistics.
+Axis-to-axis correlation.
+Jerk characteristics.
+Frequency-Domain Features
+A Fast Fourier Transform may be used to calculate:
+Dominant frequency.
+Secondary frequency peaks.
+Spectral energy.
+Spectral entropy.
+Frequency-band energy.
+Harmonic ratios.
+Peak-frequency stability.
+Accelerometer and gyroscope frequency correlation.
+These features will be evaluated against a learned or calibrated fingerprint representing the vibration profile of the user’s Royal Enfield Hunter 350.
+
+Stage 4: Local Classification
+The edge classifier produces a confidence-based result such as:
+The mobile application should transmit extracted features and classification results—not the entire raw sensor stream—unless diagnostic logging has been explicitly enabled.
+
+3.2 Stop–Shop–Return State Machine
+Jarvis must maintain journey continuity when the user temporarily leaves the motorcycle.
+A typical journey may follow this sequence:
+Rather than treating each transition as a disconnected activity, Jarvis will use a state machine and a configurable Time-To-Live window to determine whether the events belong to the same vehicle session.
+Example Scenario
+The user rides the Hunter 350.
+The user stops near a grocery shop.
+Javris detects a transition from IN_VEHICLE to WALKING.
+The user remains within or near the detected Point of Interest.
+The existing ride session is marked as paused, not completed.
+The user returns to the motorcycle within the TTL window.
+A new IMU burst matches the Hunter 350 profile.
+Javris resumes the existing vehicle session.
+Suggested Session States
+Session-Continuity Inputs
+The state machine may consider:
+Time elapsed since parking.
+Distance from the parking location.
+Activity Recognition transitions.
+GPS accuracy.
+User speed.
+Detected POI category.
+Dwell duration.
+Bluetooth/wifi-device proximity, if available.
+Hunter 350 classification confidence.
+Direction of movement relative to the parking location.
+Previous journey and location history.
+The TTL should be configurable rather than hard-coded. It may later be adapted based on POI type, historical user behavior, and classification confidence.
+The Stop–Shop–Return State Machine enables Jarvis to remember that the motorcycle journey is temporarily paused, understand what likely happened during the stop, and resume the same journey when the user returns to Hunter 350.
+
+3.3 Dual-Tier Cloud LLM Execution
+Jarvis will route compact context packets to cloud models through the OpenRouter API.
+The cloud architecture consists of two logical reasoning tiers.
+
+Tier 1: Intermediate Context Reasoner
+The Tier 1 model runs only when deterministic systems cannot confidently resolve the physical context or when semantic enrichment is required.
+Example Triggers
+GPS data conflicts with IMU classification.
+GPS accuracy is poor or drifting.
+The device reports IN_VEHICLE, but the vehicle fingerprint is weak.
+The user visits a new or ambiguous Point of Interest.
+Multiple nearby businesses could represent the destination.
+The system must determine whether the user parked, stopped at traffic, or ended a journey.
+The session-continuity state machine produces an ambiguous result.
+Tier 1 Responsibilities
+Resolve conflicting telemetry.
+Infer the most likely semantic place.
+Classify an unfamiliar Point of Interest.
+Recommend whether to pause, resume, or terminate a session.
+Produce a structured context-resolution response.
+Assign confidence and uncertainty values.
+Example Tier 1 Input
+Example Tier 1 Output
+The Tier 1 model must return schema-validated JSON rather than unrestricted prose.
+
+Tier 2: Agentic Orchestrator
+The Tier 2 model is invoked when the user issues a text command or when an authorized automation requires multi-step execution.
+Tier 2 Responsibilities
+Read the resolved physical context.
+Interpret the user’s intent.
+Retrieve relevant session and memory information.
+Select permitted backend functions.
+Emit strict function calls.
+Process function results.
+Provide a concise user-facing response.
+Example User Command
+“Remind me to buy this again the next time I come to this shop.”
+The Tier 2 orchestrator may use the resolved context to determine:
+Which shop is the user currently visiting.
+Whether the current place is sufficiently certain.
+What item “this” refers to.
+Whether a similar reminder already exists.
+Which backend CRUD operation should be executed.
+Example Function Call
+The model must not directly modify the database. It may only request operations through an allow-listed function interface that is validated and executed by the backend.
+
+3.4 Context Packet Design
+Only compact, privacy-aware metadata should be transmitted.
+A typical context packet may contain:
+Raw IMU data should remain on the device by default and should be deleted after feature extraction unless the user explicitly enables diagnostic collection.
+
+4. High-Level System Architecture
+
+5. Functional Requirements
+FR-01: Activity Transition Detection
+The mobile application shall subscribe to low-power Android Activity Recognition transitions relevant to the Javris mobility workflow.
+FR-02: Bounded IMU Sampling
+The application shall capture accelerometer and gyroscope data for a configurable, strictly bounded duration after receiving a relevant transition event.
+FR-03: Edge Feature Extraction
+The application shall calculate deterministic time-domain and frequency-domain signal features on the device.
+FR-04: Vehicle Identification
+The application shall classify whether the sampled vibration profile matches the user’s Royal Enfield Hunter 350 and returns a confidence score.
+FR-05: Lightweight Telemetry
+The application shall transmit compact JSON feature packets rather than continuous raw sensor streams.
+FR-06: Journey Session Management
+The backend shall create, pause, resume, and complete mobility sessions using a deterministic state machine.
+FR-07: Stop–Shop–Return Continuity
+The backend shall treat qualifying stop, walk, dwell, return, and vehicle-redetection events within the configured TTL as part of one continuous session.
+FR-08: Conflict Resolution
+The backend shall invoke the Tier 1 reasoner only when deterministic context cannot be resolved above a configured confidence threshold.
+FR-09: Semantic POI Resolution
+The Tier 1 reasoner shall return a structured semantic-place interpretation and confidence score.
+FR-10: User Intent Processing
+The Tier 2 orchestrator shall process text commands using the latest resolved physical context.
+FR-11: Controlled Tool Execution
+The Tier 2 orchestrator shall interact with backend services only through allow-listed, schema-validated function calls.
+FR-12: CRUD Operations
+The backend shall expose authenticated CRUD functions for supported entities such as:
+Contextual reminders.
+Tasks.
+Notes.
+Places.
+Mobility sessions.
+User preferences.
+Automation rules.
+Context events.
+FR-13: Auditability
+Every model decision and requested function call shall be logged with its input reference, output, confidence, model identifier, and execution result.
+FR-14: Offline Resilience
+If network access is unavailable, the application shall queue compact context events locally and synchronize them when connectivity is restored.
+
+6. Non-Functional Requirements
+6.1 Battery Efficiency
+High-frequency sensors must not run continuously.
+Sensor collection must be event-triggered and time-bounded.
+Network requests should be batched when practical.
+Background work must comply with Android execution limits.
+6.2 Performance
+Edge feature extraction should complete quickly after the sampling window.
+Deterministic state transitions should not depend on LLM availability.
+Tier 1 reasoning should run only for ambiguous or semantically meaningful events.
+Tier 2 reasoning should be invoked primarily for user commands or approved automations.
+6.3 Reliability
+Duplicate events shall be handled idempotently.
+Session updates shall include event identifiers and timestamps.
+Failed cloud requests shall use bounded retries.
+Invalid model responses shall not be executed.
+Model unavailability shall not corrupt session state.
+6.4 Privacy
+Raw IMU data shall remain on the device by default.
+Location data shall be transmitted only when required.
+Device identifiers shall be pseudonymous.
+Sensitive fields shall be encrypted in transit and at rest.
+Users shall be able to delete stored context and location history.
+6.5 Security
+OpenRouter credentials shall not be embedded in the mobile application.
+All model requests shall pass through the Jarvis backend.
+Function-call arguments shall be schema validated.
+Backend functions shall enforce authentication and authorization independently of the LLM.
+High-impact actions shall require explicit user approval.
+6.6 Observability
+The platform should capture:
+Activity-transition counts.
+IMU burst frequency.
+Classification confidence.
+False-positive and false-negative rates.
+Battery impact.
+GPS accuracy.
+Tier 1 invocation rate.
+Tier 2 invocation rate.
+Token usage.
+Model latency.
+API cost.
+Function-call validation failures.
+Session-resumption accuracy.
+
+7. Projected Financial and Compute Budget
+7.1 Compute Model
+All language-model reasoning will be executed through OpenRouter using economical cloud models such as:
+or an appropriate Qwen 2.5 model or any other models.
+The model identifier should be configurable so that models can be changed without requiring a mobile-app release.
+
+7.2 Data Footprint
+The application will transmit only kilobytes of structured metadata, such as:
+Extracted sensor features.
+GPS coordinates and accuracy.
+Activity transition events.
+Session state.
+POI candidates.
+Confidence scores.
+Event flags.
+Continuous raw IMU streams will not be uploaded during normal operation.
+
+7.3 Estimated Monthly API Cost
+The ₹50–₹100 estimate should be treated as an initial planning assumption. Actual cost will depend on:
+Number of active users.
+Number of Tier 1 invocations.
+Number and length of user conversations.
+Prompt and response token counts.
+Model pricing.
+Retry frequency.
+Context-window size.
+Telemetry summarization and caching strategy.
+Token usage and cost must therefore be measured during the pilot phase.
+
+8. Key Architectural Principles
+Wake on coarse context; inspect only when necessary.
+Perform deterministic signal processing on the device.
+Do not stream raw high-frequency telemetry to the cloud.
+Use a deterministic state machine for session lifecycle management.
+Use an LLM only when semantic interpretation is required.
+Keep Tier 1 and Tier 2 responsibilities separate.
+Require structured, schema-validated model outputs.
+Never allow a model to access the database directly.
+Treat confidence, uncertainty, cost, and battery usage as measurable system properties.
+Degrade gracefully when sensors, GPS, network connectivity, or cloud models are unavailable.
+
+9. Success Criteria
+The initial Javris implementation will be considered successful when it can:
+Reliably detect the start of an IN_VEHICLE activity.
+Capture a bounded IMU burst without continuous sensor monitoring.
+Distinguish the Hunter 350 from non-matching vehicle contexts with measurable accuracy.
+Maintain a single session across a stop–shop–return journey.
+Resolve ambiguous physical context using Tier 1 reasoning.
+Interpret user commands using resolved context through Tier 2.
+Generate only valid, allow-listed backend function calls.
+Operate without noticeable degradation to normal device performance.
+Stay within the target cloud operating budget.
+Provide observable logs for classification, reasoning, cost, latency, and execution outcomes.
+
+10. Proposed MVP Scope
+Included
+Android Activity Recognition integration.
+Accelerometer and gyroscope burst capture.
+On-device FFT and feature extraction.
+Hunter 350 fingerprint collection and classification.
+Basic GPS and POI integration.
+Stop–shop–return state machine.
+Backend event and session APIs.
+OpenRouter integration.
+Tier 1 structured context resolution.
+Tier 2 command orchestration.
+Allow-listed CRUD functions.
+Basic telemetry, cost tracking, and audit logs.
+Excluded from the Initial MVP
+Always-on raw sensor collection.
+Continuous local language-model execution.
+Fully autonomous high-impact actions.
+Multi-user vehicle-fingerprint sharing.
+Unrestricted model access to device functions.
+Direct LLM access to backend databases.
+Uploading raw IMU data by default.
+Complex cross-device session synchronization.
+
+11. Risks and Mitigations
+
+12. Final Architecture Decision
+Javris will use a hybrid edge-and-cloud architecture:
+Android’s low-power activity recognition provides the initial trigger.
+The native application captures a short, controlled IMU burst.
+Deterministic edge processing extracts the vehicle’s vibration characteristics.
+A state machine maintains journey and stop–shop–return continuity.
+Tier 1 cloud reasoning resolves ambiguous physical context.
+Tier 2 cloud reasoning interprets user intent and requests controlled backend operations.
+Backend services validate and execute all CRUD actions.
+Raw high-frequency sensor data remains on the device during normal operation.
+This architecture provides the best balance among contextual accuracy, battery efficiency, device limitations, privacy, operational cost, and extensibility for the Poco X4 Pro 5G target platform.
