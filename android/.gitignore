@@ -1,0 +1,12 @@
+# Android Specific Git Ignore
+.gradle/
+local.properties
+/build
+/app/build
+.cxx
+*.iml
+.idea/
+/captures/
+.externalNativeBuild
+.cxx/
+local.properties

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "898516599131",
+    "project_id": "jarvis-agent-61947",
+    "storage_bucket": "jarvis-agent-61947.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:898516599131:android:a993790ec155ebe7119a7e",
+        "android_client_info": {
+          "package_name": "com.jarvis.edge"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "898516599131-7n6t6bpndipe1cen98k9qv797dfrcf07.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.jarvis.edge",
+            "certificate_hash": "f366eb41b32280d3793ebedd4c1dbfaa1df4ea7f"
+          }
+        },
+        {
+          "client_id": "898516599131-j7uva49se68o31hn7mj4lpdcglabefik.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDvFMgahiAuVGKx68knWBaR1zZCmHnaY4g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "898516599131-j7uva49se68o31hn7mj4lpdcglabefik.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
