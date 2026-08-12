@@ -4,8 +4,8 @@ Tier 2: Agentic Command Orchestrator
 Processes user text commands using resolved physical context.
 Emits strict, allow-listed function calls. Never modifies the database directly.
 
-Uses LangChain ChatOpenAI (via OpenRouter) for automatic LangSmith tracing
-and structured Cloud Run logging.
+Uses LangChain ChatOpenAI with native structured output (.with_structured_output)
+via OpenRouter for LangGraph workflow execution, LangSmith tracing, and schema validation.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field, field_validator
 
+from ..models.enums import CRUDEntity, CRUDOperation
+from ..models.schemas import FunctionCall, Tier2Request, Tier2Response
 from ..settings import (
     OPENROUTER_API_KEY,
     OPENROUTER_BASE_URL,
@@ -25,15 +28,90 @@ from ..settings import (
     OPENROUTER_MODEL_TIER2,
     OPENROUTER_TEMPERATURE,
 )
-from ..models.enums import CRUDEntity, CRUDOperation
-from ..models.schemas import (
-    FunctionCall,
-    Tier2Request,
-    Tier2Response,
-)
 from .function_registry import ALLOWED_FUNCTIONS, FunctionRegistry
 
 logger = logging.getLogger(__name__)
+
+
+class FunctionCallItem(BaseModel):
+    """Schema for an individual function call emitted by Tier 2."""
+
+    function_name: str = Field(
+        ...,
+        description="Name of the function to execute (e.g. create_task, get_tasks, create_place, etc.)",
+    )
+    entity: CRUDEntity = Field(
+        default=CRUDEntity.EVENT,
+        description="Entity targeted by the function: TASK, NOTE, PLACE, PREFERENCE, REMINDER, EVENT, NOTIFICATION, CONTEXT_RULE",
+    )
+    operation: CRUDOperation = Field(
+        default=CRUDOperation.CREATE,
+        description="Operation to perform: CREATE, READ, UPDATE, DELETE, SEARCH, LIST, UPSERT",
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary of keyword arguments required by the function",
+    )
+
+    @field_validator("entity", mode="before")
+    @classmethod
+    def normalize_entity(cls, v: Any) -> CRUDEntity:
+        """Coerce strings to CRUDEntity enum case-insensitively."""
+        if isinstance(v, CRUDEntity):
+            return v
+        if isinstance(v, str):
+            normalized = v.strip().upper()
+            try:
+                return CRUDEntity(normalized)
+            except ValueError:
+                return CRUDEntity.EVENT
+        return CRUDEntity.EVENT
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def normalize_operation(cls, v: Any) -> CRUDOperation:
+        """Coerce strings to CRUDOperation enum case-insensitively."""
+        if isinstance(v, CRUDOperation):
+            return v
+        if isinstance(v, str):
+            normalized = v.strip().upper()
+            try:
+                return CRUDOperation(normalized)
+            except ValueError:
+                return CRUDOperation.CREATE
+        return CRUDOperation.CREATE
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def normalize_arguments(cls, v: Any) -> dict[str, Any]:
+        """Ensure arguments is a dict, decoding if passed as string."""
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {}
+
+
+class Tier2StructuredOutput(BaseModel):
+    """Schema for Tier 2 structured output."""
+
+    user_response: str = Field(
+        default="",
+        description="Helpful, conversational message back to the user.",
+    )
+    function_calls: list[FunctionCallItem] = Field(
+        default_factory=list,
+        description="List of structured function calls to perform allowed CRUD actions.",
+    )
+    reasoning: str = Field(
+        default="",
+        description="Internal reasoning regarding user intent, context, and selected tools.",
+    )
 
 
 class Tier2Orchestrator:
@@ -66,6 +144,7 @@ class Tier2Orchestrator:
                 },
             },
         )
+        self.structured_llm = self.llm.with_structured_output(Tier2StructuredOutput)
 
     def process_command(self, request: Tier2Request) -> Tier2Response:
         """Process a user command and emit function calls via OpenRouter API."""
@@ -94,8 +173,7 @@ class Tier2Orchestrator:
             if request.recent_messages:
                 for m in request.recent_messages:
                     role = m.get("role") or (
-                        "user" if m.get("type") in (
-                            "human", "user") else "assistant"
+                        "user" if m.get("type") in ("human", "user") else "assistant"
                     )
                     content = m.get("content") or ""
                     if role == "user" and content:
@@ -105,25 +183,33 @@ class Tier2Orchestrator:
 
             messages.append(HumanMessage(content=prompt))
 
-            response = self.llm.invoke(messages)
-            content = response.content
+            parsed_raw = self.structured_llm.invoke(messages)
+            if isinstance(parsed_raw, Tier2StructuredOutput):
+                parsed = parsed_raw
+            elif isinstance(parsed_raw, dict):
+                parsed = Tier2StructuredOutput.model_validate(parsed_raw)
+            else:
+                parsed = Tier2StructuredOutput.model_validate(getattr(parsed_raw, "__dict__", {}))
+
             elapsed_ms = (time.perf_counter() - start) * 1000
 
-            # Extract token usage from response metadata
-            usage = response.usage_metadata or {}
-            tokens = usage.get("total_tokens", 0)
-
-            parsed = json.loads(content)
-
-            # Parse function calls from response
+            # Convert to internal FunctionCall instances, auto-filling known schema entity/operation
             function_calls = []
-            for fc_data in parsed.get("function_calls", []):
+            for fc_item in parsed.function_calls:
+                entity = fc_item.entity
+                operation = fc_item.operation
+
+                # Auto-align with registry if function is recognized
+                if fc_item.function_name in ALLOWED_FUNCTIONS:
+                    spec = ALLOWED_FUNCTIONS[fc_item.function_name]
+                    entity = spec["entity"]
+                    operation = spec["operation"]
+
                 call = FunctionCall(
-                    function_name=fc_data.get("function_name", ""),
-                    entity=CRUDEntity(fc_data.get("entity", "EVENT")),
-                    operation=CRUDOperation(
-                        fc_data.get("operation", "CREATE")),
-                    arguments=fc_data.get("arguments", {}),
+                    function_name=fc_item.function_name,
+                    entity=entity,
+                    operation=operation,
+                    arguments=fc_item.arguments,
                 )
                 self.registry.validate(call)
                 function_calls.append(call)
@@ -132,11 +218,11 @@ class Tier2Orchestrator:
                 c.is_valid for c in function_calls) if function_calls else True
 
             result = Tier2Response(
-                user_response=parsed.get("user_response", ""),
+                user_response=parsed.user_response,
                 function_calls=function_calls,
-                reasoning=parsed.get("reasoning", ""),
+                reasoning=parsed.reasoning,
                 model_id=OPENROUTER_MODEL_TIER2,
-                tokens_used=tokens,
+                tokens_used=0,
                 latency_ms=round(elapsed_ms, 2),
                 all_calls_valid=all_valid,
             )
@@ -149,7 +235,6 @@ class Tier2Orchestrator:
                     "phase": "llm_response",
                     "user_command": request.user_command,
                     "thread_id": request.thread_id,
-                    "raw_content": content,
                     "user_response": result.user_response,
                     "function_calls": [
                         {
@@ -164,7 +249,6 @@ class Tier2Orchestrator:
                         for fc in function_calls
                     ],
                     "reasoning": result.reasoning,
-                    "tokens_used": tokens,
                     "latency_ms": round(elapsed_ms, 2),
                     "all_calls_valid": all_valid,
                     "model": OPENROUTER_MODEL_TIER2,
@@ -173,33 +257,13 @@ class Tier2Orchestrator:
 
             return result
 
-        except json.JSONDecodeError as e:
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.error(
-                "Tier 2 JSON parse error",
-                extra={
-                    "tier": "tier2",
-                    "phase": "error",
-                    "user_command": request.user_command,
-                    "thread_id": request.thread_id,
-                    "error": str(e),
-                    "raw_content": content if "content" in dir() else "N/A",
-                    "latency_ms": round(elapsed_ms, 2),
-                },
-            )
-            return Tier2Response(
-                user_response="I had trouble understanding the response. Please try again.",
-                reasoning=f"Tier 2 failed to parse LLM response as JSON: {e}",
-                model_id=OPENROUTER_MODEL_TIER2,
-                latency_ms=round(elapsed_ms, 2),
-            )
-
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.error(
+            logger.critical(
                 "Tier 2 invocation failed: %s (%s)",
                 e,
                 type(e).__name__,
+                exc_info=True,
                 extra={
                     "tier": "tier2",
                     "phase": "error",
@@ -233,19 +297,15 @@ class Tier2Orchestrator:
 You have access to these allow-listed functions ONLY:
 {func_specs}
 
-Return a JSON object with:
-{{
-  "user_response": "string — concise response to the user",
-  "function_calls": [
-    {{
-      "function_name": "string — must be from the allow-list",
-      "entity": "string — TASK|NOTE|PLACE|SESSION|PREFERENCE|AUTOMATION|EVENT",
-      "operation": "string — CREATE|READ|UPDATE|DELETE|LIST",
-      "arguments": {{...}}
-    }}
-  ],
-  "reasoning": "string — brief explanation of your interpretation and decisions"
-}}
+Output Format:
+You must return structured data conforming to:
+- user_response: A concise, friendly response to the user.
+- function_calls: A list of function call objects, each with:
+    - function_name: Name of allow-listed function
+    - entity: TASK, NOTE, PLACE, PREFERENCE, REMINDER, EVENT, NOTIFICATION, CONTEXT_RULE
+    - operation: CREATE, READ, UPDATE, DELETE, SEARCH, LIST, UPSERT
+    - arguments: Object containing keyword arguments
+- reasoning: Internal reasoning regarding intent and context.
 
 Rules:
 - You may ONLY call functions from the allow-list above.
@@ -258,8 +318,15 @@ Rules:
     Set argument `trigger_place` to the target place ("home", "work", "gym").
     Do NOT set `trigger_category` unless both activity and location were requested.
 - Use the resolved place and context provided.
+- For a follow-up such as "change my workout reminder", prefer
+  `update_reminder_by_title` or `update_note_by_title`; the caller will not
+  know internal database IDs.
+- Context rules use `trigger_type` of `GEOFENCE_ENTER`, `ACTIVITY_ENTER`, or
+  `TIME_AFTER`. Their `trigger` and `action` arguments are JSON objects.
+  Supported actions are `NOTIFY` (`title`, `body`), `APPEND_NOTE` (`note_id`
+  or `note_title`, `text`), and `UPDATE_REMINDER` (`reminder_id` or
+  `reminder_title`, `patch`).
 - Be concise in user_response.
-- Always return valid JSON.
 """
 
     def _build_prompt(self, request: Tier2Request) -> str:

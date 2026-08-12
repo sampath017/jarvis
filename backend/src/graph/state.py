@@ -64,6 +64,3 @@ class JarvisState(TypedDict, total=False):
     changed_records: list[str]
     session_id: str | None
     error: str | None
-
-    # ── Audit ────────────────────────────────────────────────────────────
-    audit_entries: list[dict[str, Any]]

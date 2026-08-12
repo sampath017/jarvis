@@ -1,7 +1,7 @@
 """
-Validate and Execute node — validate tool calls and write to Firestore.
+Validate and Execute node — validate tool calls and write to local database.
 
-Class-based node implementation for validating tool calls and writing changes to Firestore.
+Class-based node implementation for validating tool calls and executing CRUD on native SQL tables.
 Integrated with AuditLog for execution logging.
 """
 
@@ -15,13 +15,14 @@ from ..state import JarvisState
 from ...cloud.function_registry import FunctionRegistry
 from ...models.schemas import FunctionCall
 from ...models.enums import CRUDEntity, CRUDOperation
-from ...services.firestore_client import FirestoreService
-from ...backend.audit_log import AuditLog
+from ...services.database import DatabaseService
+from ...backend.audit_log import audit_from_state
+from ...backend.action_service import ActionService
 
 logger = logging.getLogger(__name__)
 
-# Map CRUDEntity to Firestore collection names
-COLLECTION_MAP = {
+# Map CRUDEntity to SQL table names
+TABLE_MAP = {
     CRUDEntity.TASK: "tasks",
     CRUDEntity.NOTE: "notes",
     CRUDEntity.PLACE: "places",
@@ -33,40 +34,59 @@ COLLECTION_MAP = {
 
 
 class ValidateAndExecuteNode:
-    """Class-based node handler to validate tool call schemas and execute on Firestore."""
+    """Class-based node handler to validate tool calls and execute CRUD on the local database."""
 
-    def __init__(self, firestore_service: FirestoreService | None = None) -> None:
-        self.firestore_service = firestore_service or FirestoreService()
+    def __init__(self, db: DatabaseService | None = None) -> None:
+        self.db = db or DatabaseService()
 
     def __call__(self, state: JarvisState) -> dict:
-        """Validate proposed function calls and execute them on Firestore."""
+        """Validate proposed function calls and execute them."""
         tool_calls = state.get("tool_calls", [])
         uid = state.get("uid", "")
         event_id = state.get("event_id", "")
+        audit = audit_from_state(state, self.db)
 
         if not tool_calls:
             return {"tool_results": [], "changed_records": []}
 
         if not uid:
+            audit.log(
+                node_name="validate_and_execute",
+                action="missing_uid",
+                category="CRUD",
+                event_id=event_id,
+                execution_result="error",
+                error_detail="Missing user ID for tool execution",
+            )
             return {"error": "Missing user ID for tool execution", "tool_results": []}
 
-        fs = self.firestore_service
-        registry = FunctionRegistry(None)  # type: ignore[arg-type]
+        executor = ActionService(self.db)
         results = []
         changed_ids = []
-        audit = AuditLog()
 
         for call_dict in tool_calls:
-            # Reconstruct FunctionCall schema
-            call = FunctionCall(
-                function_name=call_dict.get("function_name", ""),
-                entity=CRUDEntity(call_dict.get("entity")),
-                operation=CRUDOperation(call_dict.get("operation")),
-                arguments=call_dict.get("arguments", {}),
-            )
+            try:
+                call = FunctionCall(
+                    function_name=call_dict.get("function_name", ""),
+                    entity=CRUDEntity(call_dict.get("entity")),
+                    operation=CRUDOperation(call_dict.get("operation")),
+                    arguments=call_dict.get("arguments", {}),
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                function_name = str(call_dict.get("function_name", "")) if isinstance(call_dict, dict) else ""
+                results.append({"function_name": function_name, "success": False, "error": str(error)})
+                audit.log(
+                    node_name="validate_and_execute",
+                    action=f"rejected:{function_name or 'malformed'}",
+                    category="CRUD",
+                    event_id=event_id,
+                    input_summary={"call": call_dict if isinstance(call_dict, dict) else {}},
+                    execution_result="rejected",
+                    error_detail=str(error),
+                )
+                continue
 
-            # Validate call schema
-            registry.validate(call)
+            executor.registry.validate(call)
 
             if not call.is_valid:
                 logger.warning("Rejected invalid function call: %s", call.validation_error)
@@ -76,28 +96,23 @@ class ValidateAndExecuteNode:
                     "error": call.validation_error,
                 })
                 audit.log(
+                    node_name="validate_and_execute",
+                    action=f"rejected:{call.function_name}",
+                    category="CRUD",
                     event_id=event_id,
-                    component="function_registry",
-                    action=f"REJECTED: {call.function_name}",
-                    input_ref={"function": call.function_name, "args": call.arguments},
-                    output={},
+                    input_summary={
+                        "function_name": call.function_name,
+                        "entity": call.entity.value,
+                        "operation": call.operation.value,
+                        "arguments": call.arguments,
+                    },
                     execution_result="rejected",
                     error_detail=call.validation_error,
                 )
                 continue
 
-            # Execute on Firestore
-            collection = COLLECTION_MAP.get(call.entity)
-            if not collection:
-                results.append({
-                    "function_name": call.function_name,
-                    "success": False,
-                    "error": f"Unsupported entity {call.entity}",
-                })
-                continue
-
             try:
-                exec_res = _execute_firestore_op(fs, uid, collection, call)
+                exec_res = executor.execute(uid, call)
                 results.append(exec_res)
 
                 if exec_res.get("success"):
@@ -107,82 +122,98 @@ class ValidateAndExecuteNode:
                         changed_ids.append(rec_id)
 
                     audit.log(
+                        node_name="validate_and_execute",
+                        action=f"executed:{call.function_name}",
+                        category="CRUD",
                         event_id=event_id,
-                        component="function_registry",
-                        action=f"Executed: {call.function_name}",
-                        input_ref={"function": call.function_name, "args": call.arguments},
-                        output={"record_id": rec_id},
-                        execution_result="success",
+                        input_summary={
+                            "function_name": call.function_name,
+                            "entity": call.entity.value,
+                            "operation": call.operation.value,
+                            "arguments": call.arguments,
+                        },
+                        output_summary={
+                            "record_id": rec_id,
+                            "entity": call.entity.value,
+                        },
                     )
                 else:
                     audit.log(
+                        node_name="validate_and_execute",
+                        action=f"failed:{call.function_name}",
+                        category="CRUD",
                         event_id=event_id,
-                        component="function_registry",
-                        action=f"FAILED: {call.function_name}",
-                        input_ref={"function": call.function_name, "args": call.arguments},
-                        output={},
+                        input_summary={
+                            "function_name": call.function_name,
+                            "entity": call.entity.value,
+                            "operation": call.operation.value,
+                            "arguments": call.arguments,
+                        },
                         execution_result="error",
                         error_detail=exec_res.get("error"),
                     )
 
             except Exception as e:
-                logger.error("Error executing tool %s: %s", call.function_name, e)
+                logger.critical("Error executing tool %s: %s", call.function_name, e, exc_info=True)
                 results.append({
                     "function_name": call.function_name,
                     "success": False,
                     "error": str(e),
                 })
+                audit.log(
+                    node_name="validate_and_execute",
+                    action=f"exception:{call.function_name}",
+                    category="CRUD",
+                    event_id=event_id,
+                    input_summary={
+                        "function_name": call.function_name,
+                        "arguments": call.arguments,
+                    },
+                    execution_result="error",
+                    error_detail=str(e),
+                )
 
         return {
             "tool_results": results,
             "changed_records": changed_ids,
-            "audit_entries": audit.to_dicts(),
         }
 
+    def _execute_crud(self, uid: str, table: str, call: FunctionCall) -> dict[str, Any]:
+        """Execute a CRUD operation against the local database."""
+        op = call.operation
+        args = call.arguments
 
-def _execute_firestore_op(
-    fs: FirestoreService,
-    uid: str,
-    collection: str,
-    call: FunctionCall,
-) -> dict[str, Any]:
-    """Execute standard CRUD operation against Firestore collections."""
-    op = call.operation
-    args = call.arguments
-
-    if op == CRUDOperation.CREATE:
-        doc_id = str(uuid.uuid4())
-        record = fs.create_document(uid, collection, doc_id, args)
-        return {"success": True, "record": record}
-
-    elif op == CRUDOperation.READ:
-        doc_id = args.get("id", "")
-        record = fs.get_document(uid, collection, doc_id)
-        if record:
+        if op == CRUDOperation.CREATE:
+            record = self.db.crud_create(uid, table, args)
             return {"success": True, "record": record}
-        return {"success": False, "error": f"Record {doc_id} not found"}
 
-    elif op == CRUDOperation.UPDATE:
-        doc_id = args.get("id") or args.get("key")  # preferences use 'key'
-        if not doc_id:
-            return {"success": False, "error": "Missing document ID or key for update"}
-        # Strip ID from data body
-        update_data = {k: v for k, v in args.items() if k not in ("id", "key")}
-        record = fs.update_document(uid, collection, doc_id, update_data)
-        if record:
-            return {"success": True, "record": record}
-        return {"success": False, "error": f"Record {doc_id} not found"}
+        elif op == CRUDOperation.READ:
+            record_id = args.get("id", "")
+            record = self.db.crud_get(uid, table, record_id)
+            if record:
+                return {"success": True, "record": record}
+            return {"success": False, "error": f"Record {record_id} not found"}
 
-    elif op == CRUDOperation.DELETE:
-        doc_id = args.get("id", "")
-        deleted = fs.delete_document(uid, collection, doc_id)
-        return {"success": deleted, "error": None if deleted else "Not found"}
+        elif op == CRUDOperation.UPDATE:
+            record_id = args.get("id") or args.get("key")
+            if not record_id:
+                return {"success": False, "error": "Missing record ID or key for update"}
+            update_data = {k: v for k, v in args.items() if k not in ("id", "key")}
+            record = self.db.crud_update(uid, table, record_id, update_data)
+            if record:
+                return {"success": True, "record": record}
+            return {"success": False, "error": f"Record {record_id} not found"}
 
-    elif op == CRUDOperation.LIST:
-        records = fs.list_documents(uid, collection, filters=args)
-        return {"success": True, "record": {"records": records}}
+        elif op == CRUDOperation.DELETE:
+            record_id = args.get("id", "")
+            deleted = self.db.crud_delete(uid, table, record_id)
+            return {"success": deleted, "error": None if deleted else "Not found"}
 
-    return {"success": False, "error": "Unknown operation type"}
+        elif op == CRUDOperation.LIST:
+            records = self.db.crud_list(uid, table)
+            return {"success": True, "record": {"records": records}}
+
+        return {"success": False, "error": "Unknown operation type"}
 
 
 # Callable instance for graph composition

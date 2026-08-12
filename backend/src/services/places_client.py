@@ -51,7 +51,7 @@ class PlacesClient:
         an error occurs.
         """
         if not self._api_key:
-            logger.warning(
+            logger.info(
                 "Places API key not configured — skipping POI enrichment")
             return []
 

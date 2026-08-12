@@ -198,7 +198,6 @@ class SessionManager:
         return session
 
     # ── Private: Condition checks ────────────────────────────────────────
-
     def _should_start_session(
         self, activity: str, confidence: float, vehicle_hint: str,
     ) -> bool:

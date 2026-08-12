@@ -61,6 +61,9 @@ class CRUDEntity(str, Enum):
     PREFERENCE = "PREFERENCE"
     AUTOMATION = "AUTOMATION"
     EVENT = "EVENT"
+    REMINDER = "REMINDER"
+    NOTIFICATION = "NOTIFICATION"
+    CONTEXT_RULE = "CONTEXT_RULE"
 
 
 class CRUDOperation(str, Enum):

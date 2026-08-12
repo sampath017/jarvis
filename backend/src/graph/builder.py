@@ -19,7 +19,7 @@ from .nodes.intent_router import IntentRouterNode
 from .nodes.tier2_orchestrate import Tier2OrchestrateNode
 from .nodes.validate_and_execute import ValidateAndExecuteNode
 from .nodes.persist import PersistNode
-from ..services.firestore_client import FirestoreService
+from ..services.database import DatabaseService
 from ..backend.context_resolver import ContextResolver
 from ..backend.session_manager import SessionManager
 from ..cloud.tier1_reasoner import Tier1Reasoner
@@ -45,21 +45,22 @@ def build_workflow():
     workflow = StateGraph(JarvisState)
 
     # Services for dependency injection
-    fs = FirestoreService()
+    db = DatabaseService()
     resolver = ContextResolver()
     session_mgr = SessionManager()
     reasoner = Tier1Reasoner()
 
     # 1. Instantiate Object-Oriented Node Handlers with Dependency Injection
-    workflow.add_node("verify", VerifyNode())
-    workflow.add_node("load_context", LoadContextNode(firestore_service=fs))
-    workflow.add_node("context_gate", ContextGateNode(resolver=resolver))
-    workflow.add_node("session_reducer", SessionReducerNode(session_manager=session_mgr))
-    workflow.add_node("tier1_resolve", Tier1ResolveNode(reasoner=reasoner))
-    workflow.add_node("intent_router", IntentRouterNode())
-    workflow.add_node("tier2_orchestrate", Tier2OrchestrateNode())
-    workflow.add_node("validate_and_execute", ValidateAndExecuteNode(firestore_service=fs))
-    workflow.add_node("persist", PersistNode(firestore_service=fs))
+    #    All nodes receive `db` so they can write audit entries directly to SQL.
+    workflow.add_node("verify", VerifyNode(db=db))
+    workflow.add_node("load_context", LoadContextNode(db=db))
+    workflow.add_node("context_gate", ContextGateNode(resolver=resolver, db=db))
+    workflow.add_node("session_reducer", SessionReducerNode(session_manager=session_mgr, db=db))
+    workflow.add_node("tier1_resolve", Tier1ResolveNode(reasoner=reasoner, db=db))
+    workflow.add_node("intent_router", IntentRouterNode(db=db))
+    workflow.add_node("tier2_orchestrate", Tier2OrchestrateNode(db=db))
+    workflow.add_node("validate_and_execute", ValidateAndExecuteNode(db=db))
+    workflow.add_node("persist", PersistNode(db=db))
 
     # 2. Define StateGraph routing and edges
     workflow.set_entry_point("verify")

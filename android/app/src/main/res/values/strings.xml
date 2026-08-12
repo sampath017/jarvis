@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Placeholder Web Client ID for Google Sign-In. 
-         Please replace this with your actual Web Client ID from the Firebase/GCP Console. -->
-    <string name="default_web_client_id">898516599131-j7uva49se68o31hn7mj4lpdcglabefik.apps.googleusercontent.com</string>
-</resources>

@@ -10,6 +10,8 @@ import logging
 from ..state import JarvisState
 from ...cloud.tier2_orchestrator import Tier2Orchestrator
 from ...cloud.function_registry import FunctionRegistry
+from ...backend.audit_log import audit_from_state
+from ...services.database import DatabaseService
 from ...models.schemas import (
     ContextPacket,
     GPSReading,
@@ -24,9 +26,14 @@ logger = logging.getLogger(__name__)
 class Tier2OrchestrateNode:
     """Class-based node handler to orchestrate user commands into allow-listed function calls."""
 
+    def __init__(self, db: DatabaseService | None = None) -> None:
+        self.db = db
+
     def __call__(self, state: JarvisState) -> dict:
         """Orchestrate user command into function calls using Tier 2 reasoner."""
         user_command = state.get("user_command", "")
+        audit = audit_from_state(state, self.db)
+
         if not user_command:
             return {"tier2_invoked": False}
 
@@ -93,11 +100,37 @@ class Tier2OrchestrateNode:
                         if data.get("status") == "OK" and data.get("results"):
                             resolved_address = data["results"][0].get(
                                 "formatted_address")
+
+                    audit.log(
+                        node_name="tier2_orchestrate",
+                        action="geocoding",
+                        category="CONTEXT",
+                        event_id=state.get("event_id", ""),
+                        input_summary={
+                            "latitude": gps.latitude,
+                            "longitude": gps.longitude,
+                        },
+                        output_summary={
+                            "resolved_address": resolved_address,
+                        },
+                        gps_lat=gps.latitude,
+                        gps_lon=gps.longitude,
+                    )
                 except Exception as e:
-                    logger.warning(
+                    logger.info(
                         "Failed to reverse geocode GPS location with Google Maps: %s", e)
+                    audit.log(
+                        node_name="tier2_orchestrate",
+                        action="geocoding_failed",
+                        category="CONTEXT",
+                        event_id=state.get("event_id", ""),
+                        execution_result="error",
+                        error_detail=str(e),
+                        gps_lat=gps.latitude,
+                        gps_lon=gps.longitude,
+                    )
             else:
-                logger.warning(
+                logger.info(
                     "Google Places API key is placeholder or empty - skipping Google Maps Geocoding")
 
         # Build Tier 2 request
@@ -125,6 +158,37 @@ class Tier2OrchestrateNode:
             # Extract function calls
             function_calls = res_dict.get("function_calls", [])
 
+            audit.log(
+                node_name="tier2_orchestrate",
+                action="llm_orchestration",
+                category="LLM",
+                event_id=state.get("event_id", ""),
+                input_summary={
+                    "user_command": user_command,
+                    "thread_id": state.get("thread_id", ""),
+                    "resolved_place": resolved_place,
+                    "resolved_address": resolved_address,
+                    "session_status": session.status.value if session else None,
+                    "recent_message_count": len(state.get("messages", [])),
+                    "task_count": len(state.get("tasks", [])),
+                },
+                output_summary={
+                    "user_response": res.user_response,
+                    "function_call_count": len(function_calls),
+                    "function_calls": [
+                        {"name": fc.get("function_name"), "entity": fc.get("entity"), "operation": fc.get("operation")}
+                        for fc in function_calls
+                    ],
+                    "reasoning": res.reasoning,
+                    "all_calls_valid": res.all_calls_valid,
+                },
+                model_id=res.model_id,
+                tokens_used=res.tokens_used,
+                latency_ms=res.latency_ms,
+                gps_lat=gps.latitude if gps else None,
+                gps_lon=gps.longitude if gps else None,
+            )
+
             return {
                 "tier2_invoked": True,
                 "tier2_response": res_dict,
@@ -133,7 +197,20 @@ class Tier2OrchestrateNode:
             }
 
         except Exception as e:
-            logger.error("Tier 2 orchestrator failed: %s", e)
+            logger.critical("Tier 2 orchestrator failed: %s", e, exc_info=True)
+
+            audit.log(
+                node_name="tier2_orchestrate",
+                action="llm_orchestration_failed",
+                category="LLM",
+                event_id=state.get("event_id", ""),
+                execution_result="error",
+                error_detail=str(e),
+                input_summary={
+                    "user_command": user_command,
+                },
+            )
+
             return {
                 "tier2_invoked": True,
                 "tier2_response": {

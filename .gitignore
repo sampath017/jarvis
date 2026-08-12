@@ -58,3 +58,6 @@ eval_output/
 # OS files
 Thumbs.db
 .DS_Store
+
+data/
+logs/

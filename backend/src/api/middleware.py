@@ -8,11 +8,12 @@ import logging
 import time
 import uuid
 from collections import defaultdict
+from typing_extensions import override
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from .settings import settings
+from ..settings import MAX_REQUEST_SIZE_BYTES, RATE_LIMIT_PER_USER_PER_MINUTE
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +24,14 @@ _rate_limit_tracker: dict[str, list[float]] = defaultdict(list)
 class RequestLimitingMiddleware(BaseHTTPMiddleware):
     """Enforces request payload size limits and rate limiting."""
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    @override
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # 1. Enforce payload size limit
         content_length = request.headers.get("content-length")
         if content_length:
             try:
                 size = int(content_length)
-                if size > settings.max_request_size_bytes:
+                if size > MAX_REQUEST_SIZE_BYTES:
                     return JSONResponse(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         content={"detail": "Request payload too large"},
@@ -52,7 +54,7 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         """Rate limit check (sliding window)."""
         now = time.time()
         window = 60.0
-        limit = settings.rate_limit_per_user_per_minute
+        limit = RATE_LIMIT_PER_USER_PER_MINUTE
 
         # Prune stale timestamps
         timestamps = _rate_limit_tracker[key]
@@ -69,7 +71,8 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
 class StructuredLoggingMiddleware(BaseHTTPMiddleware):
     """Structured logging middleware injecting correlation IDs."""
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    @override
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         correlation_id = request.headers.get(
             "x-correlation-id") or str(uuid.uuid4())
         start_time = time.perf_counter()

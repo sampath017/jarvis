@@ -10,6 +10,8 @@ from datetime import datetime
 
 from ..state import JarvisState
 from ...backend.context_resolver import ContextResolver
+from ...backend.audit_log import audit_from_state
+from ...services.database import DatabaseService
 from ...models.schemas import ContextPacket, FeatureSummary, GPSReading, POICandidate, SessionState
 
 
@@ -43,14 +45,40 @@ def hydrate_session(session_dict: dict | None) -> SessionState | None:
 class ContextGateNode:
     """Class-based node handler to assess ambiguity on raw evidence."""
 
-    def __init__(self, resolver: ContextResolver | None = None) -> None:
+    def __init__(self, resolver: ContextResolver | None = None, db: DatabaseService | None = None) -> None:
         self.resolver = resolver or ContextResolver()
+        self.db = db
 
     def __call__(self, state: JarvisState) -> dict:
         """Assess ambiguity on raw evidence before invoking SessionManager."""
         packet = hydrate_packet(state.get("context_packet", {}))
         session = hydrate_session(state.get("session"))
         conflicts = self.resolver.detect_conflicts(packet, session)
+        audit = audit_from_state(state, self.db)
+
+        audit.log(
+            node_name="context_gate",
+            action="conflict_detection",
+            category="CONTEXT",
+            event_id=packet.event_id,
+            input_summary={
+                "activity": packet.activity,
+                "transition": packet.transition,
+                "classification_confidence": packet.classification_confidence,
+                "vehicle_class_hint": packet.vehicle_class_hint,
+                "has_gps": packet.gps is not None,
+                "session_status": session.status.value if session else None,
+            },
+            output_summary={
+                "conflicts": conflicts,
+                "needs_tier1": bool(conflicts),
+                "conflict_count": len(conflicts),
+            },
+            gps_lat=packet.gps.latitude if packet.gps else None,
+            gps_lon=packet.gps.longitude if packet.gps else None,
+            confidence=packet.classification_confidence,
+        )
+
         return {
             "conflicts": conflicts,
             "needs_tier1": bool(conflicts),

@@ -10,10 +10,15 @@ import uuid
 from datetime import datetime
 
 from ..state import JarvisState
+from ...backend.audit_log import audit_from_state
+from ...services.database import DatabaseService
 
 
 class VerifyNode:
     """Class-based node handler to validate request schema and set run metadata."""
+
+    def __init__(self, db: DatabaseService | None = None) -> None:
+        self.db = db
 
     def __call__(self, state: JarvisState) -> dict:
         """Validate the incoming request schema and set run metadata."""
@@ -47,13 +52,42 @@ class VerifyNode:
                 "timestamp": datetime.utcnow().isoformat(),
             }
 
-        return {
+        result = {
             "run_id": run_id,
             "event_id": event_id,
             "thread_id": raw.get("thread_id", "") if request_type == "USER_COMMAND" else state.get("thread_id", ""),
             "context_packet": context_packet,
             "error": None,
         }
+
+        # Audit: log the verified request
+        # Build a temporary state with run_id set so audit_from_state can use it
+        audit_state = {**state, "run_id": run_id}
+        audit = audit_from_state(audit_state, self.db)
+
+        gps_data = raw.get("location") or {}
+        audit.log(
+            node_name="verify",
+            action="request_validated",
+            category="API",
+            event_id=event_id,
+            input_summary={
+                "request_type": request_type,
+                "event_id": event_id,
+                "has_gps": bool(raw.get("location")),
+                "has_feature_summary": bool(raw.get("feature_summary")),
+                "activity": raw.get("activity", ""),
+                "user_command": raw.get("text", ""),
+            },
+            output_summary={
+                "run_id": run_id,
+                "request_type": request_type,
+            },
+            gps_lat=gps_data.get("latitude") if gps_data else None,
+            gps_lon=gps_data.get("longitude") if gps_data else None,
+        )
+
+        return result
 
 
 # Callable instance for graph composition
