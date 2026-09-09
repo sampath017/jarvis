@@ -138,8 +138,6 @@ class Tier2Orchestrator:
             request_timeout=25.0,
             extra_body={
                 "provider": {
-                    "only": ["DeepInfra", "Together", "Fireworks"],
-                    "ignore": ["Novita"],
                     "allow_fallbacks": True,
                 },
             },
@@ -181,9 +179,49 @@ class Tier2Orchestrator:
                     elif role == "assistant" and content:
                         messages.append(AIMessage(content=content))
 
+            # Current user command and context prompt
             messages.append(HumanMessage(content=prompt))
 
-            parsed_raw = self.structured_llm.invoke(messages)
+            # Models like glm, rwkv, deepseek-r1 don't support OpenAI structured output / json_schema on OpenRouter
+            # Bypassing doomed 400 calls saves 2.5-3.5 seconds on every single request
+            model_lower = OPENROUTER_MODEL_TIER2.lower()
+            supports_tool_calling = not any(k in model_lower for k in ["glm", "rwkv", "deepseek-r1"])
+
+            parsed_raw = None
+            if supports_tool_calling:
+                try:
+                    parsed_raw = self.structured_llm.invoke(messages)
+                except Exception as parse_err:
+                    logger.warning(
+                        "⚠️ [TIER2_PARSE_FALLBACK] Structured output parsing error: %s. Attempting direct parse...",
+                        parse_err,
+                    )
+
+            if parsed_raw is None:
+                raw_ai_msg = self.llm.invoke(messages)
+                content_str = (
+                    raw_ai_msg.content
+                    if isinstance(raw_ai_msg.content, str)
+                    else str(raw_ai_msg.content)
+                )
+                import re
+                json_match = re.search(r"\{[\s\S]*\}", content_str)
+                if json_match:
+                    try:
+                        parsed_raw = json.loads(json_match.group(0))
+                    except Exception:
+                        parsed_raw = {
+                            "user_response": content_str,
+                            "function_calls": [],
+                            "reasoning": "Fallback raw text",
+                        }
+                else:
+                    parsed_raw = {
+                        "user_response": content_str,
+                        "function_calls": [],
+                        "reasoning": "Fallback raw text",
+                    }
+
             if isinstance(parsed_raw, Tier2StructuredOutput):
                 parsed = parsed_raw
             elif isinstance(parsed_raw, dict):
@@ -298,14 +336,22 @@ You have access to these allow-listed functions ONLY:
 {func_specs}
 
 Output Format:
-You must return structured data conforming to:
-- user_response: A concise, friendly response to the user.
-- function_calls: A list of function call objects, each with:
-    - function_name: Name of allow-listed function
-    - entity: TASK, NOTE, PLACE, PREFERENCE, REMINDER, EVENT, NOTIFICATION, CONTEXT_RULE
-    - operation: CREATE, READ, UPDATE, DELETE, SEARCH, LIST, UPSERT
-    - arguments: Object containing keyword arguments
-- reasoning: Internal reasoning regarding intent and context.
+You MUST format your entire response as a single valid JSON markdown block:
+```json
+{{
+  "user_response": "<A concise, friendly response to the user.>",
+  "function_calls": [
+    {{
+      "function_name": "<Name of allow-listed function>",
+      "entity": "TASK" | "NOTE" | "PLACE" | "PREFERENCE" | "REMINDER" | "EVENT" | "NOTIFICATION" | "CONTEXT_RULE",
+      "operation": "CREATE" | "READ" | "UPDATE" | "DELETE" | "SEARCH" | "LIST" | "UPSERT",
+      "arguments": {{ "<arg_name>": "<arg_value>" }}
+    }}
+  ],
+  "reasoning": "<1-2 sentences reasoning regarding intent and context.>"
+}}
+```
+Do NOT include any extra conversation or explanation outside the JSON code block.
 
 Rules:
 - You may ONLY call functions from the allow-list above.
@@ -326,11 +372,36 @@ Rules:
   Supported actions are `NOTIFY` (`title`, `body`), `APPEND_NOTE` (`note_id`
   or `note_title`, `text`), and `UPDATE_REMINDER` (`reminder_id` or
   `reminder_title`, `patch`).
-- Be concise in user_response.
+- CONVERSATIONAL & QUERY RESOLUTION:
+  * When the user asks about their active reminders, notes, tasks, or riding state (e.g. "do we have any reminders", "what notes do I have", "show my reminders"):
+    Inspect the provided context sections directly and answer the user completely in `user_response`.
+    Do NOT output intermediate promises like "Let me check..." or "Checking..." — always provide the final, complete answer in `user_response` directly.
+    You do NOT need to call `list_reminders` or `list_notes` when the records are already in your prompt context.
+- Keep user_response brief, direct, and conversational (1-2 sentences max).
+- Keep reasoning succinct (1-2 sentences). Never produce runaway text.
 """
 
     def _build_prompt(self, request: Tier2Request) -> str:
         sections = [f"User Command: \"{request.user_command}\""]
+
+        if request.user_reminders:
+            rem_items = []
+            for r in request.user_reminders[:10]:
+                title = r.get("title") or r.get("body", "Reminder")
+                loc = f" at {r.get('location_name')}" if r.get("location_name") else ""
+                act = f" on {r.get('activity')}" if r.get("activity") else ""
+                rem_items.append(f"- {title}{loc}{act} [{r.get('status', 'ACTIVE')}]")
+            sections.append("User's Active Reminders:\n" + "\n".join(rem_items))
+        else:
+            sections.append("User's Active Reminders: None")
+
+        if request.user_notes:
+            note_items = [f"- {n.get('text', '')}" for n in request.user_notes[:8]]
+            sections.append("User's Recent Notes:\n" + "\n".join(note_items))
+
+        if request.user_tasks:
+            task_items = [f"- {t.get('title', '')} (Status: {t.get('status', 'PENDING')})" for t in request.user_tasks[:8]]
+            sections.append("User's Tasks:\n" + "\n".join(task_items))
 
         if request.resolved_place:
             sections.append(

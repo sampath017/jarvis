@@ -95,9 +95,53 @@ class CommandRequest(BaseModel):
         max_length=2000,
         description="User's text command",
     )
+    history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Recent conversation history turns for multi-turn grounding",
+    )
     current_context_ref: str | None = Field(
         default=None,
         description="Reference to latest context event for grounding",
+    )
+    latitude: float | None = Field(
+        default=None,
+        ge=-90.0,
+        le=90.0,
+        description="Live client GPS latitude coordinate",
+    )
+    longitude: float | None = Field(
+        default=None,
+        ge=-180.0,
+        le=180.0,
+        description="Live client GPS longitude coordinate",
+    )
+
+
+class StructuredAgentResponse(BaseModel):
+    """Structured response schema for Jarvis agent interactions."""
+
+    message: str = Field(
+        ...,
+        description=(
+            "Clean, direct, natural human response to the user. "
+            "Plain text without raw markdown asterisks (e.g. do not use **bold** or *italic* markdown syntax), "
+            "no unrendered symbols, and no raw numerical GPS coordinates. "
+            "Complete, well-formed sentence(s)."
+        ),
+    )
+    intent: str = Field(
+        default="general",
+        description=(
+            "Recognized user intent: 'location_query', 'create_reminder', 'delete_reminder', "
+            "'list_reminders', 'create_note', 'list_notes', 'save_place', 'list_places', 'greeting', 'general'"
+        ),
+    )
+    resolved_place: str | None = Field(
+        default=None,
+        description=(
+            "Specific human-readable place or landmark name if location was asked or referenced "
+            "(e.g. 'Creations Valencia', 'Siri Campus TCS', 'Navalur')."
+        ),
     )
 
 
@@ -109,6 +153,8 @@ class APIResponse(BaseModel):
     changed_records: list[str] = Field(default_factory=list)
     session_id: str | None = None
     error: str | None = None
+    intent: str | None = None
+    resolved_place: str | None = None
 
 
 # -- Location-aware personal automation -------------------------------------
@@ -319,6 +365,8 @@ class Tier2Request(BaseModel):
     resolved_address: str | None = None
     recent_messages: list[dict[str, Any]] = Field(default_factory=list)
     user_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    user_reminders: list[dict[str, Any]] = Field(default_factory=list)
+    user_notes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Tier2Response(BaseModel):

@@ -39,6 +39,8 @@ class JarvisState(TypedDict, total=False):
     # ── Firestore-loaded context ─────────────────────────────────────────
     session: dict[str, Any] | None
     tasks: list[dict[str, Any]]
+    reminders: list[dict[str, Any]]
+    notes: list[dict[str, Any]]
     messages: list[dict[str, Any]]
     preferences: list[dict[str, Any]]
 
@@ -46,14 +48,19 @@ class JarvisState(TypedDict, total=False):
     conflicts: list[str]
     needs_tier1: bool
 
-    # ── Tier 1 output ────────────────────────────────────────────────────
+    # ── Tier 1 agent loop ────────────────────────────────────────────────
     tier1_invoked: bool
     tier1_response: dict[str, Any] | None
+    tier1_messages: list[Any]
+    tier1_step_count: int
 
-    # ── Tier 2 output ────────────────────────────────────────────────────
+    # ── Tier 2 agent loop ────────────────────────────────────────────────
     tier2_invoked: bool
     tier2_response: dict[str, Any] | None
     user_command: str
+    is_greeting: bool
+    agent_messages: list[Any]
+    agent_step_count: int
 
     # ── Tool execution ───────────────────────────────────────────────────
     tool_calls: list[dict[str, Any]]
@@ -64,3 +71,5 @@ class JarvisState(TypedDict, total=False):
     changed_records: list[str]
     session_id: str | None
     error: str | None
+    intent: str | None
+    resolved_place: str | None

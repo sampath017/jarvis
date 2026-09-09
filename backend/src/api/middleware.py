@@ -24,6 +24,14 @@ _rate_limit_tracker: dict[str, list[float]] = defaultdict(list)
 class RequestLimitingMiddleware(BaseHTTPMiddleware):
     """Enforces request payload size limits and rate limiting."""
 
+    EXEMPT_PATHS = {
+        "/",
+        "/health",
+        "/notifications",
+        "/sync/pull",
+        "/sync/push",
+    }
+
     @override
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # 1. Enforce payload size limit
@@ -39,10 +47,30 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 pass
 
-        # 2. Enforce simple in-memory rate limit by client IP
-        # Note: Production deployments behind load balancers should read X-Forwarded-For
-        client_ip = request.client.host if request.client else "unknown"
-        if not self._check_rate_limit(client_ip):
+        # 2. Exempt lightweight background polling, health probes, and sync endpoints
+        path = request.url.path
+        if path in self.EXEMPT_PATHS:
+            return await call_next(request)
+
+        # 3. Enforce rate limit by real client identity (X-User-ID or X-Forwarded-For IP)
+        # Note: Behind Cloud Run / Load Balancers, request.client.host is the internal proxy IP (169.254.169.126)
+        user_id = request.headers.get("x-user-id")
+        forwarded = request.headers.get("x-forwarded-for")
+        if user_id:
+            client_key = f"user:{user_id}"
+        elif forwarded:
+            client_key = f"ip:{forwarded.split(',')[0].strip()}"
+        elif request.client:
+            client_key = f"ip:{request.client.host}"
+        else:
+            client_key = "unknown"
+
+        if not self._check_rate_limit(client_key):
+            logger.warning(
+                "Rate limit exceeded in RequestLimitingMiddleware for key: %s (path: %s)",
+                client_key,
+                path,
+            )
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={"detail": "Rate limit exceeded. Try again later."},
@@ -54,7 +82,7 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         """Rate limit check (sliding window)."""
         now = time.time()
         window = 60.0
-        limit = RATE_LIMIT_PER_USER_PER_MINUTE
+        limit = max(RATE_LIMIT_PER_USER_PER_MINUTE * 2, 60)
 
         # Prune stale timestamps
         timestamps = _rate_limit_tracker[key]

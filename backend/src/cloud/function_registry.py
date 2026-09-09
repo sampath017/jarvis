@@ -288,6 +288,15 @@ class FunctionRegistry:
         try:
             if operation == CRUDOperation.CREATE:
                 record = self._crud.create(entity, call.arguments)
+                try:
+                    from ..services.firestore_service import FirestoreService
+                    fs = FirestoreService()
+                    if entity == CRUDEntity.REMINDER:
+                        fs.save_reminder(record.get("id", ""), record)
+                    elif entity == CRUDEntity.NOTE:
+                        fs.save_note(record.get("id", ""), record)
+                except Exception as fs_err:
+                    pass
                 return {"success": True, "record": record}
 
             elif operation == CRUDOperation.READ:
@@ -302,12 +311,31 @@ class FunctionRegistry:
                 update_data = {k: v for k, v in call.arguments.items() if k != "id"}
                 record = self._crud.update(entity, record_id, update_data)
                 if record:
+                    try:
+                        from ..services.firestore_service import FirestoreService
+                        fs = FirestoreService()
+                        if entity == CRUDEntity.REMINDER:
+                            fs.save_reminder(record.get("id", ""), record)
+                        elif entity == CRUDEntity.NOTE:
+                            fs.save_note(record.get("id", ""), record)
+                    except Exception as fs_err:
+                        pass
                     return {"success": True, "record": record}
                 return {"success": False, "error": f"Record {record_id} not found"}
 
             elif operation == CRUDOperation.DELETE:
                 record_id = call.arguments.get("id", "")
                 deleted = self._crud.delete(entity, record_id)
+                if deleted:
+                    try:
+                        from ..services.firestore_service import FirestoreService
+                        fs = FirestoreService()
+                        if entity == CRUDEntity.REMINDER:
+                            fs.delete_reminder(record_id)
+                        elif entity == CRUDEntity.NOTE:
+                            fs.delete_note(record_id)
+                    except Exception as fs_err:
+                        pass
                 return {"success": deleted, "error": None if deleted else "Not found"}
 
             elif operation == CRUDOperation.LIST:

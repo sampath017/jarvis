@@ -70,6 +70,8 @@ class DatabaseService(
         return {
             "session": self.get_active_session(uid),
             "tasks": self.list_tasks(uid, limit=10),
+            "reminders": self.list_reminders(uid, status="ACTIVE", limit=10),
+            "notes": self.list_notes(uid, limit=10),
             "messages": self.get_recent_messages(uid, thread_id, limit=10) if thread_id else [],
             "preferences": self.list_preferences(uid, limit=20),
         }

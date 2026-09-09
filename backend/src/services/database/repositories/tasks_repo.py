@@ -18,18 +18,19 @@ class TasksRepositoryMixin:
     def create_task(self, uid: str, data: dict[str, Any]) -> dict[str, Any]:
         task_id = str(data.get("id") or uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        priority = data.get("priority", "medium")
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO tasks
-                   (id, uid, title, description, status, due_date, context_place, trigger_place, trigger_category, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, uid, title, description, priority, status, due_date, context_place, trigger_place, trigger_category, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     task_id, uid, data.get("title", ""), data.get("description", ""),
-                    data.get("status", "pending"), data.get("due_date"), data.get("context_place", ""),
+                    priority, data.get("status", "pending"), data.get("due_date"), data.get("context_place", ""),
                     data.get("trigger_place", ""), data.get("trigger_category", ""), now, now,
                 ),
             )
-        return {"id": task_id, "uid": uid, **data, "created_at": now, "updated_at": now}
+        return {"id": task_id, "uid": uid, **data, "priority": priority, "created_at": now, "updated_at": now}
 
     def get_task(self, uid: str, task_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -45,12 +46,12 @@ class TasksRepositoryMixin:
         fields = {**existing, **data, "updated_at": now}
         with self._conn() as conn:
             conn.execute(
-                """UPDATE tasks SET title=?, description=?, status=?, due_date=?, context_place=?,
+                """UPDATE tasks SET title=?, description=?, priority=?, status=?, due_date=?, context_place=?,
                    trigger_place=?, trigger_category=?, updated_at=?
                    WHERE id=? AND uid=?""",
                 (
-                    fields["title"], fields["description"], fields["status"],
-                    fields.get("due_date"), fields.get("context_place", ""),
+                    fields["title"], fields["description"], fields.get("priority", "medium"),
+                    fields["status"], fields.get("due_date"), fields.get("context_place", ""),
                     fields.get("trigger_place", ""), fields.get("trigger_category", ""),
                     now, task_id, uid,
                 ),

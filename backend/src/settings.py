@@ -34,11 +34,11 @@ OPENROUTER_API_KEY: str = "".join(
     os.getenv("OPENROUTER_API_KEY", "").split()).strip()
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL_TIER1: str = os.getenv(
-    "OPENROUTER_MODEL_TIER1", "qwen/qwen-2.5-7b-instruct")
+    "OPENROUTER_MODEL_TIER1", "z-ai/glm-5.3-flash")
 OPENROUTER_MODEL_TIER2: str = os.getenv(
-    "OPENROUTER_MODEL_TIER2", "qwen/qwen-2.5-72b-instruct")
-OPENROUTER_MAX_TOKENS: int = 1024
+    "OPENROUTER_MODEL_TIER2", "z-ai/glm-5.3-flash")
 OPENROUTER_TEMPERATURE: float = 0.1
+AGENT_MAX_ITERATIONS: int = int(os.getenv("JARVIS_AGENT_MAX_ITERATIONS", "50"))
 
 # ── LangSmith Observability ─────────────────────────────────────────────────
 LANGCHAIN_TRACING_V2: str = os.getenv(
@@ -75,11 +75,19 @@ VEHICLE_HIGH_CONFIDENCE_THRESHOLD: float = 0.75
 TIER1_SESSION_PROMOTION_THRESHOLD: float = 0.75
 
 # ── API Server ──────────────────────────────────────────────────────────────
-PORT = 8080
-LOG_LEVEL = "INFO"
+PORT = int(os.getenv("PORT", "8080"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 APP_CHECK_MODE = "monitor"
 
-# ── Rate Limiting ───────────────────────────────────────────────────────────
-RATE_LIMIT_PER_USER_PER_MINUTE = 30
-MAX_REQUEST_SIZE_BYTES = 65536  # 65 kilo bytes
-NOTIFICATION_SWEEP_SECONDS: float = float(os.getenv("NOTIFICATION_SWEEP_SECONDS", "30"))
+# ── Rate Limiting & Token Budget Guards (Direct Configuration — No .env Needed) ──
+# All token limits and rate guards are kept directly in settings.py (no .env required)
+RATE_LIMIT_PER_USER_PER_MINUTE: int = 15       # Max requests per minute per user
+MAX_DAILY_LLM_CALLS: int = 150                # Max LLM invocations per day
+MAX_TOKENS_PER_CALL: int = 2048               # Max output tokens per call (allows full structured JSON schemas without truncation)
+OPENROUTER_MAX_TOKENS: int = MAX_TOKENS_PER_CALL # Enforced max token generation per call in OpenRouter
+MAX_DAILY_TOKENS: int = 150_000               # Max total tokens per day (~$0.01-$0.015/day max ceiling)
+LLM_CACHE_TTL_SECONDS: int = 300              # 5-minute cache to deduplicate duplicate mobile requests
+MAX_REQUEST_SIZE_BYTES: int = 65536           # 65 KB max payload size
+NOTIFICATION_SWEEP_SECONDS: float = 30.0
+
+

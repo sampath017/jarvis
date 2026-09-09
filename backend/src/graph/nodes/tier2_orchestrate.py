@@ -145,6 +145,8 @@ class Tier2OrchestrateNode:
             resolved_address=resolved_address,
             recent_messages=state.get("messages", []),
             user_tasks=state.get("tasks", []),
+            user_reminders=state.get("reminders", []),
+            user_notes=state.get("notes", []),
         )
 
         # Instantiate orchestrator

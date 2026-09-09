@@ -91,12 +91,21 @@ class ContextAutomationService:
         self, uid: str, reminder: dict[str, Any], event: dict[str, Any], occurred_at: datetime,
         trigger: str,
     ) -> tuple[dict[str, Any], bool]:
+        body = reminder.get("body")
+        if not body or body == reminder["title"]:
+            if reminder.get("location_name"):
+                body = f"You are at {reminder['location_name']}."
+            elif reminder.get("activity"):
+                body = f"Vehicle context: {reminder['activity']}."
+            else:
+                body = reminder["title"]
+
         notification, created = self.db.create_notification(
             uid,
             {
                 "reminder_id": reminder["id"],
                 "title": reminder["title"],
-                "body": reminder.get("body") or reminder["title"],
+                "body": body,
                 "trigger_type": trigger,
                 "event_id": str(event.get("event_id", "")),
                 "payload": {

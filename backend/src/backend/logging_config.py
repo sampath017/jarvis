@@ -11,8 +11,14 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+try:
+    IST_TZ = ZoneInfo("Asia/Kolkata")
+except Exception:
+    IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 
 class ExactInfoFilter(logging.Filter):
@@ -29,9 +35,19 @@ class CriticalOnlyFilter(logging.Filter):
         return record.levelno >= logging.ERROR
 
 
-class CriticalFormatter(logging.Formatter):
+class ISTFormatter(logging.Formatter):
+    """Formats timestamps explicitly in Indian Standard Time (IST, Asia/Kolkata)."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=IST_TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%d-%m-%Y %H:%M:%S IST")
+
+
+class CriticalFormatter(ISTFormatter):
     """
-    Formatter for critical and error records.
+    Formatter for critical and error records in IST.
 
     Ensures both ERROR and CRITICAL records are displayed with [CRITICAL] prefix
     without permanently altering the shared LogRecord level for other handlers.
@@ -68,14 +84,14 @@ def configure_logging(base_dir: Path | None = None) -> None:
     """
     info_dir, critical_dir = get_log_directories(base_dir)
 
-    today_str = datetime.now().strftime("%d-%m-%Y")
+    today_str = datetime.now(IST_TZ).strftime("%d-%m-%Y")
     info_log_file = info_dir / f"info_{today_str}.log"
     critical_log_file = critical_dir / f"critical_{today_str}.log"
 
-    date_format = "%d-%m-%Y %H:%M:%S"
+    date_format = "%d-%m-%Y %H:%M:%S IST"
     log_format = "[%(levelname)s] - %(asctime)s - %(name)s: %(message)s"
 
-    standard_formatter = logging.Formatter(log_format, datefmt=date_format)
+    standard_formatter = ISTFormatter(log_format, datefmt=date_format)
     critical_formatter = CriticalFormatter(log_format, datefmt=date_format)
 
     root_logger = logging.getLogger()

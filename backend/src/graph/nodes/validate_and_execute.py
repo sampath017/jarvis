@@ -173,10 +173,40 @@ class ValidateAndExecuteNode:
                     error_detail=str(e),
                 )
 
-        return {
+        updated_response = state.get("user_response", "")
+        # If any query/list tool was executed, synthesize full answer if user_response was an intermediate promise
+        for res in results:
+            fname = res.get("function_name", "")
+            if "list_reminders" in fname and res.get("success"):
+                recs = res.get("record", {}).get("records", [])
+                if not recs:
+                    updated_response = "You don't have any active reminders right now."
+                else:
+                    lines = [f"• {r.get('title') or r.get('body', 'Reminder')}" for r in recs]
+                    updated_response = f"You have {len(recs)} active reminder(s):\n" + "\n".join(lines)
+            elif "list_notes" in fname and res.get("success"):
+                recs = res.get("record", {}).get("records", [])
+                if not recs:
+                    updated_response = "You don't have any notes saved."
+                else:
+                    lines = [f"• {n.get('text', '')}" for n in recs]
+                    updated_response = f"Here are your notes:\n" + "\n".join(lines)
+            elif "list_tasks" in fname and res.get("success"):
+                recs = res.get("record", {}).get("records", [])
+                if not recs:
+                    updated_response = "You have no pending tasks."
+                else:
+                    lines = [f"• {t.get('title', '')}" for t in recs]
+                    updated_response = f"Here are your tasks:\n" + "\n".join(lines)
+
+        ret_dict: dict[str, Any] = {
             "tool_results": results,
             "changed_records": changed_ids,
         }
+        if updated_response != state.get("user_response", ""):
+            ret_dict["user_response"] = updated_response
+
+        return ret_dict
 
     def _execute_crud(self, uid: str, table: str, call: FunctionCall) -> dict[str, Any]:
         """Execute a CRUD operation against the local database."""

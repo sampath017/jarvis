@@ -125,8 +125,6 @@ class Tier1Reasoner:
             request_timeout=25.0,
             extra_body={
                 "provider": {
-                    "only": ["DeepInfra", "Together", "Fireworks"],
-                    "ignore": ["Novita"],
                     "allow_fallbacks": True,
                 },
             },

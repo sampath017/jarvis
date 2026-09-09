@@ -20,6 +20,7 @@ class NotesRepositoryMixin:
         note_id = data.get("id", str(uuid.uuid4()))
         now = datetime.now(timezone.utc).isoformat()
         tags = data.get("tags", [])
+        content = data.get("content") or data.get("text", "")
         if not isinstance(tags, str):
             tags = json.dumps(tags)
         with self._conn() as conn:
@@ -28,11 +29,11 @@ class NotesRepositoryMixin:
                    (id, uid, title, content, place, category, tags, created_at, updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
-                    note_id, uid, data.get("title", ""), data.get("content", ""),
+                    note_id, uid, data.get("title", ""), content,
                     data.get("place", ""), data.get("category", ""), tags, now, now,
                 ),
             )
-        return {"id": note_id, "uid": uid, **data, "created_at": now, "updated_at": now}
+        return {"id": note_id, "uid": uid, **data, "content": content, "created_at": now, "updated_at": now}
 
     def get_note(self, uid: str, note_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:

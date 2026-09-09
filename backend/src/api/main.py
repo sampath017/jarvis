@@ -27,14 +27,14 @@ try:
     from ..services.database import get_db_path, init_database
     from ..settings import LOG_LEVEL, NOTIFICATION_SWEEP_SECONDS, PORT
     from .middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
-    from .routers import automation, commands, context_events
+    from .routers import automation, commands, context_events, sync
 except (ImportError, ValueError):
     from src.backend.context_automation import ContextAutomationService
     from src.backend.logging_config import configure_logging
     from src.services.database import get_db_path, init_database
     from src.settings import LOG_LEVEL, NOTIFICATION_SWEEP_SECONDS, PORT
     from src.api.middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
-    from src.api.routers import automation, commands, context_events
+    from src.api.routers import automation, commands, context_events, sync
 
 
 configure_logging()
@@ -44,8 +44,48 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    logger.info("Starting up: initializing local SQLite database")
     init_database()
+
+    # Prominent Cloud Run application startup banner
+    fs_status = "OFFLINE"
+    try:
+        from ..services.firestore_service import FirestoreService
+        if FirestoreService().is_available:
+            fs_status = "ONLINE (jarvis-agent-61947)"
+    except Exception:
+        try:
+            from src.services.firestore_service import FirestoreService
+            if FirestoreService().is_available:
+                fs_status = "ONLINE (jarvis-agent-61947)"
+        except Exception:
+            pass
+
+    try:
+        from ..settings import (
+            MAX_DAILY_TOKENS,
+            MAX_TOKENS_PER_CALL,
+            OPENROUTER_MODEL_TIER1,
+            OPENROUTER_MODEL_TIER2,
+            RATE_LIMIT_PER_USER_PER_MINUTE,
+        )
+    except (ImportError, ValueError):
+        from src.settings import (
+            MAX_DAILY_TOKENS,
+            MAX_TOKENS_PER_CALL,
+            OPENROUTER_MODEL_TIER1,
+            OPENROUTER_MODEL_TIER2,
+            RATE_LIMIT_PER_USER_PER_MINUTE,
+        )
+
+    logger.info("=" * 72)
+    logger.info("🚀 [APP_STARTUP] Jarvis Context-Aware Agent API Started Successfully")
+    logger.info("• Service: jarvis-backend | Port: %d | Cloud Run (asia-south1)", PORT)
+    logger.info("• LLM Tier 1: %s", OPENROUTER_MODEL_TIER1)
+    logger.info("• LLM Tier 2: %s", OPENROUTER_MODEL_TIER2)
+    logger.info("• Firestore Sync: %s", fs_status)
+    logger.info("• Token Limits: %d req/min | %d max tokens/call | %d daily token cap", RATE_LIMIT_PER_USER_PER_MINUTE, MAX_TOKENS_PER_CALL, MAX_DAILY_TOKENS)
+    logger.info("=" * 72)
+
     stop_sweeper = asyncio.Event()
     sweeper = asyncio.create_task(_notification_sweeper(stop_sweeper))
     try:
@@ -79,11 +119,17 @@ async def health_check(response: Response) -> dict[str, object]:
     database connectivity. Returns HTTP 200 when healthy, or HTTP 503 if any
     critical dependency fails.
     """
+    try:
+        from ..backend.logging_config import IST_TZ
+    except (ImportError, ValueError):
+        from src.backend.logging_config import IST_TZ
+
     health_status: dict[str, object] = {
         "status": "healthy",
         "service": "jarvis-local-api",
         "mode": "local",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(IST_TZ).isoformat(),
+        "timezone": "IST (Asia/Kolkata)",
         "database": {"status": "healthy"},
     }
 
@@ -129,6 +175,7 @@ def create_app() -> FastAPI:
     app.include_router(context_events.router)
     app.include_router(commands.router)
     app.include_router(automation.router)
+    app.include_router(sync.router)
 
     # 3. Liveness/Readiness probes and Root landing
     app.add_api_route(

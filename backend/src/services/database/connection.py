@@ -19,6 +19,12 @@ _initialized_dbs: set[Path] = set()
 
 def get_db_path() -> Path:
     """Return the absolute path to the local SQLite database file."""
+    import os
+    env_path = os.getenv("JARVIS_LOCAL_DB_PATH")
+    if env_path:
+        p = Path(env_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     global _db_path
     if _db_path is None:
         p = Path(LOCAL_DB_PATH)
@@ -40,6 +46,18 @@ def init_database(db_path: Path | str | None = None, force: bool = False) -> Non
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(SCHEMA_SQL)
+
+        # Safe non-breaking column migrations for existing sqlite databases
+        for alter_stmt in [
+            "ALTER TABLE places ADD COLUMN notes TEXT DEFAULT ''",
+            "ALTER TABLE places ADD COLUMN tags TEXT DEFAULT '[]'",
+            "ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'medium'",
+        ]:
+            try:
+                conn.execute(alter_stmt)
+            except sqlite3.OperationalError:
+                pass
+
         conn.commit()
         _initialized_dbs.add(db_file)
     finally:

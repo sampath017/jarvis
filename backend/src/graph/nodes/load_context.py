@@ -23,7 +23,7 @@ class LoadContextNode:
     def __call__(self, state: JarvisState) -> dict:
         """Load scoped context from local database for the verified user."""
         uid = state.get("uid", "")
-        thread_id = state.get("thread_id")
+        thread_id = state.get("thread_id") or state.get("raw_request", {}).get("thread_id")
         audit = audit_from_state(state, self.db)
 
         if not uid:
@@ -47,24 +47,37 @@ class LoadContextNode:
                 logger.info("Optional latest GPS fetch skipped: %s", e)
 
             # Merge latest GPS and nearby POIs into the context packet
-            packet = state.get("context_packet", {})
-            if latest_gps and packet:
-                if not packet.get("gps"):
+            packet = dict(state.get("context_packet") or {})
+            raw_req = state.get("raw_request") or {}
+
+            gps_info = packet.get("gps")
+            if not gps_info:
+                if raw_req.get("latitude") is not None and raw_req.get("longitude") is not None:
+                    gps_info = {
+                        "latitude": raw_req["latitude"],
+                        "longitude": raw_req["longitude"],
+                        "accuracy_m": 10.0,
+                    }
+                    packet["gps"] = gps_info
+                elif latest_gps:
+                    gps_info = latest_gps
                     packet["gps"] = latest_gps
 
-                if not packet.get("nearby_pois"):
-                    try:
-                        from ...services.places_client import PlacesClient
-                        client = PlacesClient()
-                        pois = client.search_nearby(
-                            latitude=latest_gps["latitude"],
-                            longitude=latest_gps["longitude"],
-                            uid=uid
-                        )
-                        if pois:
-                            packet["nearby_pois"] = [p.model_dump() for p in pois]
-                    except Exception as pe:
-                        logger.info("Optional nearby POI search skipped: %s", pe)
+            if gps_info and not packet.get("nearby_pois"):
+                try:
+                    from ...services.places_client import PlacesClient
+                    client = PlacesClient()
+                    pois = client.search_nearby(
+                        latitude=gps_info["latitude"],
+                        longitude=gps_info["longitude"],
+                        radius_m=250.0,
+                        uid=uid,
+                        max_results=5,
+                    )
+                    if pois:
+                        packet["nearby_pois"] = [p.model_dump() for p in pois]
+                except Exception as pe:
+                    logger.info("Optional nearby POI search skipped: %s", pe)
 
             # Audit: log context loaded
             session = context.get("session")
@@ -91,10 +104,16 @@ class LoadContextNode:
                 gps_lon=gps.get("longitude") if isinstance(gps, dict) else None,
             )
 
+            client_history = state.get("raw_request", {}).get("history", [])
+            messages = client_history if client_history else context.get("messages", [])
+
             return {
+                "thread_id": thread_id,
                 "session": context.get("session"),
                 "tasks": context.get("tasks", []),
-                "messages": context.get("messages", []),
+                "reminders": context.get("reminders", []),
+                "notes": context.get("notes", []),
+                "messages": messages,
                 "preferences": context.get("preferences", []),
                 "context_packet": packet,
             }

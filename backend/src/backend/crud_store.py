@@ -8,8 +8,14 @@ Only accessible through the function registry — never directly by an LLM.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
+
+try:
+    IST_TZ = ZoneInfo("Asia/Kolkata")
+except Exception:
+    IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 from ..models.enums import CRUDEntity
 
@@ -31,8 +37,8 @@ class CRUDStore:
         record_id = str(uuid.uuid4())
         record = {
             "id": record_id,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
+            "created_at": datetime.now(IST_TZ).isoformat(),
+            "updated_at": datetime.now(IST_TZ).isoformat(),
             **data,
         }
         self._stores[entity][record_id] = record
@@ -50,7 +56,7 @@ class CRUDStore:
             return None
         record = self._stores[entity][record_id]
         record.update(data)
-        record["updated_at"] = datetime.now().isoformat()
+        record["updated_at"] = datetime.now(IST_TZ).isoformat()
         return record
 
     def delete(self, entity: CRUDEntity, record_id: str) -> bool:

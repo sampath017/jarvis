@@ -17,6 +17,7 @@ from ...models.schemas import APIResponse, ContextEventRequest
 from ...backend.context_automation import ContextAutomationService
 from ..auth import get_current_user
 from ..dependencies import get_workflow
+from ..rate_limiter import TokenBudgetGuard
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["context-events"])
@@ -34,12 +35,21 @@ async def ingest_context_event(
 ) -> APIResponse:
     """
     Ingest a contextual event (activity transition, feature vector, location).
-
-    Triggers the LangGraph workflow to update the session state machine and resolve
-    contextual conflicts.
+    Guarded by TokenBudgetGuard against rapid duplicate telemetry spikes.
     """
-    logger.info("Received context event: event_id=%s uid=%s",
-                request.event_id, uid)
+    TokenBudgetGuard().check_request_rate(uid)
+
+    logger.info(
+        "📡 [EVENT_START] Ingested context event | ID: %s | User: %s | Type: %s | Activity: %s",
+        request.event_id,
+        uid,
+        request.event_type,
+        request.detected_activity,
+    )
+    if request.event_type == "SESSION_START":
+        logger.info("🏍️ [SESSION_START] Riding journey initiated | Session: %s | User: %s", request.session_id, uid)
+    elif request.event_type in ("SESSION_END", "SESSION_STOP"):
+        logger.info("🏁 [SESSION_END] Riding journey concluded | Session: %s | User: %s", request.session_id, uid)
 
     initial_state = {
         "uid": uid,
@@ -59,6 +69,13 @@ async def ingest_context_event(
 
         status_str = "error" if result.get("error") else "ok"
         error_msg = result.get("error")
+
+        logger.info(
+            "📡 [EVENT_PROCESSED] ID: %s | Status: %s | Triggered Actions: %s",
+            request.event_id,
+            status_str,
+            automation_changes,
+        )
 
         return APIResponse(
             run_id=result.get("run_id", ""),

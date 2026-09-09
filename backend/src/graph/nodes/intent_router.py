@@ -43,26 +43,29 @@ class IntentRouterNode:
         # Extract thread ID
         thread_id = raw.get("thread_id", "")
 
-        logger.info("Routing user command: thread_id=%s command=%s", thread_id, command_text[:50])
-
-        audit.log(
-            node_name="intent_router",
-            action="command_routed",
-            category="API",
-            event_id=state.get("event_id", ""),
-            input_summary={
+        # Fast heuristic check for simple greetings / pleasantries (<10ms)
+        import re
+        cleaned = re.sub(r"[^\w\s]", "", command_text.lower()).strip()
+        cleaned_no_jarvis = re.sub(r"\bjarvis\b", "", cleaned).strip()
+        GREETINGS = {
+            "hi", "hello", "hey", "hiya", "howdy", "sup", "yo",
+            "good morning", "good afternoon", "good evening", "namaste",
+            "who are you", "what can you do", "help",
+        }
+        if cleaned in GREETINGS or cleaned_no_jarvis in GREETINGS:
+            logger.info("Fast-path greeting matched: '%s'", cleaned)
+            return {
                 "user_command": command_text,
                 "thread_id": thread_id,
-            },
-            output_summary={
-                "tier2_invoked": True,
-                "command_length": len(command_text),
-            },
-        )
+                "user_response": "Hello! Jarvis here. How can I help you today?",
+                "is_greeting": True,
+                "tier2_invoked": False,
+            }
 
         return {
             "user_command": command_text,
             "thread_id": thread_id,
+            "is_greeting": False,
             "tier2_invoked": True,
         }
 
