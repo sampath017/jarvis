@@ -44,7 +44,7 @@ async def ingest_context_event(
         request.event_id,
         uid,
         request.event_type,
-        request.detected_activity,
+        request.activity,
     )
     if request.event_type == "SESSION_START":
         logger.info("🏍️ [SESSION_START] Riding journey initiated | Session: %s | User: %s", request.session_id, uid)
@@ -57,15 +57,31 @@ async def ingest_context_event(
         "raw_request": request.model_dump(mode="json"),
     }
 
+    # Event types eligible for user-facing automation (reminder/notification eval).
+    # Internal telemetry events (BOUNDED_IMU_BURST, TELEMETRY_PIPELINE_CHECK)
+    # are excluded so that riding-burst data never surfaces as notifications.
+    _AUTOMATION_ELIGIBLE_EVENTS = {
+        "ACTIVITY_ENTER", "ACTIVITY_EXIT",
+        "SESSION_START", "SESSION_END", "SESSION_STOP",
+        "GEOFENCE_ENTER", "GEOFENCE_EXIT",
+    }
+
     try:
         result = workflow.invoke(initial_state)
 
         # Context-triggered actions are deliberately deterministic and run only
         # after the event has been persisted. They create durable notification
         # outbox records that the Android client can fetch and display.
-        automation_changes = ContextAutomationService().process_context_event(
-            uid, request.model_dump(mode="json"),
-        )
+        # Only genuine activity transitions are eligible — internal telemetry
+        # bursts (e.g. 10s IMU burst while riding) must not create notifications.
+        event_data = request.model_dump(mode="json")
+        event_type = str(event_data.get("event_type") or event_data.get("transition") or "").upper()
+        if event_type in _AUTOMATION_ELIGIBLE_EVENTS:
+            automation_changes = ContextAutomationService().process_context_event(
+                uid, event_data,
+            )
+        else:
+            automation_changes = []
 
         status_str = "error" if result.get("error") else "ok"
         error_msg = result.get("error")

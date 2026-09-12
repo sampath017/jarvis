@@ -8,11 +8,15 @@ without giving an LLM direct access to device notification APIs.
 
 from __future__ import annotations
 
+import logging
 import math
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from ..services.database import DatabaseService
+
+logger = logging.getLogger(__name__)
 
 
 class ContextAutomationService:
@@ -46,7 +50,10 @@ class ContextAutomationService:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         changed_ids: list[str] = []
         for reminder in self.db.list_due_reminders(current.isoformat()):
-            event = {"event_id": f"due:{reminder['id']}:{reminder['due_at']}", "occurred_at": current.isoformat()}
+            due_at_val = (reminder.get("due_at") or "").strip()
+            if not due_at_val:
+                continue
+            event = {"event_id": f"due:{reminder['id']}:{due_at_val}", "occurred_at": current.isoformat()}
             notification, created = self._fire_reminder(uid=reminder["uid"], reminder=reminder, event=event, occurred_at=current, trigger="TIME_DUE")
             if created:
                 changed_ids.append(notification["id"])
@@ -65,6 +72,18 @@ class ContextAutomationService:
         has_due = bool(reminder.get("due_at"))
         if not (has_location or has_activity or has_due):
             return None
+
+        # Cooldown: skip reminders created less than 5 seconds before the event.
+        # Prevents activity-triggered reminders from firing on the same request
+        # cycle that created them (e.g. "remind me when walking" while walking).
+        created_at_raw = reminder.get("created_at")
+        if created_at_raw:
+            try:
+                created_dt = _parse_time(str(created_at_raw))
+                if (occurred_at - created_dt).total_seconds() < 5.0:
+                    return None
+            except Exception:
+                pass
 
         if has_location and not self._geofence_entered(uid, "REMINDER", reminder["id"], reminder, event, occurred_at):
             return None
@@ -120,6 +139,22 @@ class ContextAutomationService:
             if reminder.get("one_shot", True):
                 patch["status"] = "COMPLETED"
             self.db.update_reminder(uid, reminder["id"], patch)
+
+            # Sibling auto-completion: If this one-shot reminder fired, also complete any other
+            # active reminders for this user with the same normalized title (e.g. alternative travel
+            # modes created for the same task) so the user is not spammed with duplicate alerts.
+            if reminder.get("one_shot", True):
+                rem_title = str(reminder.get("title", "")).strip().lower()
+                if rem_title:
+                    for other in self.db.list_reminders(uid, status="ACTIVE"):
+                        if other["id"] != reminder["id"] and str(other.get("title", "")).strip().lower() == rem_title:
+                            self.db.update_reminder(
+                                uid, other["id"], {"status": "COMPLETED", "last_fired_at": occurred_at.isoformat()}
+                            )
+            logger.info(
+                "🔔 [REMINDER_FIRED] Reminder triggered | ID: %s | Title: %s | Trigger: %s",
+                reminder["id"], reminder["title"], trigger,
+            )
         return notification, created
 
     def _rule_matches(
@@ -236,10 +271,18 @@ def _parse_time(value: str) -> datetime:
 
 
 def _activity_entered(event: dict[str, Any], expected: str) -> bool:
-    return (
-        str(event.get("transition", "ENTER")).upper() == "ENTER"
-        and str(event.get("activity", "")).upper() == expected.upper()
-    )
+    transition = str(event.get("transition", "ENTER")).upper()
+    if transition != "ENTER":
+        return False
+    event_act = str(event.get("activity", "")).upper()
+    if not event_act:
+        return False
+    expected_acts = [
+        act.strip().upper()
+        for act in re.split(r"[,/|]|(?:\bor\b)", expected, flags=re.IGNORECASE)
+        if act.strip()
+    ]
+    return event_act in expected_acts or any(act in event_act for act in expected_acts)
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

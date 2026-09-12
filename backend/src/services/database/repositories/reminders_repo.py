@@ -18,6 +18,11 @@ class RemindersRepositoryMixin:
     def create_reminder(self, uid: str, data: dict[str, Any]) -> dict[str, Any]:
         reminder_id = data.get("id", str(uuid.uuid4()))
         now = datetime.now(timezone.utc).isoformat()
+        due_at = data.get("due_at")
+        if due_at is not None and not str(due_at).strip():
+            due_at = None
+        created_at = data.get("created_at") or now
+        updated_at = data.get("updated_at") or now
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO reminders
@@ -26,13 +31,13 @@ class RemindersRepositoryMixin:
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     reminder_id, uid, data["title"], data.get("body", ""),
-                    data.get("due_at"), data.get("location_name"), data.get("latitude"),
+                    due_at, data.get("location_name"), data.get("latitude"),
                     data.get("longitude"), data.get("radius_m", 100.0),
                     data.get("activity"), data.get("status", "ACTIVE"),
-                    int(data.get("one_shot", True)), data.get("last_fired_at"), now, now,
+                    int(data.get("one_shot", True)), data.get("last_fired_at"), created_at, updated_at,
                 ),
             )
-        return {"id": reminder_id, "uid": uid, **data, "created_at": now, "updated_at": now}
+        return {"id": reminder_id, "uid": uid, **data, "due_at": due_at, "created_at": created_at, "updated_at": updated_at}
 
     def get_reminder(self, uid: str, reminder_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -46,6 +51,10 @@ class RemindersRepositoryMixin:
         if not existing:
             return None
         fields = {**existing, **data}
+        due_at = fields.get("due_at")
+        if due_at is not None and not str(due_at).strip():
+            due_at = None
+        fields["due_at"] = due_at
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
@@ -53,7 +62,7 @@ class RemindersRepositoryMixin:
                    longitude=?, radius_m=?, activity=?, status=?, one_shot=?, last_fired_at=?,
                    updated_at=? WHERE id=? AND uid=?""",
                 (
-                    fields["title"], fields.get("body", ""), fields.get("due_at"),
+                    fields["title"], fields.get("body", ""), due_at,
                     fields.get("location_name"), fields.get("latitude"), fields.get("longitude"),
                     fields.get("radius_m", 100.0), fields.get("activity"),
                     fields.get("status", "ACTIVE"), int(fields.get("one_shot", True)),
@@ -98,7 +107,7 @@ class RemindersRepositoryMixin:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT * FROM reminders
-                   WHERE status = 'ACTIVE' AND due_at IS NOT NULL AND due_at <= ?
+                   WHERE status = 'ACTIVE' AND due_at IS NOT NULL AND trim(due_at) != '' AND due_at <= ?
                      AND last_fired_at IS NULL""",
                 (now,),
             ).fetchall()

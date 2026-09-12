@@ -56,17 +56,23 @@ class ContextEventRequest(BaseModel):
         default_factory=lambda: str(uuid.uuid4()),
         description="Client-generated UUID for idempotency",
     )
+    event_type: str = Field(
+        default="ACTIVITY_TRANSITION",
+        description="Type of context event: BOUNDED_IMU_BURST, ACTIVITY_ENTER, TELEMETRY_PIPELINE_CHECK, etc.",
+    )
     occurred_at: datetime = Field(
+        default_factory=datetime.utcnow,
         description="UTC timestamp when the event occurred on device",
     )
     activity: str = Field(
+        default="UNKNOWN",
         description="Activity type: STILL, WALKING, IN_VEHICLE, etc.",
     )
     transition: str = Field(
         default="ENTER",
         description="Transition type: ENTER or EXIT",
     )
-    feature_summary: FeatureSummary | None = Field(
+    feature_summary: Any | None = Field(
         default=None,
         description="Compact feature vector from edge IMU processing",
     )
@@ -74,10 +80,39 @@ class ContextEventRequest(BaseModel):
         default=None,
         description="GPS location reading, included only when relevant",
     )
+    session_id: str | None = Field(
+        default=None,
+        description="Session ID for riding/movement sessions",
+    )
     session_hint: str | None = Field(
         default=None,
         description="Client-side session ID hint for continuity",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_payload(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Fallback timestamp -> occurred_at
+            if "occurred_at" not in data and "timestamp" in data:
+                data["occurred_at"] = data["timestamp"]
+            # Fallback journey_gps -> location
+            if "location" not in data and "journey_gps" in data and isinstance(data["journey_gps"], dict):
+                jg = data["journey_gps"]
+                lat = jg.get("current_latitude") or (jg.get("end_location") or {}).get("latitude")
+                lon = jg.get("current_longitude") or (jg.get("end_location") or {}).get("longitude")
+                if lat is not None and lon is not None:
+                    data["location"] = {"latitude": float(lat), "longitude": float(lon)}
+            # Fallback activity from transitionState / transition
+            if "activity" not in data or not data["activity"]:
+                trans = str(data.get("transition", "")).upper()
+                for act in ("IN_VEHICLE", "WALKING", "ON_BICYCLE", "RUNNING", "STILL"):
+                    if act in trans:
+                        data["activity"] = act
+                        break
+                if "activity" not in data or not data["activity"]:
+                    data["activity"] = "UNKNOWN"
+        return data
 
 
 class CommandRequest(BaseModel):

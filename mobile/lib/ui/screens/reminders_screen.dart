@@ -29,6 +29,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
   List<Map<String, dynamic>> _places = [];
   bool _isLoading = false;
   Timer? _timeReminderTimer;
+  DateTime? _lastContextPipelineCall;
 
   @override
   void initState() {
@@ -101,13 +102,17 @@ class _RemindersScreenState extends State<RemindersScreen> {
         speedKmh: widget.sensorService.speedKmh,
       );
 
-      // Also forward context event to cloud if online
+      // Also forward context event to cloud if online (throttled to at most once per 30 seconds)
       if (_apiService.isOnline) {
-        _apiService.evaluateAndTriggerContextPipeline(
-          latitude: widget.sensorService.lat,
-          longitude: widget.sensorService.lon,
-          activity: widget.sensorService.lastActivityTransition,
-        );
+        final now = DateTime.now();
+        if (_lastContextPipelineCall == null || now.difference(_lastContextPipelineCall!).inSeconds >= 30) {
+          _lastContextPipelineCall = now;
+          _apiService.evaluateAndTriggerContextPipeline(
+            latitude: widget.sensorService.lat,
+            longitude: widget.sensorService.lon,
+            activity: widget.sensorService.lastActivityTransition,
+          );
+        }
       }
     }
   }
@@ -173,12 +178,16 @@ class _RemindersScreenState extends State<RemindersScreen> {
             DateTime.tryParse(r['updated_at']?.toString() ?? '');
 
         // Freshness check: The activity transition MUST occur AFTER the reminder was created
-        final isFreshTransition = (createdAt == null || activityTransitionTime.isAfter(createdAt)) &&
+        final isFreshTransition = (createdAt == null || activityTransitionTime.isAfter(createdAt.subtract(const Duration(seconds: 10)))) &&
             DateTime.now().difference(activityTransitionTime).inMinutes < 5;
 
-        final matchesActivity = activity.toUpperCase().contains(rAct);
+        // Support comma/pipe/slash-separated activities (e.g. 'WALKING, IN_VEHICLE')
+        final expectedList = rAct.split(RegExp(r'[,/|]|(?:\bor\b)')).map((s) => s.trim().toUpperCase()).where((s) => s.isNotEmpty).toList();
+        final upperActivity = activity.toUpperCase();
+        final matchesActivity = expectedList.any((exp) => upperActivity.contains(exp) || exp.contains(upperActivity));
+
         // For walking, verify movement speed > 0.8 km/h or a fresh transition event
-        final isMoving = rAct == 'WALKING' ? (speedKmh > 0.8 || isFreshTransition) : true;
+        final isMoving = (expectedList.contains('WALKING') && expectedList.length == 1) ? (speedKmh > 0.8 || isFreshTransition) : true;
 
         if (isFreshTransition && matchesActivity && isMoving) {
           activityMatched = true;
@@ -202,13 +211,25 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
         // Post system tray notification directly to Android notification drawer
         _apiService.showSystemNotification(
-          id: id.hashCode,
+          id: title.toString().trim().toLowerCase().hashCode,
           title: 'Jarvis Reminder: $title',
           content: 'Triggered near $loc (Offline Edge Match)',
         );
 
         // Mark as triggered in local SQLite and push to cloud sync queue
         _localDb.updateReminderStatus(id, 'TRIGGERED', markPending: true);
+
+        // Sibling auto-completion: Also mark any other active reminders with the same title as triggered
+        final normTitle = title.toString().trim().toLowerCase();
+        for (final other in _reminders) {
+          final otherId = other['id']?.toString() ?? '';
+          final otherTitle = (other['title'] ?? other['body'] ?? '').toString().trim().toLowerCase();
+          final otherStatus = (other['status'] ?? 'ACTIVE').toString().toUpperCase();
+          if (otherId.isNotEmpty && otherId != id && otherTitle == normTitle && otherStatus == 'ACTIVE') {
+            _localDb.updateReminderStatus(otherId, 'TRIGGERED', markPending: true);
+          }
+        }
+
         _syncService.syncNow();
       }
     }

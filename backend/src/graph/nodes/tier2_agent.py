@@ -86,20 +86,18 @@ list, update, delete, search — as available per tool). Use the ReAct pattern:
    or pass a relative duration string like 'in 29 seconds'.
 9. Chat History Protection: You do NOT have the ability or permission to delete
    chat conversations or chat history. If the user asks to delete chats, chat history,
-   or chat sessions, politely inform them that chat history cannot be deleted via chat,
    and must be managed directly by them in the mobile app UI drawer.
-10. Location Queries & Landmarks: When the user asks 'where am I', 'what is my current location',
-    asks for place names or landmarks, or inquires about their location:
-    - Describe their location using natural real-world place names, specific building/apartment
-      or business names (from Google Places landmarks), neighbourhood, and nearby saved places.
-    - If Google Places landmarks are provided (e.g. Creations Valencia, Indus Anantya Apartments),
-      state them clearly as the immediate landmark or building.
-    - If they are near one of their saved places (e.g. Siri Campus TCS, Home), explicitly mention that.
-    - You also have the `search_nearby_places` tool to search Google Places for nearby landmarks,
-      shops, restaurants, or specific building names at any time.
-    - CRITICAL: NEVER output raw latitude/longitude coordinates to the user unless they
-      specifically ask for 'coordinates' or 'raw GPS'. Always communicate in natural human terms
-      with real place names, building names, landmarks, and neighbourhood areas.
+10. Location Awareness, Queries & Landmarks:
+    - You are deeply location-aware across all user questions, queries, and reminder creations.
+    - When the user asks questions referring to 'here', 'around me', 'nearby', 'this area', or asks 'where am I' / 'what is my location':
+      - If the user is at or inside a saved place (e.g. Home, Creations Valencia, Siri Campus TCS), ALWAYS state clearly that they are at their saved place (e.g. "You are at Home at Creations Valencia in Navallur")!
+      - Recognize physical building footprints: if an apartment complex, residential building, or workplace is marked "CURRENT BUILDING / PREMISE" or within ~65m, the user is physically INSIDE that building/complex, NOT "50m away". Never tell someone their own building is 50m away when they are inside it.
+      - Describe their location using natural real-world place names: building name, neighbourhood, and nearby landmarks.
+      - If asked questions about nearby places ('what restaurants are near here', 'is there a pharmacy around me'), use the current location or call `search_nearby_places`.
+    - In Reminder Creation:
+      - When the user gives a reminder mentioning 'here', 'this gate', 'out of this gate', 'when I leave here', 'my flat', or 'this place', link the reminder to the user's current saved place or current GPS coordinates.
+      - Explicitly acknowledge the location in your response (e.g. "I'll remind you to buy eggs when you leave Creations Valencia").
+    - CRITICAL: NEVER output raw latitude/longitude coordinates to the user unless they specifically ask for 'coordinates' or 'raw GPS'. Always communicate in natural human terms with real place names, building names, landmarks, and neighbourhood areas.
 11. Clean Formatting & Complete Replies:
     - Keep chat replies concise, natural, and complete.
     - Avoid unnecessary markdown symbols, unrendered hashes, or isolated asterisks like `**Home**`.
@@ -109,7 +107,15 @@ list, update, delete, search — as available per tool). Use the ReAct pattern:
       - `message`: Clean, friendly conversational message without raw markdown asterisks or numerical coordinates.
       - `intent`: Recognized user intent ('location_query', 'create_reminder', 'delete_reminder', 'list_reminders', 'create_note', 'save_place', 'general').
       - `resolved_place`: Specific landmark or place name if location was referenced.
-    - Use `respond_to_user` to provide your final answer cleanly."""
+    - Use `respond_to_user` to provide your final answer cleanly.
+13. Reminder Consolidation & Single Intelligent Reminder:
+    - Active reminders are provided in context under "Existing Active Reminders".
+    - When a user asks to add, refine, or update a reminder (e.g. adding conditions like "walking or riding my bike", changing location, or altering time), DO NOT create multiple separate reminders for the same task or errand.
+    - Digest all existing reminders and consolidate into a SINGLE intelligent reminder covering all possible criteria.
+    - If the user specifies multiple travel modes (e.g. walking or riding), supply a comma-separated activity string (e.g. `activity='WALKING, IN_VEHICLE'`).
+    - Resolve any location ambiguity: if the user mentions a location (e.g. 'my flat', 'home', 'Valencia', 'this gate'), match it with saved places or nearby landmarks and attach the proper coordinates.
+    - Use `create_reminder` (which will automatically digest and consolidate with existing matching reminders), `update_reminder`, or `consolidate_reminders`.
+    - Always ensure only ONE intelligent reminder exists per underlying intention or errand, and confirm to the user that a single unified reminder covers all their conditions."""
 
 
 class Tier2AgentNode:
@@ -274,6 +280,30 @@ class Tier2AgentNode:
         if session:
             sections.append(f"Active Session State: {session.get('status', 'IDLE')} (Vehicle: {session.get('vehicle_class', 'Hunter 350')})")
 
+        # Active reminders and saved places in database for context
+        if uid:
+            try:
+                from ...cloud.tier2_agent_tools import is_test_environment
+                if not is_test_environment():
+                    from ...services.firestore_service import FirestoreService
+                    fs = FirestoreService()
+                    if fs.is_available:
+                        for r in fs.get_reminders(uid):
+                            self.db.create_reminder(uid, r)
+                        for p in fs.get_places(uid):
+                            self.db.create_place(uid, p)
+                active_rems = self.db.list_reminders(uid, status="ACTIVE", limit=15)
+                if active_rems:
+                    rem_lines = []
+                    for r in active_rems:
+                        loc = f" | Location: {r.get('location_name')}" if r.get("location_name") else ""
+                        act = f" | Activity: {r.get('activity')}" if r.get("activity") else ""
+                        due = f" | Due: {r.get('due_at')}" if r.get("due_at") else ""
+                        rem_lines.append(f"  • ID: {r['id']} | Title: \"{r['title']}\"{loc}{act}{due}")
+                    sections.append("Existing Active Reminders:\n" + "\n".join(rem_lines))
+            except Exception as re_err:
+                logger.debug("Error listing active reminders for prompt: %s", re_err)
+
         gps = packet.get("gps", {})
         lat = gps.get("latitude") if isinstance(gps, dict) else None
         lon = gps.get("longitude") if isinstance(gps, dict) else None
@@ -281,6 +311,7 @@ class Tier2AgentNode:
         if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
             # Check proximity to user's saved places
             saved_place_matches = []
+            exact_location_summary = None
             if uid:
                 try:
                     places = self.db.list_places(uid)
@@ -290,10 +321,17 @@ class Tier2AgentNode:
                         if plat is not None and plon is not None and (plat != 0.0 or plon != 0.0):
                             d_m = _haversine_m(lat, lon, plat, plon)
                             radius = p.get("radius_m", 150.0) or 150.0
-                            if d_m <= radius:
-                                saved_place_matches.append(f"At saved place '{p.get('name')}' ({p.get('category', 'place')}, ~{int(d_m)}m away)")
+                            label = p.get("user_label") or p.get("alias") or p.get("category") or "place"
+                            if d_m <= 40.0:
+                                saved_place_matches.append(f"CURRENTLY AT saved place '{p.get('name')}' ({label}, exact location match, ~{int(d_m)}m)")
+                                if not exact_location_summary:
+                                    exact_location_summary = f"CURRENTLY AT saved place '{p.get('name')}' ({label})"
+                            elif d_m <= radius:
+                                saved_place_matches.append(f"At saved place '{p.get('name')}' ({label}, inside compound/geofence, ~{int(d_m)}m)")
+                                if not exact_location_summary:
+                                    exact_location_summary = f"Inside saved place '{p.get('name')}' ({label})"
                             elif d_m <= 1500.0:
-                                saved_place_matches.append(f"Near saved place '{p.get('name')}' (~{int(d_m)}m away)")
+                                saved_place_matches.append(f"Near saved place '{p.get('name')}' ({label}, ~{int(d_m)}m away)")
                 except Exception as pe:
                     logger.debug("Error checking saved places proximity: %s", pe)
 
@@ -309,27 +347,39 @@ class Tier2AgentNode:
                 except Exception as pe:
                     logger.debug("Places API lookup skipped in prompt: %s", pe)
 
+            poi_lines = []
+            building_poi = None
             if nearby_pois:
-                poi_lines = []
                 for p in nearby_pois[:5]:
                     name = p.get("name") or p.get("display_name")
                     cat = (p.get("category") or "place").replace("_", " ")
                     dist = int(p.get("distance_m", 0))
                     if name:
-                        poi_lines.append(f"{name} ({cat}, ~{dist}m away)")
-                if poi_lines:
-                    sections.append("Immediate Landmarks (Google Places): " + ", ".join(poi_lines))
+                        if dist <= 65 and ("apartment" in cat or "building" in cat or "residential" in cat or "complex" in cat or "premise" in cat):
+                            poi_lines.append(f"{name} (CURRENT BUILDING / PREMISE, {cat})")
+                            if not building_poi:
+                                building_poi = f"{name} ({cat})"
+                        else:
+                            poi_lines.append(f"{name} ({cat}, ~{dist}m away)")
 
-            # 2. Reverse geocode street / neighbourhood
+            # Resolve address
             resolved_address = reverse_geocode_location(lat, lon)
+
+            # Fallback exact location summary to current building premise if no saved place match
+            if not exact_location_summary and building_poi:
+                exact_location_summary = f"Inside/at {building_poi}"
+
+            # Append location sections with exact location prominently displayed first
+            if exact_location_summary:
+                sections.append(f"User Current Location: {exact_location_summary}")
+            if saved_place_matches:
+                sections.append("Saved Places Proximity: " + "; ".join(saved_place_matches))
+            if poi_lines:
+                sections.append("Immediate Landmarks (Google Places): " + ", ".join(poi_lines))
             if resolved_address:
                 sections.append(f"Neighbourhood / Area: {resolved_address}")
 
-            # 3. Saved Places proximity
-            if saved_place_matches:
-                sections.append("Saved Places Proximity: " + "; ".join(saved_place_matches))
-
-            # 4. Internal coordinates (do not recite to user)
+            # Internal coordinates (do not recite to user)
             sections.append(f"[Internal GPS Reference: {lat:.5f}, {lon:.5f} - Do NOT speak raw coordinates to user unless explicitly asked]")
 
         return "\n".join(sections)

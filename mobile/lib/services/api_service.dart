@@ -16,6 +16,7 @@ class ApiService extends ChangeNotifier {
 
   static const _channel = MethodChannel('com.jarvis/foreground_service');
   final Set<String> _dispatchedNotificationIds = {};
+  final Map<String, DateTime> _recentNotificationTimestamps = {};
   Timer? _notificationPollTimer;
 
   // Cloud Run Backend URL (Deployed & Active)
@@ -228,20 +229,20 @@ class ApiService extends ChangeNotifier {
         // Deliver any pending reminder alerts directly to Android phone notification tray
         for (final n in _notifications) {
           final id = n['id']?.toString() ?? '';
+          final reminderId = n['reminder_id']?.toString() ?? '';
           final status = n['status']?.toString().toUpperCase();
           if (status == 'PENDING' && !_dispatchedNotificationIds.contains(id)) {
             _dispatchedNotificationIds.add(id);
+            if (reminderId.isNotEmpty) {
+              _dispatchedNotificationIds.add(reminderId);
+            }
             final title = n['title']?.toString() ?? 'Jarvis Reminder';
             final body = n['body']?.toString() ?? title;
-            try {
-              _channel.invokeMethod('showSystemNotification', {
-                'id': id.hashCode,
-                'title': title,
-                'content': body,
-              });
-            } catch (e) {
-              debugPrint('[ApiService] Error showing system notification: $e');
-            }
+            showSystemNotification(
+              id: title.trim().toLowerCase().hashCode,
+              title: title,
+              content: body,
+            );
             // Acknowledge notification on backend to mark as delivered
             acknowledgeNotification(id);
           }
@@ -255,10 +256,22 @@ class ApiService extends ChangeNotifier {
   }
 
   /// Dispatch a high-priority system tray notification on the Android device
-  void showSystemNotification({required int id, required String title, required String content}) {
+  void showSystemNotification({int? id, required String title, required String content}) {
+    final normTitle = title.trim().toLowerCase();
+    final now = DateTime.now();
+    if (_recentNotificationTimestamps.containsKey(normTitle)) {
+      final last = _recentNotificationTimestamps[normTitle]!;
+      if (now.difference(last).inMinutes < 5) {
+        debugPrint('[ApiService] Suppressed duplicate notification within 5 min: "$title"');
+        return;
+      }
+    }
+    _recentNotificationTimestamps[normTitle] = now;
+
+    final notificationId = id ?? normTitle.hashCode;
     try {
       _channel.invokeMethod('showSystemNotification', {
-        'id': id,
+        'id': notificationId,
         'title': title,
         'content': content,
       });
