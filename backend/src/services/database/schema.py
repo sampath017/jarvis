@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS notes (
     place TEXT DEFAULT '',
     category TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
+    deleted_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -139,13 +140,18 @@ CREATE TABLE IF NOT EXISTS reminders (
     latitude REAL,
     longitude REAL,
     radius_m REAL DEFAULT 100.0,
+    dynamic_policy TEXT,
     activity TEXT,
     status TEXT NOT NULL DEFAULT 'ACTIVE',
+    previous_status TEXT,
+    deleted_at TEXT,
     one_shot INTEGER NOT NULL DEFAULT 1,
     last_fired_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS dynamic_reminder_state (uid TEXT NOT NULL, reminder_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(uid, reminder_id));
 
 CREATE TABLE IF NOT EXISTS context_rules (
     id TEXT PRIMARY KEY,

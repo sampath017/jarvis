@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..state import JarvisState
 from ...services.database import DatabaseService
+from ...services.firestore_service import FirestoreService
 from ...backend.audit_log import audit_from_state
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,14 @@ class PersistNode:
                     logger.info("Persisting session %s status=%s for uid=%s",
                                 session_id, session.get("status"), uid)
                     self.db.upsert_session(uid, session_id, session)
+                    # Cloud Run instances are ephemeral.  Keep the cloud
+                    # session copy authoritative for cross-instance parking,
+                    # dwell, and return-trip continuity; SQLite remains a
+                    # short-lived local cache/fallback.
+                    fs = FirestoreService()
+                    if fs.is_available:
+                        if not fs.save_mobility_session(uid, session_id, session):
+                            raise RuntimeError("Could not persist cloud session")
                     persisted["session_saved"] = True
 
             # 2. Persist context event
@@ -63,6 +72,33 @@ class PersistNode:
                 packet = state.get("context_packet")
                 if event_id and packet:
                     self.db.create_event_idempotent(uid, event_id, packet)
+                    fs = FirestoreService()
+                    if fs.is_available:
+                        memory = {
+                            "source": "phone_observation",
+                            "event_type": state.get("raw_request", {}).get("event_type"),
+                            "timestamp": packet.get("timestamp"),
+                            "activity": packet.get("activity"),
+                            "transition": packet.get("transition"),
+                            "gps": packet.get("gps"),
+                            "mobility_session_id": state.get("session_id"),
+                            "nearby_candidates": packet.get("nearby_pois", [])[:5],
+                            "context_changes": state.get("semantic_context_changes", []),
+                            "contexts": [c for c in state.get("semantic_contexts", [])
+                                         if c.get("active") and c.get("confidence", 0) >= 0.8],
+                        }
+                        from ...backend.session_manager import _haversine_m
+                        gps = packet.get("gps") or {}
+                        memory["saved_places"] = []
+                        if gps.get("latitude") is not None and gps.get("longitude") is not None:
+                            for place in self.db.list_places(uid):
+                                if place.get("latitude") is None or place.get("longitude") is None:
+                                    continue
+                                distance = _haversine_m(gps["latitude"], gps["longitude"], place["latitude"], place["longitude"])
+                                if distance <= float(place.get("radius_m") or 100):
+                                    memory["saved_places"].append({"name": place.get("name"), "distance_m": round(distance)})
+                        if not fs.save_context_memory(uid, event_id, memory):
+                            raise RuntimeError("Could not persist context memory")
                     persisted["event_saved"] = True
 
             # 3. Append chat messages for command requests
@@ -76,7 +112,7 @@ class PersistNode:
                         "message_id": str(uuid.uuid4()),
                         "role": "user",
                         "content": user_msg,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
                     persisted["messages_saved"] += 1
 
@@ -85,7 +121,7 @@ class PersistNode:
                             "message_id": str(uuid.uuid4()),
                             "role": "assistant",
                             "content": assistant_msg,
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "run_id": run_id,
                         })
                         persisted["messages_saved"] += 1

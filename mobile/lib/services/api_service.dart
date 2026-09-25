@@ -1,16 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
+import 'local_db_service.dart';
+import 'command_client.dart';
 
 /// Client service that communicates with the Jarvis Cloud Run backend.
 /// Handles sending Low-Telemetry metadata, executing agentic commands,
 /// and synchronizing Reminders, Tasks, and Notes.
-class ApiService extends ChangeNotifier {
+class ApiService extends ChangeNotifier with WidgetsBindingObserver {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
   ApiService._internal() {
+    WidgetsBinding.instance.addObserver(this);
     _startNotificationPoll();
   }
 
@@ -18,6 +21,7 @@ class ApiService extends ChangeNotifier {
   final Set<String> _dispatchedNotificationIds = {};
   final Map<String, DateTime> _recentNotificationTimestamps = {};
   Timer? _notificationPollTimer;
+  bool _flushingContext = false;
 
   // Cloud Run Backend URL (Deployed & Active)
   String _baseUrl = 'https://jarvis-backend-898516599131.asia-south1.run.app';
@@ -43,9 +47,33 @@ class ApiService extends ChangeNotifier {
 
   void _startNotificationPoll() {
     _notificationPollTimer?.cancel();
+    if (WidgetsBinding.instance.lifecycleState != null &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
     _notificationPollTimer = Timer.periodic(const Duration(seconds: 25), (_) {
       fetchNotifications();
+      flushContextEvents();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startNotificationPoll();
+      unawaited(fetchNotifications());
+      unawaited(flushContextEvents());
+    } else {
+      _notificationPollTimer?.cancel();
+      _notificationPollTimer = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _notificationPollTimer?.cancel();
+    super.dispose();
   }
 
   void setBaseUrl(String url) {
@@ -60,9 +88,9 @@ class ApiService extends ChangeNotifier {
   }
 
   Map<String, String> get _headers => {
-        'Content-Type': 'application/json',
-        'X-User-ID': _userId,
-      };
+    'Content-Type': 'application/json',
+    'X-User-ID': _userId,
+  };
 
   /// Ping the Cloud Run /health probe
   Future<bool> checkHealth() async {
@@ -82,42 +110,65 @@ class ApiService extends ChangeNotifier {
     }
   }
 
-  /// Transmit Low-Telemetry JSON packet to Cloud Run (/context-events)
+  /// Transmit Context Event or Low-Telemetry JSON packet to Cloud Run (/context-events)
   Future<Map<String, dynamic>?> sendContextEvent({
     required String eventType,
-    required Map<String, dynamic> featureSummary,
-    required Map<String, dynamic> journeyGps,
+    String? activity,
+    String? transition,
+    Map<String, dynamic>? location,
+    Map<String, dynamic>? featureSummary,
+    Map<String, dynamic>? journeyGps,
     String? transitionState,
   }) async {
-    final payload = {
-      'event_id': 'evt_${DateTime.now().millisecondsSinceEpoch}',
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final payload = <String, dynamic>{
+      'event_id': 'evt_${DateTime.now().microsecondsSinceEpoch}',
       'event_type': eventType,
-      'timestamp': DateTime.now().toUtc().toIso8601String(),
-      'transition': transitionState ?? 'IN_VEHICLE_ENTER',
-      'feature_summary': featureSummary,
-      'journey_gps': journeyGps,
+      'activity': activity ?? 'UNKNOWN',
+      'transition': transition ?? (transitionState ?? 'ENTER'),
+      'occurred_at': nowIso,
+      'timestamp': nowIso,
+      'location': ?location,
+      'gps': ?location,
+      'feature_summary': ?featureSummary,
+      'journey_gps': ?journeyGps,
     };
 
-    try {
-      final res = await http
-          .post(
-            Uri.parse('$_baseUrl/context-events'),
-            headers: _headers,
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 15));
+    await LocalDbService().queueContextEvent(payload);
+    return flushContextEvents();
+  }
 
-      if (res.statusCode == 200 || res.statusCode == 202) {
+  Future<Map<String, dynamic>?> flushContextEvents() async {
+    if (_flushingContext) return null;
+    _flushingContext = true;
+    Map<String, dynamic>? latest;
+    try {
+      for (final event in await LocalDbService().pendingContextEvents()) {
+        final res = await http
+            .post(
+              Uri.parse('$_baseUrl/context-events'),
+              headers: _headers,
+              body: jsonEncode(event),
+            )
+            .timeout(const Duration(seconds: 60));
+        if (res.statusCode != 200 && res.statusCode != 202) break;
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        // Refresh reminders and notifications upon context resolution
+        if (data['status'] != 'ok') break;
+        await LocalDbService().acknowledgeContextEvent(
+          event['event_id'].toString(),
+        );
+        latest = data;
+      }
+      if (latest != null) {
         await fetchReminders();
         await fetchNotifications();
-        return data;
       }
     } catch (e) {
-      debugPrint('[ApiService] Error sending context event: $e');
+      debugPrint('[ApiService] Context retained for retry: $e');
+    } finally {
+      _flushingContext = false;
     }
-    return null;
+    return latest;
   }
 
   /// Dispatch an explicit text/voice command to Cloud Run (/commands)
@@ -129,6 +180,7 @@ class ApiService extends ChangeNotifier {
     double? latitude,
     double? longitude,
     String? requestId,
+    void Function(CommandProgress)? onProgress,
   }) async {
     final payload = <String, dynamic>{
       'request_id': requestId ?? 'cmd_${DateTime.now().millisecondsSinceEpoch}',
@@ -140,45 +192,44 @@ class ApiService extends ChangeNotifier {
       'timestamp': DateTime.now().toUtc().toIso8601String(),
     };
 
-    try {
-      final res = await http
-          .post(
-            Uri.parse('$_baseUrl/commands'),
-            headers: _headers,
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 75));
-
-      if (res.statusCode == 200) {
-        _isOnline = true;
-        notifyListeners();
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        await fetchReminders();
-        await fetchNotes();
-        return data;
-      } else {
-        try {
-          final errData = jsonDecode(res.body);
-          return {
-            'status': 'error',
-            'error': errData['detail'] ?? 'Server error ${res.statusCode}',
-          };
-        } catch (_) {
-          return {
-            'status': 'error',
-            'error': 'Server returned HTTP ${res.statusCode}',
-          };
-        }
-      }
-    } catch (e) {
-      debugPrint('[ApiService] Error sending command: $e');
-      return {
-        'status': 'error',
-        'error': e.toString().contains('TimeoutException')
-            ? 'Request timed out — Jarvis took longer than 75s to finish all actions.'
-            : 'Network connection issue: $e',
-      };
+    final data = await CommandClient().send(
+      baseUrl: _baseUrl,
+      headers: _headers,
+      payload: payload,
+      onProgress: onProgress,
+    );
+    if (data['status'] == 'ok') {
+      _isOnline = true;
+      notifyListeners();
+      // Display the answer immediately; background sync must not hold it back.
+      unawaited(fetchReminders());
+      unawaited(fetchNotes());
     }
+    return data;
+  }
+
+  Future<bool> cancelCommand(String requestId) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse(
+              '$_baseUrl/commands/requests/${Uri.encodeComponent(requestId)}/cancel',
+            ),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 15));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> commandStatus(String id) async {
+    try {
+      final res = await http.get(Uri.parse('$_baseUrl/commands/requests/${Uri.encodeComponent(id)}'), headers: _headers).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200) return jsonDecode(res.body) as Map<String, dynamic>;
+    } catch (_) {}
+    return null;
   }
 
   /// Fetch active reminders from Cloud Run (/reminders)
@@ -191,6 +242,9 @@ class ApiService extends ChangeNotifier {
         _isOnline = true;
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         _reminders = List<Map<String, dynamic>>.from(data['records'] ?? []);
+        try {
+          await _channel.invokeMethod('setDynamicMonitoring', _reminders.any((r) => r['status'] == 'ACTIVE' && r['dynamic_policy'] != null));
+        } catch (_) {}
         notifyListeners();
         return _reminders;
       }
@@ -223,8 +277,7 @@ class ApiService extends ChangeNotifier {
           .timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _notifications =
-            List<Map<String, dynamic>>.from(data['records'] ?? []);
+        _notifications = List<Map<String, dynamic>>.from(data['records'] ?? []);
 
         // Deliver any pending reminder alerts directly to Android phone notification tray
         for (final n in _notifications) {
@@ -232,19 +285,16 @@ class ApiService extends ChangeNotifier {
           final reminderId = n['reminder_id']?.toString() ?? '';
           final status = n['status']?.toString().toUpperCase();
           if (status == 'PENDING' && !_dispatchedNotificationIds.contains(id)) {
-            _dispatchedNotificationIds.add(id);
-            if (reminderId.isNotEmpty) {
-              _dispatchedNotificationIds.add(reminderId);
+            final shown = await _channel.invokeMethod<bool>('showCloudNotification', {
+              'id': id, 'title': n['title']?.toString() ?? 'Jarvis',
+              'body': n['body']?.toString() ?? '', 'thread_id': n['thread_id']?.toString() ?? '',
+              'kind': n['kind']?.toString() ?? '',
+            });
+            if (shown == true) {
+              _dispatchedNotificationIds.add(id);
+              if (reminderId.isNotEmpty) _dispatchedNotificationIds.add(reminderId);
+              unawaited(acknowledgeNotification(id));
             }
-            final title = n['title']?.toString() ?? 'Jarvis Reminder';
-            final body = n['body']?.toString() ?? title;
-            showSystemNotification(
-              id: title.trim().toLowerCase().hashCode,
-              title: title,
-              content: body,
-            );
-            // Acknowledge notification on backend to mark as delivered
-            acknowledgeNotification(id);
           }
         }
 
@@ -256,13 +306,19 @@ class ApiService extends ChangeNotifier {
   }
 
   /// Dispatch a high-priority system tray notification on the Android device
-  void showSystemNotification({int? id, required String title, required String content}) {
+  void showSystemNotification({
+    int? id,
+    required String title,
+    required String content,
+  }) {
     final normTitle = title.trim().toLowerCase();
     final now = DateTime.now();
     if (_recentNotificationTimestamps.containsKey(normTitle)) {
       final last = _recentNotificationTimestamps[normTitle]!;
       if (now.difference(last).inMinutes < 5) {
-        debugPrint('[ApiService] Suppressed duplicate notification within 5 min: "$title"');
+        debugPrint(
+          '[ApiService] Suppressed duplicate notification within 5 min: "$title"',
+        );
         return;
       }
     }
@@ -350,36 +406,36 @@ class ApiService extends ChangeNotifier {
   /// Delete a chat session from Cloud Run / Firestore (/chat-sessions/{id})
   Future<bool> deleteChatSession(String id) async {
     try {
-      final res = await http.delete(
-        Uri.parse('$_baseUrl/chat-sessions/$id'),
-        headers: _headers,
-      );
-      return res.statusCode == 204 || res.statusCode == 200;
-    } catch (_) {}
+      final res = await http
+          .delete(Uri.parse('$_baseUrl/chat-sessions/$id'), headers: _headers)
+          .timeout(const Duration(seconds: 12));
+      return res.statusCode == 204 ||
+          res.statusCode == 200 ||
+          res.statusCode == 404;
+    } catch (e) {
+      debugPrint('[ApiService] Error deleting chat session $id: $e');
+    }
     return false;
   }
 
   /// Delete all chat sessions and messages from Cloud Run / Firestore (/chat-sessions)
   Future<bool> deleteAllChatSessions() async {
     try {
-      final res = await http.delete(
-        Uri.parse('$_baseUrl/chat-sessions'),
-        headers: _headers,
-      );
-      return res.statusCode == 204 || res.statusCode == 200;
-    } catch (_) {}
+      final res = await http
+          .delete(Uri.parse('$_baseUrl/chat-sessions'), headers: _headers)
+          .timeout(const Duration(seconds: 15));
+      return res.statusCode == 204 ||
+          res.statusCode == 200 ||
+          res.statusCode == 404;
+    } catch (e) {
+      debugPrint('[ApiService] Error deleting all chat sessions: $e');
+    }
     return false;
   }
 
   /// Create a new note directly via Cloud Run (/notes)
-  Future<bool> createNote({
-    required String content,
-    String? place,
-  }) async {
-    final payload = {
-      'content': content,
-      'place': place,
-    };
+  Future<bool> createNote({required String content, String? place}) async {
+    final payload = {'content': content, 'place': place};
 
     try {
       final res = await http.post(
@@ -420,9 +476,7 @@ class ApiService extends ChangeNotifier {
   }) async {
     final res = await sendContextEvent(
       eventType: 'TELEMETRY_PIPELINE_CHECK',
-      featureSummary: {
-        'activity_hint': activity ?? 'UNKNOWN',
-      },
+      featureSummary: {'activity_hint': activity ?? 'UNKNOWN'},
       journeyGps: {
         'current_latitude': latitude,
         'current_longitude': longitude,

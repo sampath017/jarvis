@@ -7,7 +7,7 @@ Class-based node implementation for the LangGraph workflow.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..state import JarvisState
 from ...backend.audit_log import audit_from_state
@@ -31,7 +31,7 @@ class VerifyNode:
             event_id = raw.get("event_id", str(uuid.uuid4()))
             context_packet = {
                 "event_id": event_id,
-                "timestamp": raw.get("occurred_at", datetime.utcnow().isoformat()),
+                "timestamp": raw.get("occurred_at", datetime.now(timezone.utc).isoformat()),
                 "activity": raw.get("activity", "UNKNOWN"),
                 "transition": raw.get("transition", "ENTER"),
                 "gps": raw.get("location"),
@@ -49,7 +49,7 @@ class VerifyNode:
             event_id = raw.get("request_id", str(uuid.uuid4()))
             context_packet = {
                 "event_id": event_id,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
         result = {

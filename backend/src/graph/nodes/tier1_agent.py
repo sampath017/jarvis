@@ -83,8 +83,8 @@ class Tier1AgentNode:
         packet = state.get("context_packet", {})
 
         if not messages:
-            imu = packet.get("imu", {})
-            gps = packet.get("gps", {})
+            imu = packet.get("imu") or {}
+            gps = packet.get("gps") or {}
             user_msg = (
                 f"Raw Sensor Telemetry Event:\n"
                 f"- Activity: {packet.get('activity', 'UNKNOWN')} (Confidence: {packet.get('classification_confidence', 0.0)})\n"

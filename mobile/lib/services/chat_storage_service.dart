@@ -52,9 +52,18 @@ class ChatStorageService {
 
   /// Delete a chat session by ID from local SQLite and Cloud Firestore.
   static Future<void> deleteSession(String sessionId) async {
-    await LocalDbService().deleteChatSession(sessionId);
-    if (ApiService().isOnline) {
-      await ApiService().deleteChatSession(sessionId);
+    // 1. Delete locally and queue tombstone into pending_deletions table
+    await LocalDbService().deleteChatSession(sessionId, queueDeletion: true);
+
+    // 2. Always attempt immediate cloud deletion without relying on isOnline flag
+    try {
+      final success = await ApiService().deleteChatSession(sessionId);
+      if (success) {
+        // Confirmed deleted in Firestore -> clear tombstone
+        await LocalDbService().removePendingDeletion(sessionId);
+      }
+    } catch (e) {
+      debugPrint('[ChatStorageService] Cloud deletion failed, queued for retry: $e');
     }
   }
 

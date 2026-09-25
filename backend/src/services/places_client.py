@@ -8,6 +8,7 @@ session/context doesn't already have one. Enforces per-user daily budget.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 import httpx
@@ -42,6 +43,7 @@ class PlacesClient:
         radius_m: float = 100.0,
         uid: str = "",
         max_results: int = 5,
+        included_types: list[str] | None = None,
     ) -> list[POICandidate]:
         """
         Search for nearby places around ``(latitude, longitude)``.
@@ -83,6 +85,7 @@ class PlacesClient:
                         },
                     },
                     "maxResultCount": max_results,
+                    **({"includedPrimaryTypes": included_types} if included_types else {}),
                 },
                 timeout=10.0,
             )
@@ -106,13 +109,14 @@ class PlacesClient:
         """Check if the user still has Places API budget remaining."""
         if not uid:
             return True
-        used = _daily_budgets.get(uid, 0)
+        used = _daily_budgets.get(f"{date.today()}:{uid}", 0)
         return used < PLACES_DAILY_BUDGET_PER_USER
 
     def _record_usage(self, uid: str) -> None:
         """Record a Places API call against the user's daily budget."""
         if uid:
-            _daily_budgets[uid] = _daily_budgets.get(uid, 0) + 1
+            key = f"{date.today()}:{uid}"
+            _daily_budgets[key] = _daily_budgets.get(key, 0) + 1
 
     @staticmethod
     def reset_budgets() -> None:

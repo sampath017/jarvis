@@ -103,6 +103,7 @@ def test_tier2_react_loop_create_reminder(test_db, monkeypatch):
                     "args": {
                         "title": "Check tire pressure",
                         "location_name": "Indian Oil",
+                        "latitude": 12.0, "longitude": 80.0, "confirmed": True,
                     },
                     "id": "call_create_rem_1",
                     "type": "tool_call",

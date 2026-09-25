@@ -49,9 +49,13 @@ def init_database(db_path: Path | str | None = None, force: bool = False) -> Non
 
         # Safe non-breaking column migrations for existing sqlite databases
         for alter_stmt in [
+            "ALTER TABLE reminders ADD COLUMN dynamic_policy TEXT",
             "ALTER TABLE places ADD COLUMN notes TEXT DEFAULT ''",
             "ALTER TABLE places ADD COLUMN tags TEXT DEFAULT '[]'",
             "ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'medium'",
+            "ALTER TABLE notes ADD COLUMN deleted_at TEXT",
+            "ALTER TABLE reminders ADD COLUMN previous_status TEXT",
+            "ALTER TABLE reminders ADD COLUMN deleted_at TEXT",
         ]:
             try:
                 conn.execute(alter_stmt)

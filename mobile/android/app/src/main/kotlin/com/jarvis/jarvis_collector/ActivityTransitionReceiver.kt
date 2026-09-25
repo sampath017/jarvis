@@ -3,10 +3,12 @@ package com.jarvis.jarvis_collector
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
+import android.os.SystemClock
+import org.json.JSONObject
 import com.google.android.gms.location.ActivityTransition
 import com.google.android.gms.location.ActivityTransitionResult
+import com.google.android.gms.location.ActivityRecognitionResult
 import com.google.android.gms.location.DetectedActivity
 
 /**
@@ -21,9 +23,13 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
         
         // Listener callback registered from MainActivity / Flutter
         var transitionListener: ((activity: String, transition: String) -> Unit)? = null
+        var sampleListener: ((activity: String, confidence: Int) -> Unit)? = null
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        // Older app versions also registered periodic samples. Ignore any
+        // already in flight; transitions now wake the app only when needed.
+        if (ActivityRecognitionResult.hasResult(intent)) return
         if (!ActivityTransitionResult.hasResult(intent)) {
             Log.d(TAG, "Received intent with no ActivityTransitionResult")
             return
@@ -31,7 +37,17 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
 
         val result = ActivityTransitionResult.extractResult(intent) ?: return
 
+        val deliveryPrefs = context.getSharedPreferences("jarvis_transition_delivery", Context.MODE_PRIVATE)
+        val boot = android.provider.Settings.Global.getInt(context.contentResolver, android.provider.Settings.Global.BOOT_COUNT, 0)
+        val seen = deliveryPrefs.getStringSet("seen", emptySet())!!.toMutableSet()
+        val locationEvents = mutableListOf<JSONObject>()
         for (event in result.transitionEvents) {
+            val key = "$boot:${event.elapsedRealTimeNanos}:${event.activityType}:${event.transitionType}"
+            if (seen.contains(key)) continue
+            val occurredAtMillis = System.currentTimeMillis() -
+                ((SystemClock.elapsedRealtimeNanos() - event.elapsedRealTimeNanos) / 1_000_000L)
+            // Play Services may redeliver a pre-reset event after an app update.
+            if (occurredAtMillis < ContextEventQueue.historyResetAt(context)) continue
             val activityName = when (event.activityType) {
                 DetectedActivity.IN_VEHICLE -> "IN_VEHICLE"
                 DetectedActivity.WALKING -> "WALKING"
@@ -49,23 +65,56 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
 
             Log.i(TAG, "[Stage 1 Tripwire] Transition detected: $activityName -> $transitionName")
 
-            // Notify in-process listener (Flutter)
-            transitionListener?.invoke(activityName, transitionName)
-
-            // If entering a vehicle, automatically ensure ForegroundService is active
-            if (activityName == "IN_VEHICLE" && transitionName == "ENTER") {
-                Log.i(TAG, "[Stage 1 Kickstart] IN_VEHICLE ENTER -> Kicking off Stage 2 Bounded IMU Burst")
-                val serviceIntent = Intent(context, TelemetryForegroundService::class.java).apply {
-                    action = TelemetryForegroundService.ACTION_START
-                    putExtra(TelemetryForegroundService.EXTRA_TITLE, "Jarvis")
-                    putExtra(TelemetryForegroundService.EXTRA_CONTENT, "Active in background")
+            if (activityName == "UNKNOWN" || transitionName == "UNKNOWN") continue
+            val eventType = if (transitionName == "ENTER") "ACTIVITY_ENTER" else "ACTIVITY_EXIT"
+            val queued = ContextEventQueue.newEvent(
+                eventType, activityName, transitionName,
+                occurredAtMillis,
+            )
+            ContextEventQueue.add(context, queued, deferCapture = true)
+            locationEvents.add(queued)
+            val lastStateTime = deliveryPrefs.getLong("state_time", 0L)
+            if (occurredAtMillis >= lastStateTime && transitionName == "ENTER") {
+                ContextEventQueue.setCurrentActivity(context, activityName)
+                if (activityName == "STILL" || activityName == "WALKING") {
+                    ContextEventQueue.scheduleDwell(context, activityName)
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
+            } else if (occurredAtMillis >= lastStateTime && ContextEventQueue.currentActivity(context) == activityName) {
+                ContextEventQueue.setCurrentActivity(context, "")
+            }
+
+            seen.add(key)
+            while (seen.size > 200) seen.remove(seen.first())
+            deliveryPrefs.edit().putStringSet("seen", seen.toSet())
+                .putLong("state_time", maxOf(lastStateTime, occurredAtMillis)).commit()
+            // Notify in-process listener (Flutter)
+            if (occurredAtMillis >= lastStateTime) transitionListener?.invoke(activityName, transitionName)
+
+        }
+        if (locationEvents.isEmpty()) return
+        val appContext = context.applicationContext
+        // Persist a fallback before starting the immediate fix, in case Android
+        // terminates this process. It runs offline too.
+        ContextEventQueue.scheduleLocationCapture(appContext, delaySeconds = 10)
+        val pendingResult = goAsync()
+        Thread {
+            try {
+                // Keep the broadcast alive for a bounded ~6.5 seconds at most.
+                for (event in ContextLocationCapture.capture(appContext, locationEvents, 5_000)) {
+                    if (event.has("location")) {
+                        event.remove("location_pending")
+                        ContextEventQueue.update(appContext, event)
+                    }
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "Immediate location deferred to durable worker", error)
+            } finally {
+                try {
+                    ContextEventQueue.scheduleFlush(appContext)
+                } finally {
+                    pendingResult.finish()
                 }
             }
-        }
+        }.start()
     }
 }

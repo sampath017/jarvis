@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'services/sensor_service.dart';
 import 'services/sync_service.dart';
+import 'services/chat_notification_service.dart';
 import 'ui/screens/main_navigation_screen.dart';
 import 'ui/theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Set system UI to immersive dark mode matching Jarvis HUD
+  // Match the dark, edge-to-edge application surface.
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -24,6 +25,7 @@ void main() {
   runApp(JarvisCollectorApp(sensorService: sensorService));
 
   // Initialize sensors and background sync non-blockingly in the background
+  ChatNotificationService.initialize();
   sensorService.initialize();
   SyncService().startPeriodicSync();
 }

@@ -53,7 +53,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
             child: const Text('CANCEL'),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.red,
+              foregroundColor: AppTheme.background,
+            ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('DELETE'),
           ),

@@ -102,7 +102,20 @@ async def _notification_sweeper(stop: asyncio.Event) -> None:
     """Persist due time reminders even if no mobile client is polling."""
     while not stop.is_set():
         try:
-            _ = ContextAutomationService().process_due_reminders()
+            _ = await asyncio.to_thread(ContextAutomationService().process_due_reminders)
+            from ..services.push_notifications import PushNotifications
+            from ..services.background_tasks import BackgroundTasks
+            from ..services.firestore_service import FirestoreService
+            def refresh_delivery():
+                fs = FirestoreService()
+                if not fs.is_available: return
+                users = {'jarvis_local_user'}
+                for reminder in fs.get_reminders():
+                    uid = reminder.get('uid') or 'jarvis_local_user'
+                    users.add(uid)
+                    BackgroundTasks().schedule_reminder(uid, reminder)
+                for uid in users: PushNotifications().deliver(uid)
+            await asyncio.to_thread(refresh_delivery)
         except Exception:
             logger.exception("Notification sweeper failed")
         try:

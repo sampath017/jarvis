@@ -1,17 +1,13 @@
 import 'package:flutter/material.dart';
 import '../../services/sensor_service.dart';
+import '../../services/chat_notification_service.dart';
 import '../theme.dart';
+import 'activity_screen.dart';
 import 'chat_screen.dart';
 import 'notes_screen.dart';
 import 'reminders_screen.dart';
+import 'settings_screen.dart';
 
-/// Main Navigation Root with 3 Clean Tabs:
-/// 1. Chat (ChatGPT-style conversational assistant)
-/// 2. Reminders (Context-aware reminders & auto-triggering)
-/// 3. Notes (Context notes & trip logs)
-///
-/// Hardware sensors & Stage 1 Google Activity Recognition tripwire run
-/// silently in the background so telemetry is logged automatically.
 class MainNavigationScreen extends StatefulWidget {
   final SensorService sensorService;
 
@@ -31,24 +27,36 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     super.initState();
     _screens = [
       ChatScreen(sensorService: widget.sensorService),
+      const ActivityScreen(),
       RemindersScreen(sensorService: widget.sensorService),
       NotesScreen(sensorService: widget.sensorService),
+      const SettingsScreen(),
     ];
-    // Automatically arm the low-power Stage 1 GAR tripwire in the background
-    widget.sensorService.startTripwire();
+    ChatNotificationService.openThread.addListener(_openChat);
+    _openChat();
+    // SensorService arms context awareness after startup permissions resolve.
+  }
+
+  void _openChat() {
+    if (ChatNotificationService.openThread.value == null) return;
+    if (mounted) setState(() => _currentIndex = 0);
+    ChatNotificationService.chatVisible.value = true;
+  }
+
+  @override
+  void dispose() {
+    ChatNotificationService.openThread.removeListener(_openChat);
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _screens,
-      ),
+      body: IndexedStack(index: _currentIndex, children: _screens),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: AppTheme.surface,
-          border: Border(top: BorderSide(color: AppTheme.border, width: 0.8)),
+          border: Border(top: BorderSide(color: AppTheme.border)),
         ),
         child: BottomNavigationBar(
           currentIndex: _currentIndex,
@@ -56,17 +64,25 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           selectedItemColor: AppTheme.primary,
           unselectedItemColor: AppTheme.textSecondary,
           selectedFontSize: 12,
-          unselectedFontSize: 11,
+          unselectedFontSize: 12,
+          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
+          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
           type: BottomNavigationBarType.fixed,
-          elevation: 8,
+          elevation: 0,
           onTap: (index) {
             setState(() => _currentIndex = index);
+            ChatNotificationService.chatVisible.value = index == 0;
           },
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.chat_bubble_outline),
               activeIcon: Icon(Icons.chat_bubble),
               label: 'Chat',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.route_outlined),
+              activeIcon: Icon(Icons.route),
+              label: 'Activity',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.alarm),
@@ -77,6 +93,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
               icon: Icon(Icons.note_alt_outlined),
               activeIcon: Icon(Icons.note_alt),
               label: 'Notes',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.settings_outlined),
+              activeIcon: Icon(Icons.settings),
+              label: 'Settings',
             ),
           ],
         ),

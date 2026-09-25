@@ -5,6 +5,7 @@ Reminders Repository — SQLite CRUD operations.
 from __future__ import annotations
 
 import sqlite3
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, ContextManager
@@ -27,13 +28,15 @@ class RemindersRepositoryMixin:
             conn.execute(
                 """INSERT OR REPLACE INTO reminders
                    (id, uid, title, body, due_at, location_name, latitude, longitude,
-                    radius_m, activity, status, one_shot, last_fired_at, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    radius_m, dynamic_policy, activity, status, previous_status, deleted_at, one_shot, last_fired_at, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     reminder_id, uid, data["title"], data.get("body", ""),
                     due_at, data.get("location_name"), data.get("latitude"),
                     data.get("longitude"), data.get("radius_m", 100.0),
+                    json.dumps(data.get("dynamic_policy")) if isinstance(data.get("dynamic_policy"), dict) else data.get("dynamic_policy"),
                     data.get("activity"), data.get("status", "ACTIVE"),
+                    data.get("previous_status"), data.get("deleted_at"),
                     int(data.get("one_shot", True)), data.get("last_fired_at"), created_at, updated_at,
                 ),
             )
@@ -59,13 +62,13 @@ class RemindersRepositoryMixin:
         with self._conn() as conn:
             conn.execute(
                 """UPDATE reminders SET title=?, body=?, due_at=?, location_name=?, latitude=?,
-                   longitude=?, radius_m=?, activity=?, status=?, one_shot=?, last_fired_at=?,
+                   longitude=?, radius_m=?, dynamic_policy=?, activity=?, status=?, previous_status=?, deleted_at=?, one_shot=?, last_fired_at=?,
                    updated_at=? WHERE id=? AND uid=?""",
                 (
                     fields["title"], fields.get("body", ""), due_at,
                     fields.get("location_name"), fields.get("latitude"), fields.get("longitude"),
-                    fields.get("radius_m", 100.0), fields.get("activity"),
-                    fields.get("status", "ACTIVE"), int(fields.get("one_shot", True)),
+                    fields.get("radius_m", 100.0), json.dumps(fields.get("dynamic_policy")) if isinstance(fields.get("dynamic_policy"), dict) else fields.get("dynamic_policy"), fields.get("activity"),
+                    fields.get("status", "ACTIVE"), fields.get("previous_status"), fields.get("deleted_at"), int(fields.get("one_shot", True)),
                     fields.get("last_fired_at"), now, reminder_id, uid,
                 ),
             )
@@ -88,6 +91,8 @@ class RemindersRepositoryMixin:
         if status:
             query += " AND status = ?"
             params.append(status)
+        else:
+            query += " AND status != 'DELETED'"
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         with self._conn() as conn:
@@ -102,6 +107,14 @@ class RemindersRepositoryMixin:
                 (uid, f"%{title_match}%"),
             ).fetchone()
         return self._reminder_row_to_dict(row) if row else None
+
+    def list_context_reminders(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE status = 'ACTIVE' AND one_shot = 1 "
+                "AND ((activity IS NOT NULL AND trim(activity) != '') OR latitude IS NOT NULL OR dynamic_policy IS NOT NULL)"
+            ).fetchall()
+        return [self._reminder_row_to_dict(row) for row in rows]
 
     def list_due_reminders(self, now: str) -> list[dict[str, Any]]:
         with self._conn() as conn:

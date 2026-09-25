@@ -26,11 +26,12 @@ class NotesRepositoryMixin:
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO notes
-                   (id, uid, title, content, place, category, tags, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (id, uid, title, content, place, category, tags, deleted_at, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     note_id, uid, data.get("title", ""), content,
-                    data.get("place", ""), data.get("category", ""), tags, now, now,
+                    data.get("place", ""), data.get("category", ""), tags,
+                    data.get("deleted_at"), data.get("created_at") or now, data.get("updated_at") or now,
                 ),
             )
         return {"id": note_id, "uid": uid, **data, "content": content, "created_at": now, "updated_at": now}
@@ -49,8 +50,8 @@ class NotesRepositoryMixin:
         fields = {**existing, **data, "updated_at": now}
         with self._conn() as conn:
             conn.execute(
-                "UPDATE notes SET title=?, content=?, updated_at=? WHERE id=? AND uid=?",
-                (fields["title"], fields["content"], now, note_id, uid),
+                "UPDATE notes SET title=?, content=?, deleted_at=?, updated_at=? WHERE id=? AND uid=?",
+                (fields["title"], fields["content"], fields.get("deleted_at"), now, note_id, uid),
             )
         return fields
 
@@ -60,11 +61,11 @@ class NotesRepositoryMixin:
                 "DELETE FROM notes WHERE id = ? AND uid = ?", (note_id, uid))
         return cursor.rowcount > 0
 
-    def list_notes(self, uid: str, limit: int = 10) -> list[dict[str, Any]]:
+    def list_notes(self, uid: str, limit: int = 10, include_deleted: bool = False) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM notes WHERE uid = ? ORDER BY created_at DESC LIMIT ?", (
-                    uid, limit)
+                "SELECT * FROM notes WHERE uid = ? AND (deleted_at IS NULL OR ? = 1) ORDER BY created_at DESC LIMIT ?", (
+                    uid, int(include_deleted), limit)
             ).fetchall()
         return [dict(r) for r in rows]
 

@@ -12,6 +12,7 @@ from ...services.database import DatabaseService
 from ...cloud.tier2_agent_tools import build_tier2_tools
 from ...backend.audit_log import audit_from_state
 from ..state import JarvisState
+from ...backend.command_execution import execution, report_progress, TOOL_LABELS, CommandStopped
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +48,30 @@ class Tier2ToolsNode:
             tool_args = call.get("args", {})
             call_id = call.get("id", tool_name)
 
+            context = execution.get()
+            key = context.tool_key(tool_name, tool_args) if context else ''
+            report_progress(TOOL_LABELS.get(tool_name, 'Checking the next step'))
+            is_write = tool_name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_'))
             t = tool_map.get(tool_name)
-            if not t:
+            if context and is_write and key in context.writes:
+                res_content = context.writes[key]
+            elif not t:
                 res_content = f"Error: Tool '{tool_name}' is not an allow-listed tool."
             else:
                 try:
                     res_content = str(t.invoke(tool_args))
+                    if context and is_write:
+                        context.writes[key] = res_content
                     # Check if an ID was created/modified
                     if "ID:" in res_content:
                         import re
                         m = re.search(r"ID:\s*([a-zA-Z0-9_-]+)", res_content)
                         if m:
                             changed_records.append(m.group(1))
+                            if context and m.group(1) not in context.changed_records:
+                                context.changed_records.append(m.group(1))
+                except CommandStopped:
+                    raise
                 except Exception as e:
                     logger.error("Tool execution failed: %s with args %s: %s", tool_name, tool_args, e)
                     res_content = f"Error executing {tool_name}: {e}"

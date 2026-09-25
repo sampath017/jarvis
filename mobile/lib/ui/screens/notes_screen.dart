@@ -23,6 +23,8 @@ class _NotesScreenState extends State<NotesScreen> {
   final SyncService _syncService = SyncService();
 
   List<Map<String, dynamic>> _notes = [];
+  List<Map<String, dynamic>> _trashedNotes = [];
+  bool _showTrash = false;
   bool _isLoading = false;
 
   @override
@@ -55,9 +57,11 @@ class _NotesScreenState extends State<NotesScreen> {
 
   Future<void> _refreshFromLocalDb() async {
     final list = await _localDb.getNotes();
+    final trashed = await _localDb.getNotes(deleted: true);
     if (mounted) {
       setState(() {
         _notes = list;
+        _trashedNotes = trashed;
       });
     }
   }
@@ -70,14 +74,14 @@ class _NotesScreenState extends State<NotesScreen> {
     if (mounted && _isLoading) setState(() => _isLoading = false);
   }
 
-
   void _showAddNoteDialog() {
     final contentCtrl = TextEditingController();
     final placeCtrl = TextEditingController();
 
     // Autofill place if we have current GPS context
     if (widget.sensorService.hasGpsFix) {
-      placeCtrl.text = 'Lat ${widget.sensorService.lat.toStringAsFixed(3)}, Lon ${widget.sensorService.lon.toStringAsFixed(3)}';
+      placeCtrl.text =
+          'Lat ${widget.sensorService.lat.toStringAsFixed(3)}, Lon ${widget.sensorService.lon.toStringAsFixed(3)}';
     }
 
     showDialog(
@@ -89,7 +93,7 @@ class _NotesScreenState extends State<NotesScreen> {
             Icon(Icons.note_add, color: AppTheme.accent, size: 22),
             SizedBox(width: 8),
             Text(
-              'NEW CONTEXT NOTE',
+              'New note',
               style: TextStyle(
                 color: AppTheme.textPrimary,
                 fontSize: 14,
@@ -108,9 +112,15 @@ class _NotesScreenState extends State<NotesScreen> {
               style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
               decoration: const InputDecoration(
                 labelText: 'Note Content',
-                labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                labelStyle: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 12,
+                ),
                 hintText: 'e.g. Odometer reading at start: 4,285 km',
-                hintStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                hintStyle: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 11,
+                ),
                 border: OutlineInputBorder(),
               ),
             ),
@@ -120,9 +130,15 @@ class _NotesScreenState extends State<NotesScreen> {
               style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
               decoration: const InputDecoration(
                 labelText: 'Context Place / Tag',
-                labelStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                labelStyle: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 12,
+                ),
                 hintText: 'e.g. Home Garage / RE Showroom',
-                hintStyle: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                hintStyle: TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 11,
+                ),
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.place, color: AppTheme.accent, size: 18),
               ),
@@ -132,10 +148,16 @@ class _NotesScreenState extends State<NotesScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('CANCEL', style: TextStyle(color: AppTheme.textSecondary)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: AppTheme.textSecondary),
+            ),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent, foregroundColor: Colors.black),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primary,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () async {
               if (contentCtrl.text.trim().isEmpty) return;
               Navigator.pop(ctx);
@@ -144,7 +166,9 @@ class _NotesScreenState extends State<NotesScreen> {
                 'id': 'note-${DateTime.now().millisecondsSinceEpoch}',
                 'title': 'Context Note',
                 'content': contentCtrl.text.trim(),
-                'place': placeCtrl.text.trim().isEmpty ? null : placeCtrl.text.trim(),
+                'place': placeCtrl.text.trim().isEmpty
+                    ? null
+                    : placeCtrl.text.trim(),
                 'created_at': now,
                 'updated_at': now,
               };
@@ -152,7 +176,7 @@ class _NotesScreenState extends State<NotesScreen> {
               _refreshFromLocalDb();
               _syncService.syncNow();
             },
-            child: const Text('SAVE NOTE'),
+            child: const Text('Save note'),
           ),
         ],
       ),
@@ -161,29 +185,39 @@ class _NotesScreenState extends State<NotesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final notes = _notes;
+    final notes = _showTrash ? _trashedNotes : _notes;
 
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text(
-          'Notes',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            letterSpacing: 0.5,
-            fontSize: 16,
-          ),
+        title: Text(
+          _showTrash ? 'Note Trash' : 'Notes',
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 22),
         ),
+        actions: [
+          TextButton.icon(
+            icon: Icon(_showTrash ? Icons.arrow_back : Icons.delete_outline),
+            label: Text(_showTrash ? 'Back' : 'Trash'),
+            onPressed: () => setState(() => _showTrash = !_showTrash),
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: AppTheme.accent,
-        foregroundColor: Colors.black,
-        icon: const Icon(Icons.add),
-        label: const Text('NEW NOTE', style: TextStyle(fontWeight: FontWeight.bold)),
-        onPressed: _showAddNoteDialog,
-      ),
+      floatingActionButton: _showTrash
+          ? null
+          : FloatingActionButton.extended(
+              backgroundColor: AppTheme.primary,
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.add),
+              label: const Text(
+                'New note',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              onPressed: _showAddNoteDialog,
+            ),
       body: (_isLoading && notes.isEmpty)
-          ? const Center(child: CircularProgressIndicator(color: AppTheme.accent))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.accent),
+            )
           : RefreshIndicator(
               onRefresh: _syncWithCloud,
               backgroundColor: AppTheme.surfaceBright,
@@ -193,7 +227,17 @@ class _NotesScreenState extends State<NotesScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
                 children: [
                   if (notes.isEmpty)
-                    _buildEmptyState()
+                    _showTrash
+                        ? const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(32),
+                              child: Text(
+                                'Trash is empty',
+                                style: TextStyle(color: AppTheme.textSecondary),
+                              ),
+                            ),
+                          )
+                        : _buildEmptyState()
                   else
                     for (final n in notes) ...[
                       _buildNoteTile(n),
@@ -212,24 +256,26 @@ class _NotesScreenState extends State<NotesScreen> {
     final createdAt = n['created_at']?.toString().split('T')[0] ?? '';
 
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
       decoration: BoxDecoration(
         color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.border),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppTheme.border.withValues(alpha: 0.55)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppTheme.accent.withAlpha(30),
-              shape: BoxShape.circle,
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(
+              _showTrash
+                  ? Icons.inventory_2_outlined
+                  : Icons.sticky_note_2_outlined,
+              color: _showTrash ? AppTheme.textSecondary : AppTheme.primary,
+              size: 24,
             ),
-            child: const Icon(Icons.sticky_note_2, color: AppTheme.accent, size: 18),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -237,7 +283,7 @@ class _NotesScreenState extends State<NotesScreen> {
                 Text(
                   content,
                   style: const TextStyle(
-                    fontSize: 13,
+                    fontSize: 15,
                     fontWeight: FontWeight.w500,
                     color: AppTheme.textPrimary,
                   ),
@@ -246,15 +292,39 @@ class _NotesScreenState extends State<NotesScreen> {
                 Row(
                   children: [
                     if (place.isNotEmpty) ...[
-                      const Icon(Icons.place, color: AppTheme.accent, size: 12),
+                      const Icon(
+                        Icons.place_outlined,
+                        color: AppTheme.textSecondary,
+                        size: 12,
+                      ),
                       const SizedBox(width: 3),
-                      Text(place, style: const TextStyle(fontSize: 10.5, color: AppTheme.accent)),
+                      Flexible(
+                        child: Text(
+                          place,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ),
                       const SizedBox(width: 10),
                     ],
                     if (createdAt.isNotEmpty) ...[
-                      const Icon(Icons.calendar_today, color: AppTheme.textSecondary, size: 11),
+                      const Icon(
+                        Icons.calendar_today,
+                        color: AppTheme.textSecondary,
+                        size: 11,
+                      ),
                       const SizedBox(width: 3),
-                      Text(createdAt, style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                      Text(
+                        createdAt,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
                     ],
                   ],
                 ),
@@ -262,10 +332,18 @@ class _NotesScreenState extends State<NotesScreen> {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.delete_outline, color: AppTheme.red, size: 18),
+            icon: Icon(
+              _showTrash ? Icons.restore : Icons.move_to_inbox_outlined,
+              color: _showTrash ? AppTheme.primary : AppTheme.textSecondary,
+              size: 20,
+            ),
+            tooltip: _showTrash ? 'Restore Note' : 'Move to Trash',
             onPressed: () async {
-              await _localDb.deleteNote(id);
-              await _apiService.deleteNote(id);
+              if (_showTrash) {
+                await _localDb.restoreNote(id);
+              } else {
+                await _localDb.deleteNote(id);
+              }
               _refreshFromLocalDb();
               _syncService.syncNow();
             },
@@ -275,22 +353,29 @@ class _NotesScreenState extends State<NotesScreen> {
     );
   }
 
-
   Widget _buildEmptyState() {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 40),
       alignment: Alignment.center,
       child: Column(
         children: [
-          Icon(Icons.notes, color: AppTheme.textSecondary.withAlpha(100), size: 48),
+          Icon(
+            Icons.notes,
+            color: AppTheme.textSecondary.withAlpha(100),
+            size: 48,
+          ),
           const SizedBox(height: 12),
           const Text(
-            'No Notes Logged',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+            'No notes yet',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textPrimary,
+            ),
           ),
           const SizedBox(height: 4),
           const Text(
-            'Tap "+ NEW NOTE" or chat with Jarvis to\nlog trip memos, maintenance notes, and fuel readings.',
+            'Save a thought here, or ask Jarvis to keep a note for you.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
           ),
