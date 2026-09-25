@@ -70,3 +70,43 @@ def test_sibling_auto_completion_on_fire(db):
     # Check that sibling r2 was also automatically COMPLETED
     updated_r2 = db.get_reminder(uid, r2["id"])
     assert updated_r2["status"] == "COMPLETED"
+
+
+def test_co_located_walking_reminder_fires_while_already_inside_flats(db):
+    uid = "test_user"
+    automation = ContextAutomationService(db)
+
+    # Reminder to "Buy milk" when WALKING in Creations Valencia
+    r = db.create_reminder(
+        uid,
+        {
+            "title": "Buy milk",
+            "activity": "WALKING",
+            "location_name": "Creations Valencia (Home)",
+            "latitude": 12.83729,
+            "longitude": 80.22563,
+            "radius_m": 150.0,
+            "one_shot": True,
+            "created_at": "2026-09-23T10:00:00+00:00",
+        },
+    )
+
+    # User was ALREADY inside their flats (e.g. sitting in room)
+    db.upsert_trigger_state(uid, "REMINDER", r["id"], True, "old_event_inside", "2026-09-23T10:05:00+00:00")
+
+    # User starts WALKING inside flats (ACTIVITY_ENTER while inside)
+    event = {
+        "event_id": "evt_walk_start",
+        "event_type": "ACTIVITY_ENTER",
+        "transition": "ENTER",
+        "activity": "WALKING",
+        "location": {"latitude": 12.83729, "longitude": 80.22563},
+        "occurred_at": "2026-09-23T10:15:00+00:00",
+    }
+
+    changed = automation.process_context_event(uid, event)
+    assert len(changed) == 1
+
+    # Reminder should now be marked COMPLETED
+    updated = db.get_reminder(uid, r["id"])
+    assert updated["status"] == "COMPLETED"

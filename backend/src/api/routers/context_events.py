@@ -7,6 +7,7 @@ Handles activity transitions, sensor features, and locations from Android client
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Annotated
 from fastapi import APIRouter, Depends, status
 
@@ -64,6 +65,7 @@ async def ingest_context_event(
         "ACTIVITY_ENTER", "ACTIVITY_EXIT",
         "SESSION_START", "SESSION_END", "SESSION_STOP",
         "GEOFENCE_ENTER", "GEOFENCE_EXIT",
+        "CONTEXT_CHECKPOINT", "DWELL_CHECK", "ACTIVITY_SAMPLE",
     }
 
     try:
@@ -75,8 +77,13 @@ async def ingest_context_event(
         # Only genuine activity transitions are eligible — internal telemetry
         # bursts (e.g. 10s IMU burst while riding) must not create notifications.
         event_data = request.model_dump(mode="json")
+        event_data["semantic_contexts"] = result.get("semantic_contexts", [])
         event_type = str(event_data.get("event_type") or event_data.get("transition") or "").upper()
-        if event_type in _AUTOMATION_ELIGIBLE_EVENTS:
+        observed = datetime.fromisoformat(str(event_data["occurred_at"]).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        fresh = 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 300
+        if event_type in _AUTOMATION_ELIGIBLE_EVENTS and not result.get("error") and fresh:
             automation_changes = ContextAutomationService().process_context_event(
                 uid, event_data,
             )
@@ -104,7 +111,7 @@ async def ingest_context_event(
         )
 
     except Exception as e:
-        logger.error("Failed to run context-event workflow: %s", e)
+        logger.exception("Failed to run context-event workflow: %s", e)
         return APIResponse(
             status="error",
             message="Internal workflow execution error",

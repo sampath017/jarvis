@@ -1,16 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
+import 'local_db_service.dart';
 
 /// Client service that communicates with the Jarvis Cloud Run backend.
 /// Handles sending Low-Telemetry metadata, executing agentic commands,
 /// and synchronizing Reminders, Tasks, and Notes.
-class ApiService extends ChangeNotifier {
+class ApiService extends ChangeNotifier with WidgetsBindingObserver {
   static final ApiService _instance = ApiService._internal();
   factory ApiService() => _instance;
   ApiService._internal() {
+    WidgetsBinding.instance.addObserver(this);
     _startNotificationPoll();
   }
 
@@ -18,6 +20,7 @@ class ApiService extends ChangeNotifier {
   final Set<String> _dispatchedNotificationIds = {};
   final Map<String, DateTime> _recentNotificationTimestamps = {};
   Timer? _notificationPollTimer;
+  bool _flushingContext = false;
 
   // Cloud Run Backend URL (Deployed & Active)
   String _baseUrl = 'https://jarvis-backend-898516599131.asia-south1.run.app';
@@ -43,9 +46,33 @@ class ApiService extends ChangeNotifier {
 
   void _startNotificationPoll() {
     _notificationPollTimer?.cancel();
+    if (WidgetsBinding.instance.lifecycleState != null &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
     _notificationPollTimer = Timer.periodic(const Duration(seconds: 25), (_) {
       fetchNotifications();
+      flushContextEvents();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startNotificationPoll();
+      unawaited(fetchNotifications());
+      unawaited(flushContextEvents());
+    } else {
+      _notificationPollTimer?.cancel();
+      _notificationPollTimer = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _notificationPollTimer?.cancel();
+    super.dispose();
   }
 
   void setBaseUrl(String url) {
@@ -82,42 +109,58 @@ class ApiService extends ChangeNotifier {
     }
   }
 
-  /// Transmit Low-Telemetry JSON packet to Cloud Run (/context-events)
+  /// Transmit Context Event or Low-Telemetry JSON packet to Cloud Run (/context-events)
   Future<Map<String, dynamic>?> sendContextEvent({
     required String eventType,
-    required Map<String, dynamic> featureSummary,
-    required Map<String, dynamic> journeyGps,
+    String? activity,
+    String? transition,
+    Map<String, dynamic>? location,
+    Map<String, dynamic>? featureSummary,
+    Map<String, dynamic>? journeyGps,
     String? transitionState,
   }) async {
-    final payload = {
-      'event_id': 'evt_${DateTime.now().millisecondsSinceEpoch}',
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final payload = <String, dynamic>{
+      'event_id': 'evt_${DateTime.now().microsecondsSinceEpoch}',
       'event_type': eventType,
-      'timestamp': DateTime.now().toUtc().toIso8601String(),
-      'transition': transitionState ?? 'IN_VEHICLE_ENTER',
-      'feature_summary': featureSummary,
-      'journey_gps': journeyGps,
+      'activity': activity ?? 'UNKNOWN',
+      'transition': transition ?? (transitionState ?? 'ENTER'),
+      'occurred_at': nowIso,
+      'timestamp': nowIso,
+      'location': ?location,
+      'gps': ?location,
+      'feature_summary': ?featureSummary,
+      'journey_gps': ?journeyGps,
     };
 
-    try {
-      final res = await http
-          .post(
-            Uri.parse('$_baseUrl/context-events'),
-            headers: _headers,
-            body: jsonEncode(payload),
-          )
-          .timeout(const Duration(seconds: 15));
+    await LocalDbService().queueContextEvent(payload);
+    return flushContextEvents();
+  }
 
-      if (res.statusCode == 200 || res.statusCode == 202) {
+  Future<Map<String, dynamic>?> flushContextEvents() async {
+    if (_flushingContext) return null;
+    _flushingContext = true;
+    Map<String, dynamic>? latest;
+    try {
+      for (final event in await LocalDbService().pendingContextEvents()) {
+        final res = await http.post(Uri.parse('$_baseUrl/context-events'),
+            headers: _headers, body: jsonEncode(event)).timeout(const Duration(seconds: 60));
+        if (res.statusCode != 200 && res.statusCode != 202) break;
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        // Refresh reminders and notifications upon context resolution
+        if (data['status'] != 'ok') break;
+        await LocalDbService().acknowledgeContextEvent(event['event_id'].toString());
+        latest = data;
+      }
+      if (latest != null) {
         await fetchReminders();
         await fetchNotifications();
-        return data;
       }
     } catch (e) {
-      debugPrint('[ApiService] Error sending context event: $e');
+      debugPrint('[ApiService] Context retained for retry: $e');
+    } finally {
+      _flushingContext = false;
     }
-    return null;
+    return latest;
   }
 
   /// Dispatch an explicit text/voice command to Cloud Run (/commands)
@@ -350,24 +393,32 @@ class ApiService extends ChangeNotifier {
   /// Delete a chat session from Cloud Run / Firestore (/chat-sessions/{id})
   Future<bool> deleteChatSession(String id) async {
     try {
-      final res = await http.delete(
-        Uri.parse('$_baseUrl/chat-sessions/$id'),
-        headers: _headers,
-      );
-      return res.statusCode == 204 || res.statusCode == 200;
-    } catch (_) {}
+      final res = await http
+          .delete(
+            Uri.parse('$_baseUrl/chat-sessions/$id'),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 12));
+      return res.statusCode == 204 || res.statusCode == 200 || res.statusCode == 404;
+    } catch (e) {
+      debugPrint('[ApiService] Error deleting chat session $id: $e');
+    }
     return false;
   }
 
   /// Delete all chat sessions and messages from Cloud Run / Firestore (/chat-sessions)
   Future<bool> deleteAllChatSessions() async {
     try {
-      final res = await http.delete(
-        Uri.parse('$_baseUrl/chat-sessions'),
-        headers: _headers,
-      );
-      return res.statusCode == 204 || res.statusCode == 200;
-    } catch (_) {}
+      final res = await http
+          .delete(
+            Uri.parse('$_baseUrl/chat-sessions'),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 15));
+      return res.statusCode == 204 || res.statusCode == 200 || res.statusCode == 404;
+    } catch (e) {
+      debugPrint('[ApiService] Error deleting all chat sessions: $e');
+    }
     return false;
   }
 

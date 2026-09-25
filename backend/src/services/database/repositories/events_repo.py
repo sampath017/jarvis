@@ -52,10 +52,18 @@ class EventsRepositoryMixin:
         record = {"id": event_id, "uid": uid, **data, "created_at": now}
         return record, True
 
+    def get_latest_context_event(self, uid: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM context_events WHERE uid = ? ORDER BY timestamp DESC LIMIT 1",
+                (uid,),
+            ).fetchone()
+        return self._event_row_to_dict(row) if row else None
+
     def get_latest_gps(self, uid: str) -> dict[str, Any] | None:
         with self._conn() as conn:
             row = conn.execute(
-                """SELECT gps_lat, gps_lon, gps_accuracy_m, gps_speed_mps, gps_bearing_deg
+                """SELECT gps_lat, gps_lon, gps_accuracy_m, gps_speed_mps, gps_bearing_deg, timestamp
                    FROM context_events WHERE uid = ? AND gps_lat IS NOT NULL
                    ORDER BY timestamp DESC LIMIT 1""",
                 (uid,),
@@ -68,6 +76,7 @@ class EventsRepositoryMixin:
             "accuracy_m": row["gps_accuracy_m"],
             "speed_mps": row["gps_speed_mps"],
             "bearing_deg": row["gps_bearing_deg"],
+            "observed_at": row["timestamp"],
         }
 
     def _event_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:

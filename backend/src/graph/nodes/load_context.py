@@ -7,6 +7,7 @@ Class-based node implementation for loading context from SQLite.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from ..state import JarvisState
 from ...services.database import DatabaseService
 from ...backend.audit_log import audit_from_state
@@ -38,12 +39,41 @@ class LoadContextNode:
 
         try:
             context = self.db.load_scoped_context(uid=uid, thread_id=thread_id)
+            context_memory = []
+            semantic_contexts = []
+
+            # A Cloud Run request can land on any instance.  Prefer the
+            # uid-scoped Firestore session so journey context survives an
+            # instance recycle; SQLite remains an offline/local fallback.
+            try:
+                from ...services.firestore_service import FirestoreService
+                fs = FirestoreService()
+                cloud_session = fs.get_active_mobility_session(uid) if fs.is_available else None
+                if cloud_session:
+                    context["session"] = cloud_session
+                if fs.is_available and state.get("request_type") == "USER_COMMAND":
+                    context_memory = fs.get_context_memory(uid, limit=20)
+                    semantic_contexts = fs.get_semantic_contexts(uid)
+                if fs.is_available:
+                    for reminder in fs.get_reminders(uid):
+                        self.db.create_reminder(uid, reminder)
+                    for place in fs.get_places(uid):
+                        self.db.create_place(uid, place)
+            except Exception as cloud_err:
+                logger.info("Optional Firestore session hydration skipped: %s", cloud_err)
 
             # Retrieve the latest GPS reading from context events
             latest_gps = None
             try:
                 latest_gps = self.db.get_latest_gps(uid)
+                if latest_gps:
+                    observed = datetime.fromisoformat(str(latest_gps.get("observed_at", "")).replace("Z", "+00:00"))
+                    if observed.tzinfo is None:
+                        observed = observed.replace(tzinfo=timezone.utc)
+                    if not 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 300:
+                        latest_gps = None
             except Exception as e:
+                latest_gps = None
                 logger.info("Optional latest GPS fetch skipped: %s", e)
 
             # Merge latest GPS and nearby POIs into the context packet
@@ -59,7 +89,7 @@ class LoadContextNode:
                         "accuracy_m": 10.0,
                     }
                     packet["gps"] = gps_info
-                elif latest_gps:
+                elif latest_gps and state.get("request_type") == "USER_COMMAND":
                     gps_info = latest_gps
                     packet["gps"] = latest_gps
 
@@ -116,6 +146,8 @@ class LoadContextNode:
                 "messages": messages,
                 "preferences": context.get("preferences", []),
                 "context_packet": packet,
+                "context_memory": context_memory,
+                "semantic_contexts": semantic_contexts,
             }
 
         except Exception as e:

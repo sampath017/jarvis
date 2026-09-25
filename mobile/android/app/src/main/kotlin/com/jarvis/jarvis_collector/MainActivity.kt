@@ -6,12 +6,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.Manifest
+import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.google.android.gms.location.ActivityRecognition
-import com.google.android.gms.location.ActivityTransition
-import com.google.android.gms.location.ActivityTransitionRequest
-import com.google.android.gms.location.DetectedActivity
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -19,12 +17,18 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.jarvis/foreground_service"
     private val TAG = "JarvisMainActivity"
-    private var pendingIntent: PendingIntent? = null
+    private var legacyServiceCleared = false
+    private var contextPermissionResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        ActivityTransitionReceiver.sampleListener = { activity, confidence ->
+            runOnUiThread {
+                channel.invokeMethod("onActivitySample", mapOf("activity" to activity, "confidence" to confidence))
+            }
+        }
 
         // Wire listener from ActivityTransitionReceiver back to Flutter
         ActivityTransitionReceiver.transitionListener = { activity, transition ->
@@ -41,6 +45,21 @@ class MainActivity : FlutterActivity() {
 
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "requestContextPermissions" -> {
+                    val needed = mutableListOf<String>()
+                    if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED) {
+                        needed.add(Manifest.permission.ACTIVITY_RECOGNITION)
+                    }
+                    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        needed.add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    if (needed.isEmpty()) result.success(true)
+                    else if (contextPermissionResult != null) result.success(false)
+                    else {
+                        contextPermissionResult = result
+                        requestPermissions(needed.toTypedArray(), 4102)
+                    }
+                }
                 "startService" -> {
                     val title = call.argument<String>("title") ?: "Jarvis Active"
                     val content = call.argument<String>("content") ?: "Collecting 50Hz sensor telemetry in background"
@@ -66,6 +85,11 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "startTripwire" -> {
+                    if (!legacyServiceCleared) {
+                        // Stop a persistent service left running by earlier app versions.
+                        stopService(Intent(this, TelemetryForegroundService::class.java))
+                        legacyServiceCleared = true
+                    }
                     startActivityRecognitionUpdates(result)
                 }
                 "stopTripwire" -> {
@@ -80,6 +104,14 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 4102) {
+            contextPermissionResult?.success(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
+            contextPermissionResult = null
         }
     }
 
@@ -125,58 +157,18 @@ class MainActivity : FlutterActivity() {
         notificationManager.notify(id, notification)
     }
 
-    private fun getPendingIntent(): PendingIntent {
-        if (pendingIntent != null) return pendingIntent!!
-
-        val intent = Intent(this, ActivityTransitionReceiver::class.java).apply {
-            action = ActivityTransitionReceiver.ACTION_PROCESS_ACTIVITY_TRANSITIONS
-        }
-
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-
-        pendingIntent = PendingIntent.getBroadcast(this, 2002, intent, flags)
-        return pendingIntent!!
-    }
-
     private fun startActivityRecognitionUpdates(result: MethodChannel.Result) {
         try {
-            val transitions = listOf(
-                // IN_VEHICLE transitions
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.IN_VEHICLE)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build(),
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.IN_VEHICLE)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
-                    .build(),
-                // STILL & WALKING (for Stop-Shop-Return dwell resolution)
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.STILL)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build(),
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.WALKING)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build()
-            )
-
-            val request = ActivityTransitionRequest(transitions)
-            val client = ActivityRecognition.getClient(this)
-
-            client.requestActivityTransitionUpdates(request, getPendingIntent())
-                .addOnSuccessListener {
+            ActivityRecognitionRegistrar.register(this,
+                onSuccess = {
                     Log.i(TAG, "Successfully registered Google Activity Recognition tripwire")
                     result.success(true)
-                }
-                .addOnFailureListener { e ->
+                },
+                onFailure = { e ->
                     Log.e(TAG, "Failed to register Google Activity Recognition tripwire: ${e.message}")
                     result.error("GAR_ERROR", e.message, null)
-                }
+                },
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Exception starting tripwire: ${e.message}")
             result.error("GAR_EXCEPTION", e.message, null)
@@ -185,15 +177,15 @@ class MainActivity : FlutterActivity() {
 
     private fun stopActivityRecognitionUpdates(result: MethodChannel.Result) {
         try {
-            val client = ActivityRecognition.getClient(this)
-            client.removeActivityTransitionUpdates(getPendingIntent())
-                .addOnSuccessListener {
+            ActivityRecognitionRegistrar.unregister(this,
+                onSuccess = {
                     Log.i(TAG, "Successfully removed Google Activity Recognition tripwire")
                     result.success(true)
-                }
-                .addOnFailureListener { e ->
+                },
+                onFailure = { e ->
                     result.error("GAR_ERROR", e.message, null)
-                }
+                },
+            )
         } catch (e: Exception) {
             result.error("GAR_EXCEPTION", e.message, null)
         }

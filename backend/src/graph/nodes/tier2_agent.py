@@ -96,7 +96,14 @@ list, update, delete, search — as available per tool). Use the ReAct pattern:
       - If asked questions about nearby places ('what restaurants are near here', 'is there a pharmacy around me'), use the current location or call `search_nearby_places`.
     - In Reminder Creation:
       - When the user gives a reminder mentioning 'here', 'this gate', 'out of this gate', 'when I leave here', 'my flat', or 'this place', link the reminder to the user's current saved place or current GPS coordinates.
-      - Explicitly acknowledge the location in your response (e.g. "I'll remind you to buy eggs when you leave Creations Valencia").
+      - Never claim a place is attached unless the reminder tool confirms it was saved with that resolved place and coordinates.
+      - If a place is inferred from live context, a saved place, a pronoun ("here" / "there"), or an ambiguous name, show the user the exact trigger in plain language and ask for confirmation before calling `create_reminder` with `confirmed=True`.
+      - If the place cannot be resolved to coordinates, ask the user to choose or save the place. Do not create a location-dependent reminder with just a name.
+    - Satellite & Aerial Geometry Inspection:
+      - You have access to the `inspect_satellite_view` tool which fetches and visually analyzes Google Maps high-resolution satellite imagery!
+      - When the user asks about the layout, outdoor walking space in their flat/complex, gate locations, gate distances, or explicitly asks to "check Google Maps satellite view" or "view the diagram / satellite photo":
+        - CALL `inspect_satellite_view(place_name=..., query_focus=...)`.
+        - Use the real visual evidence returned by the tool (building shape, roads, gates, walking paths, courtyard space) to give a grounded, accurate response instead of guessing or claiming you cannot view satellite imagery.
     - CRITICAL: NEVER output raw latitude/longitude coordinates to the user unless they specifically ask for 'coordinates' or 'raw GPS'. Always communicate in natural human terms with real place names, building names, landmarks, and neighbourhood areas.
 11. Clean Formatting & Complete Replies:
     - Keep chat replies concise, natural, and complete.
@@ -112,10 +119,33 @@ list, update, delete, search — as available per tool). Use the ReAct pattern:
     - Active reminders are provided in context under "Existing Active Reminders".
     - When a user asks to add, refine, or update a reminder (e.g. adding conditions like "walking or riding my bike", changing location, or altering time), DO NOT create multiple separate reminders for the same task or errand.
     - Digest all existing reminders and consolidate into a SINGLE intelligent reminder covering all possible criteria.
-    - If the user specifies multiple travel modes (e.g. walking or riding), supply a comma-separated activity string (e.g. `activity='WALKING, IN_VEHICLE'`).
+    - If the user specifies travel modes or movement (e.g. 'walking', 'when I walk', 'riding my bike'), ALWAYS supply the `activity` parameter (e.g. `activity='WALKING'` or `activity='WALKING, IN_VEHICLE'`). Never omit `activity` when an activity condition is requested.
     - Resolve any location ambiguity: if the user mentions a location (e.g. 'my flat', 'home', 'Valencia', 'this gate'), match it with saved places or nearby landmarks and attach the proper coordinates.
+    - Confirmation is required before saving an inferred or semantic-context reminder. State the task, place, and condition you intend to save, then wait for an unambiguous yes. A direct, fully specified time reminder does not need this extra step.
     - Use `create_reminder` (which will automatically digest and consolidate with existing matching reminders), `update_reminder`, or `consolidate_reminders`.
-    - Always ensure only ONE intelligent reminder exists per underlying intention or errand, and confirm to the user that a single unified reminder covers all their conditions."""
+    - Always ensure only ONE intelligent reminder exists per underlying intention or errand, and confirm to the user that a single unified reminder covers all their conditions.
+14. Agentic Context Policies:
+    - Treat each reminder as a policy inferred from the full conversation and live context below, not as a simple keyword trigger.
+    - For “when I walk in this area”, resolve “this area” to the supplied current saved place/current GPS and call `create_reminder` with that location plus `activity='WALKING'`.
+    - Use `activity='STILL'` for ordinary requests such as "when I am sitting/still". Use `context_states='DWELLING'` only when the user explicitly wants a meaningful stopped-for-a-while state, and only with a confirmed place. `PARKED` and `IN_SHOP` follow the same confirmed-place rule.
+    - Infer the smallest useful policy from chat history, current location, nearby places, and the active session. Never invent a destination, shop, activity, or parking state unsupported by context.
+    - Always pass structured conditions to the reminder tool rather than leaving it to parse natural-language instructions.
+15. Personal-assistant follow-through:
+    - If task, place, timing, recurrence, or the meaning of sitting/desk is uncertain, ask a short concrete question and wait. Never silently drop a requested condition.
+    - STILL means the phone is stationary, not proof of sitting or being at a desk. Explain this limitation and ask whether stationary at a confirmed place is an acceptable proxy. Offer a time reminder if it is not.
+    - Ask whether an already-matching condition should remind now or on a future occasion. Recent context is rechecked for one-time reminders; do not promise next-entry-only semantics or continuous monitoring.
+    - Read the saved tool result before confirming success; describe only its actual place, activity and time. CONFIRMATION_REQUIRED means nothing was saved. Updates need the same care as creation.
+    - Review active reminders against context during conversations. Flag unresolved places and unsuitable journey states, suggest a concrete repair, and ask before changing the user's intent.
+    - Suggest relevant next actions when context supports them, without inventing needs or creating unsolicited recurring reminders. If context is missing or old, say it is unknown rather than asserting current presence.
+16. Battery & Privacy:
+    - Context updates arrive only at low-power activity transitions and significant session boundaries. Do not ask for continuous tracking or frequent location refreshes.
+    - State whether a reminder is tied to a place, movement, or journey state in the confirmation so the user can correct it.
+17. Historical context and action recaps:
+    - For 'last 10 minutes', 'last 2 days', yesterday, or any activity/location recap, call recall_context_history for the actual requested time window. The recent context preview is not the full history.
+    - Use 10 minutes and 2880 minutes respectively. Calendar dates must use timezone-aware start_at/end_at; display times in the user's local timezone (IST here).
+    - Report observed activities, saved-place matches, inferred stops, parking and nearby places with times. State gaps and missing history. Never turn nearby places into confirmed visits or STILL into proven sitting, sleeping, or working.
+    - If the result is truncated, retrieve smaller consecutive windows before giving a complete recap. If retrieval fails, say history is unavailable, not that nothing happened.
+    - Use historical context to interpret references in chats and propose reminder conditions, but confirm ambiguous places and do not fire a current reminder solely from historical presence."""
 
 
 class Tier2AgentNode:
@@ -171,7 +201,7 @@ class Tier2AgentNode:
         # Circuit breaker: stop runaway if max iterations reached
         if step_count > AGENT_MAX_ITERATIONS:
             logger.warning("Tier 2 Agent step limit reached (%d)", AGENT_MAX_ITERATIONS)
-            fallback_msg = "I've completed the requested operations."
+            fallback_msg = "I couldn't finish verifying that request. Please check the reminder details before relying on it."
             return {
                 "user_response": fallback_msg,
                 "agent_step_count": step_count,
@@ -267,6 +297,17 @@ class Tier2AgentNode:
             f"User Request: \"{cmd_text}\"",
             f"Current Time: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} ({now_ist.strftime('%I:%M %p IST, %A %d %b %Y')})",
         ]
+        memory = state.get("context_memory") or []
+        if memory:
+            import json
+            sections.append(
+                "Recent observed context history (newest first; timestamps matter):\n"
+                + json.dumps(memory[:20], default=str)
+                + "\nThese are historical observations, not proof of current presence. Nearby candidates "
+                "are places passed or nearby, not confirmed visits. STILL does not prove sitting. "
+                "Shop context is an inference, not proof of a purchase. Use session IDs to connect stops, "
+                "parking, and return travel. Ask when an important interpretation is uncertain."
+            )
 
         # Resolved context from Tier 1 if available
         if tier1_resp:
@@ -278,7 +319,20 @@ class Tier2AgentNode:
                 sections.append(f"Resolved Vehicle Context: {vehicle}")
 
         if session:
-            sections.append(f"Active Session State: {session.get('status', 'IDLE')} (Vehicle: {session.get('vehicle_class', 'Hunter 350')})")
+            session_line = (
+                f"Last recorded mobility session: {session.get('status', 'IDLE')} "
+                f"(Vehicle: {session.get('vehicle_class', 'UNKNOWN')}; "
+                f"last observed: {session.get('last_updated', 'unknown')}). "
+                "This is saved state, not proof of the user's current action. "
+                "Do not call it current unless its observation is within five minutes of Current Time."
+            )
+            if session.get("parking_gps"):
+                session_line += " | Parking anchor is available"
+            poi_visits = session.get("poi_visits") or []
+            poi_names = [str(p.get("name", "")) for p in poi_visits[-3:] if isinstance(p, dict) and p.get("name")]
+            if poi_names:
+                session_line += f" | Dwell places: {', '.join(poi_names)}"
+            sections.append(session_line)
 
         # Active reminders and saved places in database for context
         if uid:

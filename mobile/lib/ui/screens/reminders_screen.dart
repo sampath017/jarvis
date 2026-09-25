@@ -165,6 +165,11 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
       // Require at least one valid trigger condition
       if (!hasLocationRequirement && !hasActivity) continue;
+      final dueRaw = (r['due_at'] ?? '').toString().trim();
+      if (dueRaw.isNotEmpty) {
+        final due = DateTime.tryParse(dueRaw);
+        if (due == null || DateTime.now().toUtc().isBefore(due.toUtc())) continue;
+      }
 
       bool geofenceMatched = false;
       if (hasGeofence) {
@@ -241,6 +246,11 @@ class _RemindersScreenState extends State<RemindersScreen> {
     for (final r in _reminders) {
       final status = (r['status'] ?? 'ACTIVE').toString().toUpperCase();
       if (status != 'ACTIVE') continue;
+      if ((r['activity'] ?? '').toString().trim().isNotEmpty ||
+          (r['location_name'] ?? '').toString().trim().isNotEmpty ||
+          r['latitude'] != null || r['longitude'] != null) {
+        continue;
+      }
 
       final dueAtRaw = r['due_at']?.toString().trim();
       if (dueAtRaw == null || dueAtRaw.isEmpty) continue;
@@ -349,10 +359,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
               color: isActive
                   ? AppTheme.primary.withValues(alpha: 0.15)
                   : AppTheme.textSecondary.withValues(alpha: 0.1),
-              shape: BoxShape.circle,
+              borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              isActive ? Icons.alarm_on : Icons.alarm_off,
+              isActive ? Icons.alarm_on_outlined : Icons.alarm_off_outlined,
               color: isActive ? AppTheme.primary : AppTheme.textSecondary,
               size: 18,
             ),
@@ -382,22 +392,13 @@ class _RemindersScreenState extends State<RemindersScreen> {
                           const Icon(Icons.cloud_upload_outlined, size: 12, color: AppTheme.amber),
                           const SizedBox(width: 4),
                         ],
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: isActive
-                                ? AppTheme.green.withValues(alpha: 0.15)
-                                : AppTheme.textSecondary.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            status,
+                        Text(
+                            isActive ? 'Active' : 'Completed',
                             style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
                               color: isActive ? AppTheme.green : AppTheme.textSecondary,
                             ),
-                          ),
                         ),
                       ],
                     ),
@@ -407,11 +408,11 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 if (loc.isNotEmpty)
                   Row(
                     children: [
-                      const Icon(Icons.location_on, color: AppTheme.cyan, size: 13),
+                      const Icon(Icons.location_on_outlined, color: AppTheme.textSecondary, size: 13),
                       const SizedBox(width: 4),
                       Text(
                         loc,
-                        style: const TextStyle(fontSize: 11, color: AppTheme.cyan),
+                        style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                       ),
                     ],
                   ),
@@ -420,11 +421,11 @@ class _RemindersScreenState extends State<RemindersScreen> {
                     padding: const EdgeInsets.only(top: 3),
                     child: Row(
                       children: [
-                        const Icon(Icons.motorcycle, color: AppTheme.accent, size: 13),
+                      const Icon(Icons.directions_car_outlined, color: AppTheme.textSecondary, size: 13),
                         const SizedBox(width: 4),
                         Text(
                           'Triggers on: $activity',
-                          style: const TextStyle(fontSize: 11, color: AppTheme.accent),
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                         ),
                       ],
                     ),
@@ -446,7 +447,6 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('Reminder "$title" deleted'),
-                    backgroundColor: AppTheme.surfaceBright,
                     duration: const Duration(seconds: 2),
                   ),
                 );
@@ -468,12 +468,12 @@ class _RemindersScreenState extends State<RemindersScreen> {
               color: AppTheme.textSecondary.withValues(alpha: 0.5), size: 48),
           const SizedBox(height: 12),
           const Text(
-            'No Active Reminders',
+            'No reminders yet',
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
           ),
           const SizedBox(height: 4),
           const Text(
-            'All reminders are stored locally in SQLite\nand synchronized with Cloud Firestore.',
+            'Ask Jarvis to remind you about something,\nor pull down to refresh.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
           ),

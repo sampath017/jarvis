@@ -401,8 +401,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isOnline = _apiService.isOnline;
-    final currentTitle = _currentSession?.title ?? 'JARVIS AI ASSISTANT';
+    final currentTitle = _currentSession?.title ?? 'New chat';
 
     return Scaffold(
       key: _scaffoldKey,
@@ -416,22 +415,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         title: Row(
           children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isOnline ? AppTheme.green : AppTheme.red,
-                boxShadow: [
-                  BoxShadow(
-                    color: (isOnline ? AppTheme.green : AppTheme.red).withAlpha(160),
-                    blurRadius: 6,
-                    spreadRadius: 1.5,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
+            const Icon(Icons.auto_awesome_rounded, size: 20, color: AppTheme.primary),
+            const SizedBox(width: 10),
             Flexible(
               child: GestureDetector(
                 onTap: _currentSession != null
@@ -442,9 +427,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   currentTitle,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5,
-                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 17,
                   ),
                 ),
               ),
@@ -453,7 +437,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.add_comment_outlined, color: AppTheme.primary, size: 20),
+            icon: const Icon(Icons.edit_outlined, color: AppTheme.textPrimary, size: 21),
             tooltip: 'New Chat',
             onPressed: _startNewChat,
           ),
@@ -472,24 +456,23 @@ class _ChatScreenState extends State<ChatScreen> {
                             children: [
                               Icon(
                                 Icons.auto_awesome_rounded,
-                                color: AppTheme.primary.withValues(alpha: 0.35),
-                                size: 40,
+                                color: AppTheme.primary,
+                                size: 36,
                               ),
                               const SizedBox(height: 12),
                               Text(
-                                'Jarvis',
+                                'How can I help?',
                                 style: TextStyle(
-                                  color: AppTheme.textPrimary.withValues(alpha: 0.7),
-                                  fontSize: 18,
+                                  color: AppTheme.textPrimary,
+                                  fontSize: 20,
                                   fontWeight: FontWeight.w600,
-                                  letterSpacing: 1.2,
                                 ),
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                'Ask anything or give a command',
+                                'Ask a question, set a reminder, or save a note.',
                                 style: TextStyle(
-                                  color: AppTheme.textSecondary.withValues(alpha: 0.5),
+                                  color: AppTheme.textSecondary,
                                   fontSize: 13,
                                 ),
                               ),
@@ -519,7 +502,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                         SizedBox(width: 10),
                         Text(
-                          'Jarvis is reasoning with OpenRouter & LangGraph...',
+                          'Jarvis is working…',
                           style: TextStyle(
                             fontSize: 11,
                             fontStyle: FontStyle.italic,
@@ -547,9 +530,8 @@ class _ChatScreenState extends State<ChatScreen> {
       child: SafeArea(
         child: Column(
           children: [
-            // Drawer Header
             Container(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+              padding: const EdgeInsets.fromLTRB(20, 18, 16, 14),
               decoration: const BoxDecoration(
                 border: Border(bottom: BorderSide(color: AppTheme.border)),
               ),
@@ -558,22 +540,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   Row(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: AppTheme.primary.withAlpha(30),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.chat_bubble_outline_rounded,
-                            color: AppTheme.primary, size: 20),
-                      ),
+                      const Icon(Icons.auto_awesome_rounded,
+                          color: AppTheme.primary, size: 22),
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Text(
-                          'Previous Chats',
+                          'Chats',
                           style: TextStyle(
                             fontSize: 17,
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w600,
                             color: AppTheme.textPrimary,
                           ),
                         ),
@@ -602,9 +577,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     width: double.infinity,
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primary,
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        padding: const EdgeInsets.symmetric(vertical: 10),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),
                         ),
@@ -644,11 +617,11 @@ class _ChatScreenState extends State<ChatScreen> {
                         return Container(
                           decoration: BoxDecoration(
                             color: isSelected
-                                ? AppTheme.primary.withAlpha(25)
-                                : AppTheme.surfaceBright.withAlpha(50),
+                                ? AppTheme.primary.withAlpha(18)
+                                : Colors.transparent,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
-                              color: isSelected ? AppTheme.primary.withAlpha(120) : AppTheme.border,
+                              color: isSelected ? AppTheme.primary.withAlpha(80) : Colors.transparent,
                             ),
                           ),
                           child: ListTile(
@@ -665,7 +638,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                                color: isSelected ? Colors.white : AppTheme.textPrimary,
+                                color: AppTheme.textPrimary,
                               ),
                             ),
                             subtitle: Column(
@@ -741,19 +714,17 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!isUser) ...[
             Container(
               margin: const EdgeInsets.only(right: 8, top: 2),
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: AppTheme.primary.withAlpha(30),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.psychology, color: AppTheme.primary, size: 16),
+              width: 28,
+              height: 28,
+              decoration: const BoxDecoration(color: AppTheme.primary, shape: BoxShape.circle),
+              child: const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 15),
             ),
           ],
           Flexible(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: isUser ? AppTheme.primary.withAlpha(40) : AppTheme.surfaceBright,
+                color: isUser ? AppTheme.primary : AppTheme.surface,
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(14),
                   topRight: const Radius.circular(14),
@@ -761,7 +732,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   bottomRight: Radius.circular(isUser ? 2 : 14),
                 ),
                 border: Border.all(
-                  color: isUser ? AppTheme.primary.withAlpha(120) : AppTheme.border,
+                  color: isUser ? AppTheme.primary : AppTheme.border,
                 ),
               ),
               child: Column(
@@ -780,7 +751,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       ],
                       Text(
                         timeStr,
-                        style: const TextStyle(fontSize: 9, color: AppTheme.textSecondary),
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: isUser ? Colors.white70 : AppTheme.textSecondary,
+                        ),
                       ),
                     ],
                   ),
@@ -797,10 +771,11 @@ class _ChatScreenState extends State<ChatScreen> {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       decoration: const BoxDecoration(
-        color: AppTheme.surface,
+        color: AppTheme.background,
         border: Border(top: BorderSide(color: AppTheme.border)),
       ),
       child: SafeArea(
+        top: false,
         child: Row(
           children: [
             Expanded(
@@ -811,11 +786,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   hintText: 'Ask Jarvis, set reminder, log note...',
                   hintStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                   filled: true,
-                  fillColor: AppTheme.surfaceBright,
+                  fillColor: AppTheme.surface,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none,
+                    borderSide: const BorderSide(color: AppTheme.border),
                   ),
                 ),
                 onSubmitted: _handleSendMessage,
@@ -828,7 +803,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 shape: BoxShape.circle,
               ),
               child: IconButton(
-                icon: const Icon(Icons.send, color: Colors.black, size: 18),
+                icon: const Icon(Icons.send_rounded, color: Colors.white, size: 18),
                 onPressed: _isSending ? null : () => _handleSendMessage(_inputController.text),
               ),
             ),

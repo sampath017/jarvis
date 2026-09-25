@@ -3,10 +3,10 @@ package com.jarvis.jarvis_collector
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
 import com.google.android.gms.location.ActivityTransition
 import com.google.android.gms.location.ActivityTransitionResult
+import com.google.android.gms.location.ActivityRecognitionResult
 import com.google.android.gms.location.DetectedActivity
 
 /**
@@ -21,9 +21,13 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
         
         // Listener callback registered from MainActivity / Flutter
         var transitionListener: ((activity: String, transition: String) -> Unit)? = null
+        var sampleListener: ((activity: String, confidence: Int) -> Unit)? = null
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        // Older app versions also registered periodic samples. Ignore any
+        // already in flight; transitions now wake the app only when needed.
+        if (ActivityRecognitionResult.hasResult(intent)) return
         if (!ActivityTransitionResult.hasResult(intent)) {
             Log.d(TAG, "Received intent with no ActivityTransitionResult")
             return
@@ -49,23 +53,21 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
 
             Log.i(TAG, "[Stage 1 Tripwire] Transition detected: $activityName -> $transitionName")
 
+            if (activityName == "UNKNOWN" || transitionName == "UNKNOWN") continue
+            val eventType = if (transitionName == "ENTER") "ACTIVITY_ENTER" else "ACTIVITY_EXIT"
+            ContextEventQueue.add(context, ContextEventQueue.newEvent(eventType, activityName, transitionName))
+            if (transitionName == "ENTER") {
+                ContextEventQueue.setCurrentActivity(context, activityName)
+                if (activityName == "STILL" || activityName == "WALKING") {
+                    ContextEventQueue.scheduleDwell(context, activityName)
+                }
+            } else if (ContextEventQueue.currentActivity(context) == activityName) {
+                ContextEventQueue.setCurrentActivity(context, "")
+            }
+
             // Notify in-process listener (Flutter)
             transitionListener?.invoke(activityName, transitionName)
 
-            // If entering a vehicle, automatically ensure ForegroundService is active
-            if (activityName == "IN_VEHICLE" && transitionName == "ENTER") {
-                Log.i(TAG, "[Stage 1 Kickstart] IN_VEHICLE ENTER -> Kicking off Stage 2 Bounded IMU Burst")
-                val serviceIntent = Intent(context, TelemetryForegroundService::class.java).apply {
-                    action = TelemetryForegroundService.ACTION_START
-                    putExtra(TelemetryForegroundService.EXTRA_TITLE, "Jarvis")
-                    putExtra(TelemetryForegroundService.EXTRA_CONTENT, "Active in background")
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
-            }
         }
     }
 }

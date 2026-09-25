@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -12,6 +13,7 @@ import '../models/recording_session.dart';
 import '../models/sensor_sample.dart';
 import 'api_service.dart';
 import 'feature_extractor.dart';
+import 'local_db_service.dart';
 import 'session_storage_service.dart';
 
 /// Central service that captures IMU and GPS sensors on demand,
@@ -19,7 +21,7 @@ import 'session_storage_service.dart';
 /// and writes high-frequency CSV logs alongside compact low-telemetry JSON metadata.
 ///
 /// Remains completely dormant (sensors powered off) when not recording.
-class SensorService extends ChangeNotifier {
+class SensorService extends ChangeNotifier with WidgetsBindingObserver {
   static const _channel = MethodChannel('com.jarvis/foreground_service');
 
   // ── Recording State ────────────────────────────────────────────────────────
@@ -38,12 +40,29 @@ class SensorService extends ChangeNotifier {
 
   // ── Stage 1 Tripwire State ──────────────────────────────────────────────────
   bool _isTripwireActive = false;
+  bool _contextAwarenessRequested = false;
   bool get isTripwireActive => _isTripwireActive;
 
   String? _lastActivityTransition;
   String? get lastActivityTransition => _lastActivityTransition;
   DateTime? _lastActivityTransitionTime;
   DateTime? get lastActivityTransitionTime => _lastActivityTransitionTime;
+
+  // Activity Recognition already delivers transitions from Google Play
+  // Services.  This is only a guard against duplicate broadcasts, not a
+  // polling loop or an additional activity classifier.
+  static const _activityTransitionDebounce = Duration(seconds: 45);
+  static const _usableCachedLocationAge = Duration(minutes: 5);
+  static const _forwardableActivities = {
+    'IN_VEHICLE',
+    'WALKING',
+    'STILL',
+    'RUNNING',
+    'ON_BICYCLE',
+    'ON_FOOT',
+  };
+  String? _lastForwardedTransitionKey;
+  DateTime? _lastForwardedTransitionTime;
 
   // File handles during active recording
   File? _currentCsvFile;
@@ -121,30 +140,88 @@ class SensorService extends ChangeNotifier {
 
   // ── Lifecycle & Initialization ─────────────────────────────────────────────
   Future<void> initialize() async {
+    WidgetsBinding.instance.addObserver(this);
     // Register native method channel callbacks (e.g. Activity Recognition transitions)
     _channel.setMethodCallHandler(_handleNativeCall);
     // Only check permissions on launch.
     // Sensors remain completely DORMANT to prevent battery drain when not recording.
     await _requestPermissions();
+    await _channel.invokeMethod('requestContextPermissions');
+    await startTripwire();
   }
 
   Future<void> _handleNativeCall(MethodCall call) async {
     if (call.method == 'onActivityTransition') {
       final args = Map<String, dynamic>.from(call.arguments ?? {});
-      final activity = args['activity']?.toString() ?? 'UNKNOWN';
-      final transition = args['transition']?.toString() ?? 'UNKNOWN';
+      final activity =
+          (args['activity']?.toString() ?? 'UNKNOWN').trim().toUpperCase();
+      final transition =
+          (args['transition']?.toString() ?? 'UNKNOWN').trim().toUpperCase();
       _lastActivityTransition = '$activity ($transition)';
       _lastActivityTransitionTime = DateTime.now();
       notifyListeners();
 
+      // Unknown callbacks must never wake GPS/network work. The native
+      // Activity Transition API is the source of recognised activities.
+      if ((transition != 'ENTER' && transition != 'EXIT') ||
+          !_forwardableActivities.contains(activity)) {
+        return;
+      }
+
+      final eventKey = '$activity:$transition';
+      final now = DateTime.now();
+      if (_lastForwardedTransitionKey == eventKey &&
+          _lastForwardedTransitionTime != null &&
+          now.difference(_lastForwardedTransitionTime!) <
+              _activityTransitionDebounce) {
+        debugPrint('[SensorService] Ignoring duplicate activity transition: $eventKey');
+        return;
+      }
+      _lastForwardedTransitionKey = eventKey;
+      _lastForwardedTransitionTime = now;
       if (activity == 'IN_VEHICLE' && transition == 'ENTER') {
         debugPrint('[SensorService] Stage 1 Tripwire Fired: IN_VEHICLE ENTER! Kicking off 10s Stage 2 burst.');
-        executeStage2Burst();
+        unawaited(executeStage2Burst());
       }
+      unawaited(_evaluateLocalActivityReminder(activity, transition));
+    }
+  }
+
+  /// Native Android persists and uploads the event even if Flutter is closed.
+  /// Keep only the local walking reminder fallback here.
+  Future<void> _evaluateLocalActivityReminder(String activity, String transition) async {
+    try {
+      // Keep activity-only walking reminders instant; location-aware walking
+      // reminders are evaluated once the opportunistic location resolves.
+      final isWalkingEnter = activity == 'WALKING' && transition == 'ENTER';
+      if (!isWalkingEnter) return;
+      await LocalDbService().evaluateActivityReminders(
+        activity: activity,
+        latitude: null,
+        longitude: null,
+      );
+
+      final loc = await getCurrentLocation(
+        requestIfNeeded: false,
+        preferCached: false,
+      );
+      final lat = loc?['latitude'];
+      final lon = loc?['longitude'];
+      if (isWalkingEnter && loc != null) {
+        await LocalDbService().evaluateActivityReminders(
+          activity: activity,
+          latitude: lat,
+          longitude: lon,
+        );
+      }
+
+    } catch (e) {
+      debugPrint('[SensorService] Local activity reminder error: $e');
     }
   }
 
   Future<void> startTripwire() async {
+    _contextAwarenessRequested = true;
     try {
       await _channel.invokeMethod('startTripwire');
       _isTripwireActive = true;
@@ -154,9 +231,19 @@ class SensorService extends ChangeNotifier {
     }
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _contextAwarenessRequested) {
+      // Re-register passive location if the user changed its permission in Settings.
+      unawaited(startTripwire());
+    }
+  }
+
   Future<void> stopTripwire() async {
+    _contextAwarenessRequested = false;
     try {
       await _channel.invokeMethod('stopTripwire');
+      if (!_isRecording) await _channel.invokeMethod('stopService');
       _isTripwireActive = false;
       notifyListeners();
     } catch (e) {
@@ -209,7 +296,10 @@ class SensorService extends ChangeNotifier {
   /// Retrieves the device's current GPS location on demand.
   /// Checks whether location services are enabled and permissions are granted.
   /// Employs fast last-known position fallback followed by a high-accuracy fix (3s timeout).
-  Future<Map<String, double>?> getCurrentLocation({bool requestIfNeeded = true}) async {
+  Future<Map<String, double>?> getCurrentLocation({
+    bool requestIfNeeded = true,
+    bool preferCached = false,
+  }) async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -235,6 +325,21 @@ class SensorService extends ChangeNotifier {
         _alt = position.altitude;
         _accuracy = position.accuracy;
         _hasGpsFix = true;
+
+        // An activity transition does not justify waking the GPS radio when a
+        // sufficiently recent fused location is already available.
+        final cachedAt = position.timestamp;
+        final cachedAge = DateTime.now().difference(cachedAt);
+        if (preferCached &&
+            cachedAge >= Duration.zero &&
+            cachedAge <= _usableCachedLocationAge) {
+          notifyListeners();
+          return {
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'accuracy': position.accuracy,
+          };
+        }
       }
 
       // Fetch fresh high-accuracy position with 3-second timeout
@@ -259,6 +364,8 @@ class SensorService extends ChangeNotifier {
       }
 
       if (position != null) {
+        final age = DateTime.now().difference(position.timestamp);
+        if (age < Duration.zero || age > _usableCachedLocationAge) return null;
         notifyListeners();
         return {
           'latitude': position.latitude,
@@ -640,6 +747,7 @@ class SensorService extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _stopSensorStreams();
     WakelockPlus.disable();
     super.dispose();

@@ -89,7 +89,7 @@ class _NotesScreenState extends State<NotesScreen> {
             Icon(Icons.note_add, color: AppTheme.accent, size: 22),
             SizedBox(width: 8),
             Text(
-              'NEW CONTEXT NOTE',
+              'New note',
               style: TextStyle(
                 color: AppTheme.textPrimary,
                 fontSize: 14,
@@ -132,10 +132,10 @@ class _NotesScreenState extends State<NotesScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('CANCEL', style: TextStyle(color: AppTheme.textSecondary)),
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accent, foregroundColor: Colors.black),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary, foregroundColor: Colors.white),
             onPressed: () async {
               if (contentCtrl.text.trim().isEmpty) return;
               Navigator.pop(ctx);
@@ -152,7 +152,7 @@ class _NotesScreenState extends State<NotesScreen> {
               _refreshFromLocalDb();
               _syncService.syncNow();
             },
-            child: const Text('SAVE NOTE'),
+            child: const Text('Save note'),
           ),
         ],
       ),
@@ -176,10 +176,10 @@ class _NotesScreenState extends State<NotesScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: AppTheme.accent,
-        foregroundColor: Colors.black,
+        backgroundColor: AppTheme.primary,
+        foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
-        label: const Text('NEW NOTE', style: TextStyle(fontWeight: FontWeight.bold)),
+        label: const Text('New note', style: TextStyle(fontWeight: FontWeight.w600)),
         onPressed: _showAddNoteDialog,
       ),
       body: (_isLoading && notes.isEmpty)
@@ -222,12 +222,12 @@ class _NotesScreenState extends State<NotesScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppTheme.accent.withAlpha(30),
-              shape: BoxShape.circle,
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+              color: AppTheme.primary.withAlpha(18),
+              borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.sticky_note_2, color: AppTheme.accent, size: 18),
+            child: const Icon(Icons.sticky_note_2_outlined, color: AppTheme.primary, size: 18),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -246,9 +246,9 @@ class _NotesScreenState extends State<NotesScreen> {
                 Row(
                   children: [
                     if (place.isNotEmpty) ...[
-                      const Icon(Icons.place, color: AppTheme.accent, size: 12),
+                      const Icon(Icons.place_outlined, color: AppTheme.textSecondary, size: 12),
                       const SizedBox(width: 3),
-                      Text(place, style: const TextStyle(fontSize: 10.5, color: AppTheme.accent)),
+                      Text(place, style: const TextStyle(fontSize: 10.5, color: AppTheme.textSecondary)),
                       const SizedBox(width: 10),
                     ],
                     if (createdAt.isNotEmpty) ...[
@@ -285,12 +285,12 @@ class _NotesScreenState extends State<NotesScreen> {
           Icon(Icons.notes, color: AppTheme.textSecondary.withAlpha(100), size: 48),
           const SizedBox(height: 12),
           const Text(
-            'No Notes Logged',
+            'No notes yet',
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
           ),
           const SizedBox(height: 4),
           const Text(
-            'Tap "+ NEW NOTE" or chat with Jarvis to\nlog trip memos, maintenance notes, and fuel readings.',
+            'Save a thought here, or ask Jarvis to keep a note for you.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
           ),

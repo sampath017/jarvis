@@ -31,6 +31,26 @@ def _fs() -> FirestoreService:
     return FirestoreService()
 
 
+@router.get("/context-memory")
+def context_memory(uid: Annotated[str, Depends(get_current_user)],
+                   lookback_minutes: int | None = Query(default=None, ge=1, le=44640),
+                   start_at: str = "", end_at: str = "") -> dict[str, object]:
+    fs = _fs()
+    if lookback_minutes is not None or start_at or end_at:
+        from ...backend.context_history import history_window, build_timeline
+        try:
+            start, end = history_window(lookback_minutes or 2880, start_at, end_at)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            records, truncated = fs.query_context_memory(uid, start, end)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Context history temporarily unavailable") from exc
+        return build_timeline(records, start, end, truncated=truncated)
+    records = fs.get_context_memory(uid, limit=50) if fs.is_available else []
+    return {"records": records, "count": len(records)}
+
+
 @router.get("/notes")
 def list_notes(uid: Annotated[str, Depends(get_current_user)]) -> dict[str, object]:
     fs = _fs()
@@ -114,7 +134,7 @@ def create_reminder(
 @router.patch("/reminders/{reminder_id}")
 def update_reminder(
     reminder_id: str,
-    request: ReminderUpdateRequest,
+    request: ReminderPatchRequest,
     uid: Annotated[str, Depends(get_current_user)],
 ) -> dict[str, object]:
     db = _db()
@@ -190,7 +210,20 @@ def list_notifications(
 ) -> dict[str, object]:
     # Polling is also a reliable fallback when the API process was asleep when a
     # time reminder became due; the lifespan sweeper handles the normal case.
-    _ = ContextAutomationService().process_due_reminders()
+    fs = _fs()
+    db = _db()
+    if fs.is_available:
+        for reminder in fs.get_reminders(uid):
+            db.create_reminder(uid, reminder)
+        latest = fs.get_context_memory(uid, limit=1)
+        if latest:
+            event = latest[0]
+            db.create_event_idempotent(uid, event["event_id"], event)
+    _ = ContextAutomationService(db=db).process_due_reminders()
+    if fs.is_available:
+        records = fs.get_notifications(uid, notification_status)
+        records.extend(r for r in db.list_notifications(uid, status=notification_status) if r.get("context_rule_id"))
+        return {"records": records, "count": len(records)}
     records = _db().list_notifications(uid, status=notification_status)
     return {"records": records, "count": len(records)}
 
@@ -200,7 +233,9 @@ def acknowledge_notification(
     notification_id: str,
     uid: Annotated[str, Depends(get_current_user)],
 ) -> dict[str, object]:
-    record = _db().acknowledge_notification(uid, notification_id)
+    fs = _fs()
+    record = fs.acknowledge_cloud_notification(uid, notification_id) if fs.is_available else None
+    record = record or _db().acknowledge_notification(uid, notification_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Notification not found")
     return record

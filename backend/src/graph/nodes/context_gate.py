@@ -6,7 +6,7 @@ Class-based node implementation for gating raw evidence before state mutations.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..state import JarvisState
 from ...backend.context_resolver import ContextResolver
@@ -21,7 +21,7 @@ def hydrate_packet(packet_dict: dict) -> ContextPacket:
     feature_data = packet_dict.get("feature_summary")
     return ContextPacket(
         event_id=packet_dict.get("event_id", ""),
-        timestamp=packet_dict.get("timestamp") or datetime.utcnow().isoformat(),
+        timestamp=packet_dict.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         activity=packet_dict.get("activity", ""),
         transition=packet_dict.get("transition", "ENTER"),
         gps=GPSReading(**gps_data) if gps_data else None,
@@ -53,7 +53,16 @@ class ContextGateNode:
         """Assess ambiguity on raw evidence before invoking SessionManager."""
         packet = hydrate_packet(state.get("context_packet", {}))
         session = hydrate_session(state.get("session"))
-        conflicts = self.resolver.detect_conflicts(packet, session)
+        event_type = str((state.get("raw_request") or {}).get("event_type") or "").upper()
+        # Sparse phone observations have no IMU fingerprint for Tier 1 to
+        # reconcile. Preserve them and let the deterministic reducer decide.
+        if event_type in {
+            "ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE",
+            "DWELL_CHECK", "CONTEXT_CHECKPOINT", "GEOFENCE_ENTER", "GEOFENCE_EXIT",
+        } and packet.feature_summary is None:
+            conflicts = []
+        else:
+            conflicts = self.resolver.detect_conflicts(packet, session)
         audit = audit_from_state(state, self.db)
 
         audit.log(

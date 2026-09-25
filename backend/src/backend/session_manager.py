@@ -11,7 +11,7 @@ the pure state-transition logic; Firestore I/O is handled by the graph nodes.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from ..settings import (
     MAX_SPEED_WALKING_MPS,
@@ -52,6 +52,10 @@ class SessionManager:
         the updated session, a newly created session, or None.
         """
         now = packet.timestamp
+        if current_session and (packet.event_id in current_session.events or now < current_session.last_updated):
+            return current_session
+        if packet.transition == "EXIT":
+            return current_session
 
         # Check for TTL expiry on paused session
         if current_session:
@@ -63,11 +67,11 @@ class SessionManager:
         gps = packet.gps
         pois = packet.nearby_pois
 
-        if current_session is None:
+        if current_session is None or current_session.status in (SessionStatus.COMPLETED, SessionStatus.EXPIRED):
             # No active session → check if we should start one
             if self._should_start_session(activity, confidence, vehicle_hint):
                 return self._create_session(packet)
-            return None
+            return current_session
 
         status = current_session.status
 
@@ -90,8 +94,8 @@ class SessionManager:
     def force_complete(self, session: SessionState) -> SessionState:
         """Force-complete a session (used by Tier 1 when it recommends COMPLETE)."""
         session.status = SessionStatus.COMPLETED
-        session.completed_at = datetime.utcnow()
-        session.last_updated = datetime.utcnow()
+        session.completed_at = datetime.now(timezone.utc)
+        session.last_updated = datetime.now(timezone.utc)
         return session
 
     def apply_tier1_resolution(
@@ -177,8 +181,13 @@ class SessionManager:
     def _record_poi_visit(
         self, session: SessionState, packet: ContextPacket,
     ) -> SessionState:
-        if packet.nearby_pois:
-            session.poi_visits.extend(packet.nearby_pois)
+        # Nearby is evidence of proximity, not proof of visiting every result.
+        known = {p.place_id or p.name for p in session.poi_visits}
+        candidates = [p for p in packet.nearby_pois if p.distance_m <= 40 and p.confidence >= 0.8]
+        if candidates:
+            nearest = min(candidates, key=lambda p: p.distance_m)
+            if (nearest.place_id or nearest.name) not in known:
+                session.poi_visits.append(nearest)
         session.last_updated = packet.timestamp
         session.events.append(packet.event_id)
         return session
@@ -208,7 +217,7 @@ class SessionManager:
         self, activity: str, gps: GPSReading | None,
     ) -> bool:
         """Detect transition from riding to stopped/walking."""
-        if activity in (ActivityType.STILL.value, ActivityType.WALKING.value):
+        if activity in (ActivityType.STILL.value, ActivityType.WALKING.value, "ON_FOOT"):
             return True
         return False
 

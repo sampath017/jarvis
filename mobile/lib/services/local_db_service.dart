@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import '../models/chat_session.dart';
+import 'api_service.dart';
+import 'sync_service.dart';
 
 /// Offline-first Local SQLite Database Service for Jarvis Mobile.
 ///
@@ -28,11 +31,26 @@ class LocalDbService extends ChangeNotifier {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
+      onOpen: (db) async {
+        await db.execute('CREATE TABLE IF NOT EXISTS context_outbox '
+            '(event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, occurred_at TEXT NOT NULL)');
+      },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           try {
             await db.execute("ALTER TABLE chat_sessions ADD COLUMN sync_status TEXT DEFAULT 'pending'");
+          } catch (_) {}
+        }
+        if (oldVersion < 3) {
+          try {
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS pending_deletions (
+                id TEXT PRIMARY KEY,
+                record_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+              )
+            ''');
           } catch (_) {}
         }
       },
@@ -111,11 +129,39 @@ class LocalDbService extends ChangeNotifier {
           )
         ''');
 
+        // Pending Deletions table for reliable offline-first deletion sync
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS pending_deletions (
+            id TEXT PRIMARY KEY,
+            record_type TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          )
+        ''');
+
         // Create indexes for fast querying
         await db.execute('CREATE INDEX idx_reminders_status ON reminders(status)');
         await db.execute('CREATE INDEX idx_messages_thread ON chat_messages(thread_id)');
       },
     );
+  }
+
+  Future<void> queueContextEvent(Map<String, dynamic> event) async {
+    final db = await database;
+    await db.insert('context_outbox', {
+      'event_id': event['event_id'], 'payload': jsonEncode(event),
+      'occurred_at': event['occurred_at'],
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<List<Map<String, dynamic>>> pendingContextEvents() async {
+    final db = await database;
+    final rows = await db.query('context_outbox', orderBy: 'occurred_at ASC', limit: 10);
+    return rows.map((row) => Map<String, dynamic>.from(jsonDecode(row['payload'] as String))).toList();
+  }
+
+  Future<void> acknowledgeContextEvent(String id) async {
+    final db = await database;
+    await db.delete('context_outbox', where: 'event_id = ?', whereArgs: [id]);
   }
 
 
@@ -188,6 +234,80 @@ class LocalDbService extends ChangeNotifier {
     final db = await database;
     await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
     notifyListeners();
+  }
+
+  /// Evaluate active reminders that match an activity (e.g. WALKING) and location.
+  /// Fires system notification immediately and marks reminder as COMPLETED.
+  Future<List<String>> evaluateActivityReminders({
+    required String activity,
+    double? latitude,
+    double? longitude,
+  }) async {
+    final triggeredIds = <String>[];
+    try {
+      final reminders = await getReminders(status: 'ACTIVE');
+      final normAct = activity.toUpperCase().trim();
+
+      for (final r in reminders) {
+        final rAct = (r['activity'] ?? '').toString().toUpperCase();
+        if (rAct.isEmpty) continue;
+
+        // Check if reminder activity matches (e.g. "WALKING" or "WALKING, IN_VEHICLE")
+        final acts = rAct.split(RegExp(r'[,/|]|(\bOR\b)'));
+        final matchesAct = acts.any((a) => a.trim().isNotEmpty && a.trim() == normAct);
+        if (!matchesAct) continue;
+        final dueRaw = (r['due_at'] ?? '').toString().trim();
+        if (dueRaw.isNotEmpty) {
+          final due = DateTime.tryParse(dueRaw);
+          if (due == null || DateTime.now().toUtc().isBefore(due.toUtc())) continue;
+        }
+
+        final rLat = (r['latitude'] is num) ? (r['latitude'] as num).toDouble() : null;
+        final rLon = (r['longitude'] is num) ? (r['longitude'] as num).toDouble() : null;
+        if ((r['location_name'] ?? '').toString().trim().isNotEmpty &&
+            (rLat == null || rLon == null)) {
+          continue;
+        }
+        final radius = (r['radius_m'] is num) ? (r['radius_m'] as num).toDouble() : 150.0;
+
+        bool shouldTrigger = false;
+        if (rLat != null && rLon != null) {
+          if (latitude != null && longitude != null) {
+            final dist = _haversineMeters(latitude, longitude, rLat, rLon);
+            if (dist <= radius) {
+              shouldTrigger = true;
+            }
+          }
+        } else {
+          // Activity-only reminder (no location constraint)
+          shouldTrigger = true;
+        }
+
+        if (shouldTrigger) {
+          final id = r['id']?.toString() ?? '';
+          final title = r['title'] ?? r['body'] ?? 'Reminder Alert';
+          final body = r['body'] ?? title;
+
+          ApiService().showSystemNotification(
+            id: id.hashCode,
+            title: 'Jarvis Reminder: $title',
+            content: body,
+          );
+
+          await updateReminderStatus(id, 'COMPLETED', markPending: true);
+          triggeredIds.add(id);
+          debugPrint('[LocalDbService] Triggered activity reminder: "$title" ($id)');
+        }
+      }
+
+      if (triggeredIds.isNotEmpty) {
+        notifyListeners();
+        SyncService().syncNow();
+      }
+    } catch (e) {
+      debugPrint('[LocalDbService] evaluateActivityReminders error: $e');
+    }
+    return triggeredIds;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -347,11 +467,56 @@ class LocalDbService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> deleteChatSession(String sessionId) async {
+  Future<void> deleteChatSession(String sessionId, {bool queueDeletion = true}) async {
     final db = await database;
     await db.delete('chat_messages', where: 'thread_id = ?', whereArgs: [sessionId]);
     await db.delete('chat_sessions', where: 'id = ?', whereArgs: [sessionId]);
+    if (queueDeletion) {
+      await db.insert(
+        'pending_deletions',
+        {
+          'id': sessionId,
+          'record_type': 'chat_session',
+          'created_at': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
     notifyListeners();
+  }
+
+  Future<void> deleteAllChatSessionsLocal({bool queueDeletion = false}) async {
+    final db = await database;
+    await db.delete('chat_messages');
+    await db.delete('chat_sessions');
+    if (queueDeletion) {
+      await db.insert(
+        'pending_deletions',
+        {
+          'id': 'ALL_CHAT_SESSIONS',
+          'record_type': 'all_chat_sessions',
+          'created_at': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingDeletions() async {
+    final db = await database;
+    try {
+      return await db.query('pending_deletions');
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> removePendingDeletion(String id) async {
+    final db = await database;
+    try {
+      await db.delete('pending_deletions', where: 'id = ?', whereArgs: [id]);
+    } catch (_) {}
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -560,9 +725,17 @@ class LocalDbService extends ChangeNotifier {
 
 
     if (remoteChatSessions != null) {
+      final pendingDeletions = await getPendingDeletions();
+      final deletedSessionIds = pendingDeletions
+          .where((d) => d['record_type'] == 'chat_session')
+          .map((d) => d['id'] as String)
+          .toSet();
+      final allSessionsDeleted =
+          pendingDeletions.any((d) => d['record_type'] == 'all_chat_sessions');
+
       final remoteIds = remoteChatSessions
           .map((s) => s['id']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
+          .where((id) => id.isNotEmpty && !deletedSessionIds.contains(id) && !allSessionsDeleted)
           .toSet();
 
       final localSynced = await db.query('chat_sessions', columns: ['id'], where: "sync_status = 'synced'");
@@ -574,23 +747,36 @@ class LocalDbService extends ChangeNotifier {
         }
       }
 
-      for (final s in remoteChatSessions) {
-        final data = Map<String, dynamic>.from(s);
-        batch.insert(
-          'chat_sessions',
-          {
-            'id': data['id'],
-            'title': data['title'] ?? 'New Chat',
-            'created_at': data['created_at'] ?? DateTime.now().toIso8601String(),
-            'updated_at': data['updated_at'] ?? DateTime.now().toIso8601String(),
-            'sync_status': 'synced',
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+      if (!allSessionsDeleted) {
+        for (final s in remoteChatSessions) {
+          final data = Map<String, dynamic>.from(s);
+          final sId = data['id']?.toString() ?? '';
+          if (deletedSessionIds.contains(sId)) continue;
+
+          batch.insert(
+            'chat_sessions',
+            {
+              'id': data['id'],
+              'title': data['title'] ?? 'New Chat',
+              'created_at': data['created_at'] ?? DateTime.now().toIso8601String(),
+              'updated_at': data['updated_at'] ?? DateTime.now().toIso8601String(),
+              'sync_status': 'synced',
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
       }
     }
 
     if (remoteChatMessages != null) {
+      final pendingDeletions = await getPendingDeletions();
+      final deletedSessionIds = pendingDeletions
+          .where((d) => d['record_type'] == 'chat_session')
+          .map((d) => d['id'] as String)
+          .toSet();
+      final allSessionsDeleted =
+          pendingDeletions.any((d) => d['record_type'] == 'all_chat_sessions');
+
       final remoteMsgIds = remoteChatMessages
           .map((m) => m['id']?.toString() ?? '')
           .where((id) => id.isNotEmpty)
@@ -604,24 +790,32 @@ class LocalDbService extends ChangeNotifier {
         }
       }
 
-      for (final m in remoteChatMessages) {
-        final data = Map<String, dynamic>.from(m);
-        batch.insert(
-          'chat_messages',
-          {
-            'id': data['id'],
-            'thread_id': data['thread_id'] ?? 'default',
-            'role': data['role'] ?? 'user',
-            'content': data['content'] ?? '',
-            'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
-            'run_id': data['run_id'],
-            'executed_records': data['executed_records'] is String
-                ? data['executed_records']
-                : jsonEncode(data['executed_records'] ?? []),
-            'sync_status': 'synced',
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+      if (!allSessionsDeleted) {
+        for (final m in remoteChatMessages) {
+          final data = Map<String, dynamic>.from(m);
+          final threadId = data['thread_id']?.toString() ?? 'default';
+          final mId = data['id']?.toString() ?? '';
+          if (deletedSessionIds.contains(threadId) || deletedSessionIds.contains(mId)) {
+            continue;
+          }
+
+          batch.insert(
+            'chat_messages',
+            {
+              'id': data['id'],
+              'thread_id': threadId,
+              'role': data['role'] ?? 'user',
+              'content': data['content'] ?? '',
+              'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
+              'run_id': data['run_id'],
+              'executed_records': data['executed_records'] is String
+                  ? data['executed_records']
+                  : jsonEncode(data['executed_records'] ?? []),
+              'sync_status': 'synced',
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
       }
     }
 
@@ -629,4 +823,14 @@ class LocalDbService extends ChangeNotifier {
     notifyListeners();
   }
 
+}
+
+double _haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+  const r = 6371000.0;
+  final dLat = (lat2 - lat1) * (pi / 180.0);
+  final dLon = (lon2 - lon1) * (pi / 180.0);
+  final a = sin(dLat / 2) * sin(dLat / 2) +
+      cos(lat1 * (pi / 180.0)) * cos(lat2 * (pi / 180.0)) * sin(dLon / 2) * sin(dLon / 2);
+  final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return r * c;
 }

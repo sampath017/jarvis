@@ -103,6 +103,14 @@ class RemindersRepositoryMixin:
             ).fetchone()
         return self._reminder_row_to_dict(row) if row else None
 
+    def list_context_reminders(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM reminders WHERE status = 'ACTIVE' AND one_shot = 1 "
+                "AND ((activity IS NOT NULL AND trim(activity) != '') OR latitude IS NOT NULL)"
+            ).fetchall()
+        return [self._reminder_row_to_dict(row) for row in rows]
+
     def list_due_reminders(self, now: str) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(

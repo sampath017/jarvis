@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -snf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && echo "Asia/Kolkata" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for fast, reliable package installation
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Pin the build tool and avoid an additional container-registry dependency.
+RUN pip install --no-cache-dir uv==0.11.20
 
 # Copy dependency definition files
 COPY pyproject.toml uv.lock ./

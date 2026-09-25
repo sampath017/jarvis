@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'api_service.dart';
 import 'local_db_service.dart';
@@ -9,7 +9,7 @@ import 'local_db_service.dart';
 ///
 /// Synchronizes local mobile SQLite database (jarvis_mobile.db) with
 /// Google Cloud Firestore via Cloud Run sync endpoints (/sync/push, /sync/pull).
-class SyncService {
+class SyncService with WidgetsBindingObserver {
   static final SyncService _instance = SyncService._internal();
   factory SyncService() => _instance;
   SyncService._internal();
@@ -20,9 +20,22 @@ class SyncService {
   Timer? _syncTimer;
   Timer? _reminderTimer;
   bool _isSyncing = false;
+  bool _enabled = false;
 
-  /// Start automatic background sync timer (every 30 seconds) and reminder evaluation timer (every 2 seconds)
+  /// Poll only while the app is visible. Android workers handle background delivery.
   void startPeriodicSync() {
+    if (!_enabled) {
+      _enabled = true;
+      WidgetsBinding.instance.addObserver(this);
+    }
+    if (WidgetsBinding.instance.lifecycleState != null &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    _resumeTimers();
+  }
+
+  void _resumeTimers() {
     _syncTimer?.cancel();
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       syncNow();
@@ -35,16 +48,37 @@ class SyncService {
 
     // Run background sync and reminder checks non-blockingly after initial UI render
     Future.delayed(const Duration(milliseconds: 1500), () {
+      if (!_enabled ||
+          (WidgetsBinding.instance.lifecycleState != null &&
+              WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed)) {
+        return;
+      }
       syncNow();
       evaluateDueReminders();
     });
   }
 
   void stopPeriodicSync() {
+    _enabled = false;
+    WidgetsBinding.instance.removeObserver(this);
+    _pauseTimers();
+  }
+
+  void _pauseTimers() {
     _syncTimer?.cancel();
     _syncTimer = null;
     _reminderTimer?.cancel();
     _reminderTimer = null;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_enabled) return;
+    if (state == AppLifecycleState.resumed) {
+      _resumeTimers();
+    } else {
+      _pauseTimers();
+    }
   }
 
   /// Perform a full bidirectional sync: Push pending local changes, then Pull remote changes
@@ -69,6 +103,30 @@ class SyncService {
 
   /// Push locally created or modified records that have sync_status = 'pending'
   Future<void> _pushPendingChanges() async {
+    // 1. Process pending deletions to Cloud Firestore
+    try {
+      final pendingDeletions = await _localDb.getPendingDeletions();
+      for (final d in pendingDeletions) {
+        final id = d['id'] as String;
+        final type = d['record_type'] as String;
+        if (type == 'chat_session') {
+          final ok = await _apiService.deleteChatSession(id);
+          if (ok) {
+            await _localDb.removePendingDeletion(id);
+            debugPrint('[SyncService] Successfully synced deletion for chat session $id');
+          }
+        } else if (type == 'all_chat_sessions') {
+          final ok = await _apiService.deleteAllChatSessions();
+          if (ok) {
+            await _localDb.removePendingDeletion(id);
+            debugPrint('[SyncService] Successfully synced deletion for all chat sessions');
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[SyncService] Error processing pending deletions: $e');
+    }
+
     final pending = await _localDb.getPendingSyncRecords();
     final reminders = pending['reminders'] ?? [];
     final notes = pending['notes'] ?? [];
@@ -186,6 +244,12 @@ class SyncService {
       for (final r in reminders) {
         final status = (r['status'] ?? '').toString().toUpperCase();
         if (status != 'ACTIVE') continue;
+        // The backend evaluates combined time and context conditions together.
+        if ((r['activity'] ?? '').toString().trim().isNotEmpty ||
+            (r['location_name'] ?? '').toString().trim().isNotEmpty ||
+            r['latitude'] != null || r['longitude'] != null) {
+          continue;
+        }
 
         final dueAtRaw = r['due_at']?.toString().trim();
         if (dueAtRaw == null || dueAtRaw.isEmpty) continue;
@@ -234,4 +298,3 @@ class SyncService {
     }
   }
 }
-
