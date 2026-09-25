@@ -44,6 +44,7 @@ def test_normalize_activity_string_edge_cases():
     # Exact standard enum tokens
     assert _normalize_activity_string("WALKING, IN_VEHICLE") == "IN_VEHICLE, WALKING"
     assert _normalize_activity_string("IN_VEHICLE, WALKING") == "IN_VEHICLE, WALKING"
+    assert _normalize_activity_string("car") == "CAR"
     # Empty / None
     assert _normalize_activity_string("") == ""
     assert _normalize_activity_string(None) == ""
@@ -120,6 +121,7 @@ def test_create_reminder_auto_consolidation(temp_db: DatabaseService):
 
     # 1. Create first reminder: "Walking in my flat"
     res1 = create_tool.invoke({
+        "confirmed": True,
         "title": "Walking in my flat",
         "location_name": "flat",
         "activity": "WALKING",
@@ -132,6 +134,7 @@ def test_create_reminder_auto_consolidation(temp_db: DatabaseService):
 
     # 2. Create second reminder for same errand on bike
     res2 = create_tool.invoke({
+        "confirmed": True,
         "title": "Bike in flat",
         "location_name": "flat",
         "activity": "bike",
@@ -251,6 +254,7 @@ def test_update_reminder_tool(temp_db: DatabaseService):
     upd_tool = tools["update_reminder"]
 
     res = upd_tool.invoke({
+        "confirmed": True,
         "reminder_id": rem_id,
         "activity": "walking or bike",
         "location_name": "flat",

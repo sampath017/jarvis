@@ -1,0 +1,5 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY src/ /app/src/
+COPY reader_smoke/ /app/reader_smoke/
+RUN python -m reader_smoke.smoke

@@ -11,10 +11,11 @@ Covers:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+from .file_urls import GOOGLE_FILE_URL_PATTERN
 
 from .enums import (
     CRUDEntity,
@@ -34,7 +35,7 @@ class GPSReading(BaseModel):
     speed_mps: float = 0.0
     bearing_deg: float = 0.0
     altitude_m: float | None = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class FeatureSummary(BaseModel):
@@ -50,6 +51,32 @@ class FeatureSummary(BaseModel):
     classification_confidence: float = 0.0
 
 
+class RadioEvidence(BaseModel):
+    id: str = Field(max_length=64)
+    rssi: int = Field(default=-100, ge=-150, le=20)
+    age_ms: int = Field(default=0, ge=0)
+
+
+class WifiContext(BaseModel):
+    status: str = Field(default="unavailable", max_length=64)
+    connected: RadioEvidence | None = None
+    nearby: list[RadioEvidence] = Field(default_factory=list, max_length=24)
+
+
+class BluetoothContext(BaseModel):
+    status: str = Field(default="unavailable", max_length=64)
+    connected: list[RadioEvidence] = Field(default_factory=list, max_length=24)
+    nearby: list[RadioEvidence] = Field(default_factory=list, max_length=24)
+    scan_error_code: int | None = Field(default=None, ge=0, le=255)
+    scan_scope: str | None = Field(default=None, max_length=64)
+
+
+class AmbientContext(BaseModel):
+    collected_at: datetime
+    wifi: WifiContext = Field(default_factory=WifiContext)
+    bluetooth: BluetoothContext = Field(default_factory=BluetoothContext)
+
+
 class ContextEventRequest(BaseModel):
     """POST /context-events request body."""
     event_id: str = Field(
@@ -61,7 +88,7 @@ class ContextEventRequest(BaseModel):
         description="Type of context event: BOUNDED_IMU_BURST, ACTIVITY_ENTER, TELEMETRY_PIPELINE_CHECK, etc.",
     )
     occurred_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp when the event occurred on device",
     )
     activity: str = Field(
@@ -88,6 +115,8 @@ class ContextEventRequest(BaseModel):
         default=None,
         description="Client-side session ID hint for continuity",
     )
+    ambient_context: AmbientContext | None = None
+    location_status: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="before")
     @classmethod
@@ -115,8 +144,22 @@ class ContextEventRequest(BaseModel):
         return data
 
 
+class FileMemoryReference(BaseModel):
+    storage: str = Field(default='legacy', max_length=16)
+    id: str = Field(max_length=256)
+    name: str = Field(max_length=4096)
+    mimeType: str = Field(max_length=128)
+    caption: str = Field(default="", max_length=32768)
+    url: str = Field(max_length=4096, pattern=GOOGLE_FILE_URL_PATTERN)
+
+
 class CommandRequest(BaseModel):
     """POST /commands request body."""
+    calendar_connected: bool = False
+    device_approvals: bool = False
+    calendar_id: str = Field(default="primary", max_length=256)
+    file_memories: list[FileMemoryReference] = Field(default_factory=list, max_length=12)
+    attached_file_ids: list[str] = Field(default_factory=list, max_length=5)
     request_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
         description="Client-generated UUID for idempotency",
@@ -190,6 +233,7 @@ class APIResponse(BaseModel):
     error: str | None = None
     intent: str | None = None
     resolved_place: str | None = None
+    needs_user_input: bool = False
 
 
 # -- Location-aware personal automation -------------------------------------
@@ -312,8 +356,8 @@ class SessionState(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     status: SessionStatus = SessionStatus.CREATED
     vehicle_class: VehicleClass = VehicleClass.UNKNOWN
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     paused_at: datetime | None = None
     completed_at: datetime | None = None
     parking_gps: GPSReading | None = None
@@ -329,7 +373,7 @@ class SessionState(BaseModel):
 class ContextPacket(BaseModel):
     """Normalised context packet assembled from the incoming event."""
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     activity: str = ""
     transition: str = "ENTER"
     gps: GPSReading | None = None
@@ -420,7 +464,7 @@ class Tier2Response(BaseModel):
 class AuditEntry(BaseModel):
     """Structured audit log entry for every decision across all graph nodes."""
     entry_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     uid: str = ""
     run_id: str = ""
     event_id: str = ""
@@ -447,8 +491,8 @@ class UserProfile(BaseModel):
     timezone: str = "UTC"
     consent_given: bool = False
     feature_flags: dict[str, bool] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class UserPreference(BaseModel):
@@ -457,8 +501,8 @@ class UserPreference(BaseModel):
     key: str
     value: Any
     source: str = "user"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class PlaceRecord(BaseModel):
@@ -470,8 +514,8 @@ class PlaceRecord(BaseModel):
     category: str = ""
     latitude: float = 0.0
     longitude: float = 0.0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ChatMessage(BaseModel):
@@ -479,5 +523,5 @@ class ChatMessage(BaseModel):
     message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     role: str = "user"
     content: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     run_id: str | None = None

@@ -1,5 +1,5 @@
 import pytest
-from src.models.schemas import CommandRequest
+from src.models.schemas import CommandRequest, POICandidate
 from src.graph.nodes.tier2_agent import Tier2AgentNode, reverse_geocode_location
 from src.services.database import DatabaseService
 
@@ -14,8 +14,11 @@ def test_command_request_gps_fields():
     assert req.longitude == 78.3489
 
 
-def test_tier2_agent_prompt_includes_gps_and_saved_places():
-    db = DatabaseService()
+def test_tier2_agent_prompt_includes_gps_and_saved_places(monkeypatch, tmp_path):
+    monkeypatch.setattr('src.services.places_client.PlacesClient.search_nearby',
+                            lambda *_args, **_kwargs: [POICandidate(place_id='nearby', name='Nearby landmark', category='landmark', latitude=17.44, longitude=78.3488)])
+    monkeypatch.setattr('src.graph.nodes.tier2_agent.reverse_geocode_location', lambda *_: 'Work area')
+    db = DatabaseService(tmp_path / 'location.db')
     uid = "test_user_loc"
     db.create_place(uid, {
         "name": "Work Campus",

@@ -1,0 +1,7 @@
+fastapi==0.135.4
+uvicorn==0.42.0
+sentence-transformers==6.1.0
+transformers==5.19.0
+pillow==12.3.0
+soundfile>=0.13,<0.14
+torchcodec==0.17.0

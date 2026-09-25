@@ -39,7 +39,13 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         if content_length:
             try:
                 size = int(content_length)
-                if size > MAX_REQUEST_SIZE_BYTES:
+                limit = (20 * 1024 * 1024 if request.method == "POST" and
+                         request.url.path.startswith("/file-memories/") and request.url.path.endswith("/analyze") else 128 * 1024 * 1024 if request.method == "PUT" and
+                         request.url.path.startswith("/session-library/recordings/") and
+                         "/files/" in request.url.path else 1024 * 1024 if request.method == 'POST' and
+                         request.url.path.startswith('/commands/requests/') and
+                         request.url.path.endswith('/calendar-result') else MAX_REQUEST_SIZE_BYTES)
+                if size > limit:
                     return JSONResponse(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         content={"detail": "Request payload too large"},
@@ -49,7 +55,12 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
 
         # 2. Exempt lightweight background polling, health probes, and sync endpoints
         path = request.url.path
-        if path in self.EXEMPT_PATHS:
+        # Bulk indexing submits small control messages for every source. It
+        # must not consume chat's request allowance; route capability checks
+        # still authorize each call, and source bytes go directly to storage.
+        index_control = (path in {'/drive-index/status', '/drive-index/jobs', '/drive-index/results', '/drive-index/uploads', '/drive-index/catalog'} or
+            (path.startswith('/drive-index/uploads/') and path.endswith('/complete')))
+        if path in self.EXEMPT_PATHS or index_control:
             return await call_next(request)
 
         # 3. Enforce rate limit by real client identity (X-User-ID or X-Forwarded-For IP)

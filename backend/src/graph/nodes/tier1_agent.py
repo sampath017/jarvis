@@ -12,6 +12,9 @@ import re
 from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from ...api.rate_limiter import TokenBudgetGuard
+from ...api.spend_policy import provider_limits
+from ...settings import TIER2_OUTPUT_TOKENS
 
 from ...cloud.tier1_agent_tools import build_tier1_tools
 from ...services.database import DatabaseService
@@ -65,9 +68,10 @@ class Tier1AgentNode:
             api_key=OPENROUTER_API_KEY,
             base_url=OPENROUTER_BASE_URL,
             temperature=0.0,
-            max_retries=2,
+            max_retries=0,
+            max_tokens=TIER2_OUTPUT_TOKENS,
             request_timeout=25.0,
-            extra_body={"reasoning": {"effort": "low"}},
+            extra_body={"reasoning": {"effort": "low"}, "provider": provider_limits(OPENROUTER_MODEL_TIER1)},
         )
 
     def __call__(self, state: JarvisState) -> dict[str, Any]:
@@ -83,8 +87,8 @@ class Tier1AgentNode:
         packet = state.get("context_packet", {})
 
         if not messages:
-            imu = packet.get("imu", {})
-            gps = packet.get("gps", {})
+            imu = packet.get("imu") or {}
+            gps = packet.get("gps") or {}
             user_msg = (
                 f"Raw Sensor Telemetry Event:\n"
                 f"- Activity: {packet.get('activity', 'UNKNOWN')} (Confidence: {packet.get('classification_confidence', 0.0)})\n"
@@ -98,11 +102,16 @@ class Tier1AgentNode:
             logger.warning("Tier 1 step limit reached (%d)", AGENT_MAX_ITERATIONS)
             return {"tier1_invoked": True}
 
-        try:
-            ai_msg: AIMessage = llm_with_tools.invoke(messages)  # type: ignore[assignment]
-        except Exception as e:
-            logger.error("Tier 1 agent invocation error: %s", e, exc_info=True)
-            ai_msg = self.llm.invoke(messages)  # type: ignore[assignment]
+        guard = TokenBudgetGuard()
+        estimated = sum(len(str(m.content)) for m in messages) // 3
+        reservation = guard.check_and_reserve_tokens(uid, estimated + TIER2_OUTPUT_TOKENS,
+            model=OPENROUTER_MODEL_TIER1, max_output_tokens=TIER2_OUTPUT_TOKENS)
+        # Do not replay an accepted call after an ambiguous transport failure.
+        ai_msg: AIMessage = llm_with_tools.invoke(messages)
+        usage = getattr(ai_msg, 'usage_metadata', None) or {}
+        guard.record_llm_usage(uid, usage.get('input_tokens', estimated),
+            usage.get('output_tokens', TIER2_OUTPUT_TOKENS), reservation=reservation,
+            cost_usd=((getattr(ai_msg, 'response_metadata', None) or {}).get('token_usage') or {}).get('cost'))
 
         updated_messages = messages + [ai_msg]
         has_tool_calls = bool(getattr(ai_msg, "tool_calls", []))

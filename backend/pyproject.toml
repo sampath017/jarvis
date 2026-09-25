@@ -29,11 +29,25 @@ dependencies = [
     "scipy>=1.18.1",
     "ipykernel>=7.3.0",
     "google-cloud-firestore>=2.19.0",
+    "google-cloud-storage>=2.19.0",
+    "beautifulsoup4>=4.15.0",
+    "chromadb==1.5.9",
+    "pymupdf==1.28.2",
+    "pillow==12.3.0",
+    "openpyxl>=3.1.5",
+    "python-pptx>=1.0.2",
+    "python-docx>=1.2.0",
+    "xlrd>=2.0.2",
+    "libarchive-c>=5.3",
+    "pyaxmlparser>=0.3.31",
+    "pefile>=2024.8.26",
 ]
 
 [project.scripts]
 backend = "src.api.main:run"
 jarvis-api = "src.api.main:run"
+purge-chats = "scripts.purge_chats:purge"
+delete-chats = "scripts.delete_all_chats:main"
 
 [dependency-groups]
 dev = [

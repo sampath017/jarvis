@@ -7,6 +7,9 @@ class ChatMessage {
   final List<String> executedRecords;
   final int? durationMs;
 
+  bool get isInternalAttachmentNotice =>
+      !isUser && text.startsWith('Added to Jarvis Upload Cache:');
+
   ChatMessage({
     String? id,
     required this.text,
@@ -22,7 +25,7 @@ class ChatMessage {
       'id': id,
       'text': text,
       'is_user': isUser,
-      'timestamp': timestamp.toIso8601String(),
+      'timestamp': timestamp.toUtc().toIso8601String(),
       'run_id': runId,
       'executed_records': executedRecords,
       'duration_ms': durationMs,
@@ -38,7 +41,8 @@ class ChatMessage {
           ? DateTime.tryParse(json['timestamp'] as String) ?? DateTime.now()
           : DateTime.now(),
       runId: json['run_id'] as String?,
-      executedRecords: (json['executed_records'] as List<dynamic>?)
+      executedRecords:
+          (json['executed_records'] as List<dynamic>?)
               ?.map((e) => e.toString())
               .toList() ??
           [],
@@ -54,20 +58,36 @@ class ChatSession {
   DateTime updatedAt;
   final List<ChatMessage> messages;
 
+  DateTime get lastActivityAt {
+    var latest = updatedAt;
+    for (final message in messages) {
+      if (message.timestamp.isAfter(latest)) latest = message.timestamp;
+    }
+    return latest;
+  }
+
   ChatSession({
     String? id,
     required this.title,
     required this.createdAt,
     required this.updatedAt,
-    required this.messages,
-  }) : id = id ?? 'chat_${DateTime.now().millisecondsSinceEpoch}';
+    required List<ChatMessage> messages,
+  }) : id = id ?? 'chat_${DateTime.now().millisecondsSinceEpoch}',
+       messages = List<ChatMessage>.from(messages)
+         ..sort((a, b) {
+           final timeOrder = a.timestamp.compareTo(b.timestamp);
+           if (timeOrder != 0) return timeOrder;
+           // A question precedes its reply when both have the same timestamp.
+           if (a.isUser != b.isUser) return a.isUser ? -1 : 1;
+           return a.id.compareTo(b.id);
+         });
 
   Map<String, dynamic> toJson() {
     return {
       'id': id,
       'title': title,
-      'created_at': createdAt.toIso8601String(),
-      'updated_at': updatedAt.toIso8601String(),
+      'created_at': createdAt.toUtc().toIso8601String(),
+      'updated_at': updatedAt.toUtc().toIso8601String(),
       'messages': messages.map((m) => m.toJson()).toList(),
     };
   }
@@ -82,7 +102,8 @@ class ChatSession {
       updatedAt: json['updated_at'] != null
           ? DateTime.tryParse(json['updated_at'] as String) ?? DateTime.now()
           : DateTime.now(),
-      messages: (json['messages'] as List<dynamic>?)
+      messages:
+          (json['messages'] as List<dynamic>?)
               ?.map((m) => ChatMessage.fromJson(m as Map<String, dynamic>))
               .toList() ??
           [],

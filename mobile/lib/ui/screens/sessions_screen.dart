@@ -1,447 +1,440 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../../models/recording_session.dart';
 import '../../services/session_storage_service.dart';
+import '../../services/session_preferences.dart';
+import '../../services/recording_backup_service.dart';
 import '../theme.dart';
+import '../widgets/workspace_widgets.dart';
 
-/// Screen displaying all recorded data collection sessions stored on device.
-/// Allows sharing, previewing, and managing CSV/JSON files.
 class SessionsScreen extends StatefulWidget {
   const SessionsScreen({super.key});
-
   @override
   State<SessionsScreen> createState() => _SessionsScreenState();
 }
 
 class _SessionsScreenState extends State<SessionsScreen> {
+  final _backup = RecordingBackupService();
+  final _store = SessionPreferences();
+  Map<String, Map<String, Object?>> _prefs = {};
   List<RecordingSession> _sessions = [];
-  bool _isLoading = true;
-  String _storagePath = '';
-
+  Set<String> _cloud = {};
+  bool _loading = true, _archived = false, _oldest = false;
+  String _query = '';
+  String? _error, _busy;
   @override
   void initState() {
     super.initState();
-    _loadSessions();
+    _load();
   }
 
-  Future<void> _loadSessions() async {
-    setState(() => _isLoading = true);
-    final dir = await SessionStorageService.getStorageDir();
-    final sessions = await SessionStorageService.listSessions();
-    if (mounted) {
-      setState(() {
-        _storagePath = dir.path;
-        _sessions = sessions;
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _deleteSession(RecordingSession session) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surfaceBright,
-        title: const Text('Delete Recording?'),
-        content: Text(
-          'Are you sure you want to delete ${session.id} (${session.formattedSize})?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('CANCEL'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('DELETE'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      await SessionStorageService.deleteSession(session);
-      await _loadSessions();
-    }
-  }
-
-  Future<void> _previewCsv(RecordingSession session) async {
-    final file = File(session.csvFilePath);
-    if (!await file.exists()) return;
-
-    final lines = await file
-        .openRead()
-        .transform(const SystemEncoding().decoder)
-        .transform(const LineSplitter())
-        .take(15)
-        .toList();
-
-    if (!mounted) return;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.surfaceBright,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'CSV PREVIEW (First 15 Rows)',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.cyan,
-                    fontSize: 14,
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            Text(
-              session.csvFilePath,
-              style: const TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 11,
-                fontFamily: 'monospace',
-              ),
-            ),
-            const Divider(color: AppTheme.border),
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.vertical,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SelectableText(
-                    lines.join('\n'),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 10,
-                      color: AppTheme.textPrimary,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _previewJson(RecordingSession session) async {
-    final file = File(session.jsonFilePath);
-    if (!await file.exists()) return;
-
-    String formattedContent;
+  String _key(RecordingSession s) => 'recording:${s.id}';
+  String _name(RecordingSession s) =>
+      _prefs[_key(s)]?['name'] as String? ??
+      '${s.label.replaceAll('_', ' ')} recording';
+  bool _hidden(RecordingSession s) => _prefs[_key(s)]?['archived'] == 1;
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final raw = await file.readAsString();
-      final obj = jsonDecode(raw);
-      formattedContent = const JsonEncoder.withIndent('  ').convert(obj);
+      final local = await SessionStorageService.listSessions();
+      final prefs = await _store.load();
+      List<RecordingSession> remote = [];
+      String? error;
+      try {
+        remote = await _backup.list();
+      } catch (_) {
+        error = 'Cloud library unavailable. Showing downloaded recordings.';
+      }
+      if (!mounted) return;
+      final merged = {
+        for (final s in remote) s.id: s,
+        for (final s in local) s.id: s,
+      };
+      setState(() {
+        _sessions = merged.values.toList();
+        _prefs = prefs;
+        _cloud = remote.map((s) => s.id).toSet();
+        _error = error;
+        _loading = false;
+      });
     } catch (_) {
-      formattedContent = await file.readAsString();
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Could not load recordings. Pull down to retry.';
+        });
+      }
     }
+  }
 
-    if (!mounted) return;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.surfaceBright,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.data_object, color: AppTheme.green, size: 18),
-                    SizedBox(width: 8),
-                    Text(
-                      'LOW TELEMETRY (Cloud JSON)',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.green,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
+  Future<void> _action(RecordingSession session, String action) async {
+    if (_busy != null) return;
+    if (action == 'rename') {
+      var name = _name(session);
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Name this recording'),
+          content: TextFormField(
+            initialValue: name,
+            maxLength: 60,
+            autofocus: true,
+            onChanged: (value) => name = value,
+            decoration: const InputDecoration(labelText: 'Recording name'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
             ),
-            Text(
-              session.jsonFilePath,
-              style: const TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 11,
-                fontFamily: 'monospace',
-              ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, name.trim()),
+              child: const Text('Save'),
             ),
-            const Divider(color: AppTheme.border),
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.vertical,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SelectableText(
-                    formattedContent,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 11,
-                      color: AppTheme.textPrimary,
+          ],
+        ),
+      );
+      if (result == null || !mounted) return;
+      setState(() => _busy = session.id);
+      try {
+        await _store.save(
+          _key(session),
+          result.isEmpty ? null : result,
+          _hidden(session),
+        );
+        await _load();
+      } catch (_) {
+        _notice('Could not save to Firebase. Please retry.');
+      } finally {
+        if (mounted) setState(() => _busy = null);
+      }
+      return;
+    }
+    setState(() => _busy = session.id);
+    try {
+      if (action == 'archive') {
+        await _store.save(
+          _key(session),
+          _prefs[_key(session)]?['name'] as String?,
+          !_hidden(session),
+        );
+      } else if (action == 'backup') {
+        await _backup.backup(session);
+      } else {
+        var local = session;
+        if (local.csvFilePath.isEmpty ||
+            local.jsonFilePath.isEmpty ||
+            !await File(local.csvFilePath).exists() ||
+            !await File(local.jsonFilePath).exists()) {
+          local = await _backup.restore(session);
+        }
+        if (action == 'share') await SessionStorageService.shareSession(local);
+        if (action == 'preview') {
+          final lines = await File(local.csvFilePath)
+              .openRead()
+              .transform(utf8.decoder)
+              .transform(const LineSplitter())
+              .take(16)
+              .toList();
+          if (mounted) {
+            await showModalBottomSheet<void>(
+              context: context,
+              isScrollControlled: true,
+              showDragHandle: true,
+              builder: (_) => SafeArea(
+                child: SizedBox(
+                  height: MediaQuery.sizeOf(context).height * .65,
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Recording preview',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Text(
+                          'First 15 samples. Share to export the full files.',
+                        ),
+                        const SizedBox(height: 16),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: SelectableText(
+                                lines.join('\n'),
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
-        ),
-      ),
-    );
+            );
+          }
+        }
+      }
+      if (mounted) await _load();
+    } catch (_) {
+      _notice(
+        'Could not complete this action. Please check your connection and retry.',
+      );
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+  }
+
+  void _notice(String text) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final visible =
+        _sessions
+            .where(
+              (s) =>
+                  _hidden(s) == _archived &&
+                  '${_name(s)} ${DateFormat.yMMMd().format(s.startTime.toLocal())}'
+                      .toLowerCase()
+                      .contains(_query.toLowerCase()),
+            )
+            .toList()
+          ..sort(
+            (a, b) => _oldest
+                ? a.startTime.compareTo(b.startTime)
+                : b.startTime.compareTo(a.startTime),
+          );
     return Scaffold(
       appBar: AppBar(
-        title: const Text('RECORDED SESSIONS'),
+        title: const Text('Recordings'),
         actions: [
           IconButton(
-            tooltip: 'Refresh list',
+            tooltip: 'Refresh recordings',
+            onPressed: _busy == null && !_loading ? _load : null,
             icon: const Icon(Icons.refresh),
-            onPressed: _loadSessions,
           ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Directory Path Banner
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: AppTheme.surface,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'PHONE STORAGE FOLDER (Open in File Manager)',
-                    style: TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.0,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  SelectableText(
-                    _storagePath.isEmpty ? 'Locating...' : _storagePath,
-                    style: const TextStyle(
-                      color: AppTheme.cyan,
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1, color: AppTheme.border),
-
-            // Sessions List
-            Expanded(
-              child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(color: AppTheme.cyan),
-                    )
-                  : _sessions.isEmpty
-                      ? _buildEmptyState()
-                      : ListView.separated(
-                          padding: const EdgeInsets.all(12),
-                          itemCount: _sessions.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final session = _sessions[index];
-                            return _buildSessionCard(session);
-                          },
-                        ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: const [
-          Icon(Icons.folder_open, size: 64, color: AppTheme.textSecondary),
-          SizedBox(height: 12),
-          Text(
-            'No Recorded Telemetry Yet',
-            style: TextStyle(
-              color: AppTheme.textPrimary,
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          SizedBox(height: 6),
-          Text(
-            'Tap "START DATA COLLECTION" on the dashboard\nto record real IMU and GPS runs.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: AppTheme.textSecondary,
-              fontSize: 13,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSessionCard(RecordingSession session) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Row 1: Label Badge, Duration, Size
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: WorkspaceBody(
+        child: RefreshIndicator(
+          onRefresh: () async {
+            if (_busy == null) await _load();
+          },
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: AppTheme.cyan.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.cyan),
+                  borderRadius: BorderRadius.circular(AppTheme.radius),
+                  color: AppTheme.surface,
+                  border: Border.all(color: AppTheme.border),
                 ),
-                child: Text(
-                  session.label,
-                  style: const TextStyle(
-                    color: AppTheme.cyan,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.folder_copy_outlined,
+                      color: AppTheme.accent,
+                      size: 30,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '${_sessions.length} saved recordings',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${_cloud.length} backed up · ${_sessions.where((s) => !_cloud.contains(s.id)).length} awaiting backup',
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Backed-up files, names and archives survive a reinstall. Pending files retry while Jarvis is open. Files up to 128 MB are supported.',
+                      style: TextStyle(color: AppTheme.textSecondary),
+                    ),
+                  ],
                 ),
               ),
-              Row(
+              const SizedBox(height: 16),
+              TextField(
+                decoration: const InputDecoration(
+                  hintText: 'Search name or date',
+                  prefixIcon: Icon(Icons.search),
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
                 children: [
-                  Text(
-                    '${session.formattedDuration} • ${session.sampleCount} pts',
-                    style: const TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
+                  FilterChip(
+                    label: const Text('Archive'),
+                    selected: _archived,
+                    onSelected: (v) => setState(() => _archived = v),
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    session.formattedSize,
-                    style: const TextStyle(
-                      color: AppTheme.textSecondary,
-                      fontSize: 12,
-                    ),
+                  ActionChip(
+                    label: Text(_oldest ? 'Oldest first' : 'Newest first'),
+                    avatar: const Icon(Icons.sort, size: 18),
+                    onPressed: () => setState(() => _oldest = !_oldest),
                   ),
                 ],
               ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    _error!,
+                    style: const TextStyle(color: AppTheme.amber),
+                  ),
+                ),
+              if (_loading) const LinearProgressIndicator(),
+              if (!_loading && visible.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text(
+                    'No recordings here. Try another search or check the archive.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              for (final s in visible)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  _name(s),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 17,
+                                  ),
+                                ),
+                              ),
+                              PopupMenuButton<String>(
+                                enabled: _busy == null,
+                                tooltip: 'Manage recording',
+                                onSelected: (value) => _action(s, value),
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem(
+                                    value: 'rename',
+                                    child: Text('Rename'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'archive',
+                                    child: Text(
+                                      _hidden(s)
+                                          ? 'Restore from archive'
+                                          : 'Archive',
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'preview',
+                                    child: Text('Preview data'),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'share',
+                                    child: Text('Share files'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          Text(
+                            DateFormat(
+                              'EEE, d MMM y · h:mm a',
+                            ).format(s.startTime.toLocal()),
+                            style: const TextStyle(
+                              color: AppTheme.textSecondary,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 16,
+                            runSpacing: 8,
+                            children: [
+                              Text(s.formattedDuration),
+                              Text(s.formattedSize),
+                              Text('${s.sampleCount} samples'),
+                            ],
+                          ),
+                          const Divider(height: 24),
+                          if (_busy == s.id)
+                            const LinearProgressIndicator()
+                          else
+                            Row(
+                              children: [
+                                Icon(
+                                  _cloud.contains(s.id)
+                                      ? Icons.cloud_done_outlined
+                                      : Icons.cloud_upload_outlined,
+                                  size: 18,
+                                  color: _cloud.contains(s.id)
+                                      ? AppTheme.green
+                                      : AppTheme.amber,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _cloud.contains(s.id)
+                                        ? 'Backed up'
+                                        : s.csvSizeBytes > 128 * 1024 * 1024
+                                        ? 'Too large for backup · Share to export'
+                                        : 'On this phone only',
+                                  ),
+                                ),
+                                if (!_cloud.contains(s.id) &&
+                                    s.csvSizeBytes <= 128 * 1024 * 1024)
+                                  TextButton(
+                                    onPressed: _busy == null
+                                        ? () => _action(s, 'backup')
+                                        : null,
+                                    child: const Text('Back up'),
+                                  )
+                                else if (s.csvFilePath.isEmpty)
+                                  TextButton(
+                                    onPressed: _busy == null
+                                        ? () => _action(s, 'download')
+                                        : null,
+                                    child: const Text('Download'),
+                                  ),
+                              ],
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 32),
             ],
           ),
-
-          const SizedBox(height: 8),
-
-          // Row 2: Mount & Road Condition
-          Text(
-            'Mount: ${session.mountPosition}  |  Road: ${session.roadCondition}',
-            style: const TextStyle(
-              color: AppTheme.textSecondary,
-              fontSize: 11,
-            ),
-          ),
-
-          const SizedBox(height: 4),
-
-          // Row 3: Recorded Date
-          Text(
-            'Recorded: ${session.startTime.toLocal().toString().split('.').first}',
-            style: const TextStyle(
-              color: AppTheme.textSecondary,
-              fontSize: 11,
-              fontFamily: 'monospace',
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // Action Buttons: CSV High, JSON Low, Share, Delete
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton.icon(
-                icon: const Icon(Icons.table_chart_outlined, size: 14),
-                label: const Text('CSV (HIGH)'),
-                style: TextButton.styleFrom(
-                  foregroundColor: AppTheme.cyan,
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                onPressed: () => _previewCsv(session),
-              ),
-              const SizedBox(width: 4),
-              TextButton.icon(
-                icon: const Icon(Icons.data_object_rounded, size: 14),
-                label: const Text('JSON (LOW)'),
-                style: TextButton.styleFrom(
-                  foregroundColor: AppTheme.green,
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                onPressed: () => _previewJson(session),
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: 'Share recording',
-                icon: const Icon(Icons.share, color: AppTheme.amber, size: 18),
-                visualDensity: VisualDensity.compact,
-                onPressed: () => SessionStorageService.shareSession(session),
-              ),
-              IconButton(
-                tooltip: 'Delete recording',
-                icon: const Icon(Icons.delete_outline,
-                    color: AppTheme.red, size: 18),
-                visualDensity: VisualDensity.compact,
-                onPressed: () => _deleteSession(session),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }

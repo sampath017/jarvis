@@ -15,12 +15,16 @@ class JarvisState(TypedDict, total=False):
     Typed state passed through every LangGraph node.
 
     Fields are populated progressively as the graph executes:
-    1. ``verify`` sets uid, run_id, request_type, and the raw request
-    2. ``load_context`` populates session, tasks, reminders, messages, preferences
-    3. ``session_reducer`` / ``tier1_resolve`` update session and tier1_*
-    4. ``tier2_orchestrate`` fills tier2_*, tool_calls
-    5. ``validate_and_execute`` sets tool_results
-    6. ``persist`` writes everything to Firestore
+    1. ``verify``: validates request schema, generates run_id, and builds context_packet.
+    2. ``load_context``: loads active session, reminders, notes, places, chat messages,
+       preferences, and semantic contexts from local DB / Firestore.
+    3. Conditional Execution Branch:
+       - USER_COMMAND: ``intent_router`` -> (fast greeting -> ``persist``) OR
+         (``tier2_agent`` <-> ``tier2_tools`` ReAct loop -> ``persist``)
+       - CONTEXT_EVENT: ``context_gate`` -> (optional ``tier1_agent`` <-> ``tier1_tools`` loop)
+         -> ``session_reducer`` -> ``semantic_context`` -> ``persist``
+    4. ``persist``: commits updated sessions, chat messages, reminders, audit entries,
+       and semantic memory to local SQLite and Firestore.
     """
 
     # ── Identity & routing ───────────────────────────────────────────────
@@ -43,6 +47,12 @@ class JarvisState(TypedDict, total=False):
     notes: list[dict[str, Any]]
     messages: list[dict[str, Any]]
     preferences: list[dict[str, Any]]
+    semantic_contexts: list[dict[str, Any]]
+    semantic_context_changes: list[str]
+    context_memory: list[dict[str, Any]]
+    cloud_context_loaded: bool
+    context_scope: str  # user commands fetch personal context only through selected tools
+    context_history: dict[str, Any] | None
 
     # ── Conflict detection ───────────────────────────────────────────────
     conflicts: list[str]
@@ -67,6 +77,7 @@ class JarvisState(TypedDict, total=False):
     tool_results: list[dict[str, Any]]
 
     # ── Response ─────────────────────────────────────────────────────────
+    needs_user_input: bool
     user_response: str
     changed_records: list[str]
     session_id: str | None

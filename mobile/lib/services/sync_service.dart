@@ -1,15 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'api_service.dart';
 import 'local_db_service.dart';
+import 'recording_backup_service.dart';
 
 /// Bidirectional Sync Service for Jarvis Mobile.
 ///
 /// Synchronizes local mobile SQLite database (jarvis_mobile.db) with
 /// Google Cloud Firestore via Cloud Run sync endpoints (/sync/push, /sync/pull).
-class SyncService {
+class SyncService with WidgetsBindingObserver {
   static final SyncService _instance = SyncService._internal();
   factory SyncService() => _instance;
   SyncService._internal();
@@ -19,10 +20,23 @@ class SyncService {
 
   Timer? _syncTimer;
   Timer? _reminderTimer;
-  bool _isSyncing = false;
+  Future<void>? _syncTask;
+  bool _enabled = false;
 
-  /// Start automatic background sync timer (every 30 seconds) and reminder evaluation timer (every 2 seconds)
+  /// Poll only while the app is visible. Android workers handle background delivery.
   void startPeriodicSync() {
+    if (!_enabled) {
+      _enabled = true;
+      WidgetsBinding.instance.addObserver(this);
+    }
+    if (WidgetsBinding.instance.lifecycleState != null &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    _resumeTimers();
+  }
+
+  void _resumeTimers() {
     _syncTimer?.cancel();
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       syncNow();
@@ -35,40 +49,90 @@ class SyncService {
 
     // Run background sync and reminder checks non-blockingly after initial UI render
     Future.delayed(const Duration(milliseconds: 1500), () {
+      if (!_enabled ||
+          (WidgetsBinding.instance.lifecycleState != null &&
+              WidgetsBinding.instance.lifecycleState !=
+                  AppLifecycleState.resumed)) {
+        return;
+      }
       syncNow();
       evaluateDueReminders();
     });
   }
 
   void stopPeriodicSync() {
+    _enabled = false;
+    WidgetsBinding.instance.removeObserver(this);
+    _pauseTimers();
+  }
+
+  void _pauseTimers() {
     _syncTimer?.cancel();
     _syncTimer = null;
     _reminderTimer?.cancel();
     _reminderTimer = null;
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_enabled) return;
+    if (state == AppLifecycleState.resumed) {
+      _resumeTimers();
+    } else {
+      _pauseTimers();
+    }
+  }
+
   /// Perform a full bidirectional sync: Push pending local changes, then Pull remote changes
-  Future<void> syncNow() async {
-    if (_isSyncing) return;
+  Future<void> syncNow() =>
+      _syncTask ??= _performSync().whenComplete(() => _syncTask = null);
+
+  Future<void> _performSync() async {
     if (!_apiService.isOnline) {
       // Fast check if server is reachable
       final online = await _apiService.checkHealth();
       if (!online) return;
     }
 
-    _isSyncing = true;
     try {
       await _pushPendingChanges();
       await _pullRemoteChanges();
+      unawaited(RecordingBackupService().syncPending());
     } catch (e) {
       debugPrint('[SyncService] Sync cycle encountered error: $e');
-    } finally {
-      _isSyncing = false;
     }
   }
 
   /// Push locally created or modified records that have sync_status = 'pending'
   Future<void> _pushPendingChanges() async {
+    // 1. Process pending deletions to Cloud Firestore
+    try {
+      final pendingDeletions = await _localDb.getPendingDeletions();
+      for (final d in pendingDeletions) {
+        final id = d['id'] as String;
+        final type = d['record_type'] as String;
+        if (type == 'chat_session') {
+          final ok = await _apiService.deleteChatSession(id);
+          if (ok) {
+            await _localDb.removePendingDeletion(id);
+            debugPrint(
+              '[SyncService] Successfully synced deletion for chat session $id',
+            );
+          }
+        } else if (type == 'all_chat_sessions') {
+          final ok = await _apiService.deleteAllChatSessions();
+          if (ok) {
+            await _localDb.removePendingDeletion(id);
+            debugPrint(
+              '[SyncService] Successfully synced deletion for all chat sessions',
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[SyncService] Error processing pending deletions: $e');
+    }
+
     final pending = await _localDb.getPendingSyncRecords();
     final reminders = pending['reminders'] ?? [];
     final notes = pending['notes'] ?? [];
@@ -145,10 +209,7 @@ class SyncService {
 
     try {
       final res = await http
-          .get(
-            Uri.parse('$baseUrl/sync/pull'),
-            headers: headers,
-          )
+          .get(Uri.parse('$baseUrl/sync/pull'), headers: headers)
           .timeout(const Duration(seconds: 20));
 
       if (res.statusCode == 200) {
@@ -156,8 +217,12 @@ class SyncService {
         final rems = List<Map<String, dynamic>>.from(data['reminders'] ?? []);
         final nts = List<Map<String, dynamic>>.from(data['notes'] ?? []);
         final plcs = List<Map<String, dynamic>>.from(data['places'] ?? []);
-        final sessions = List<Map<String, dynamic>>.from(data['chat_sessions'] ?? []);
-        final messages = List<Map<String, dynamic>>.from(data['chat_messages'] ?? []);
+        final sessions = List<Map<String, dynamic>>.from(
+          data['chat_sessions'] ?? [],
+        );
+        final messages = List<Map<String, dynamic>>.from(
+          data['chat_messages'] ?? [],
+        );
 
         await _localDb.reconcileRemoteRecords(
           remoteReminders: rems,
@@ -186,6 +251,13 @@ class SyncService {
       for (final r in reminders) {
         final status = (r['status'] ?? '').toString().toUpperCase();
         if (status != 'ACTIVE') continue;
+        // The backend evaluates combined time and context conditions together.
+        if ((r['activity'] ?? '').toString().trim().isNotEmpty ||
+            (r['location_name'] ?? '').toString().trim().isNotEmpty ||
+            r['latitude'] != null ||
+            r['longitude'] != null) {
+          continue;
+        }
 
         final dueAtRaw = r['due_at']?.toString().trim();
         if (dueAtRaw == null || dueAtRaw.isEmpty) continue;
@@ -194,11 +266,14 @@ class SyncService {
         // Fallback for relative strings like "in 29 seconds" or "in 5 minutes"
         if (dueDate == null) {
           final lower = dueAtRaw.toLowerCase();
-          final match = RegExp(r'(\d+)\s*(s|sec|second|min|minute|hour|hr|day)').firstMatch(lower);
+          final match = RegExp(
+            r'(\d+)\s*(s|sec|second|min|minute|hour|hr|day)',
+          ).firstMatch(lower);
           if (match != null) {
             final count = int.tryParse(match.group(1) ?? '0') ?? 0;
             final unit = match.group(2) ?? '';
-            final createdAt = DateTime.tryParse(r['created_at']?.toString() ?? '') ??
+            final createdAt =
+                DateTime.tryParse(r['created_at']?.toString() ?? '') ??
                 DateTime.tryParse(r['updated_at']?.toString() ?? '') ??
                 DateTime.now().toUtc();
             if (unit.startsWith('s')) {
@@ -213,7 +288,8 @@ class SyncService {
           }
         }
 
-        if (dueDate != null && (now.isAfter(dueDate) || now.isAtSameMomentAs(dueDate))) {
+        if (dueDate != null &&
+            (now.isAfter(dueDate) || now.isAtSameMomentAs(dueDate))) {
           final id = r['id']?.toString() ?? '';
           final title = r['title'] ?? r['body'] ?? 'Reminder Alert';
 
@@ -223,7 +299,11 @@ class SyncService {
             content: 'Time reminder — $title',
           );
 
-          await _localDb.updateReminderStatus(id, 'TRIGGERED', markPending: true);
+          await _localDb.updateReminderStatus(
+            id,
+            'TRIGGERED',
+            markPending: true,
+          );
           debugPrint('[SyncService] Triggered time reminder: "$title" ($id)');
           // Push update to cloud asynchronously
           _pushPendingChanges();
@@ -234,4 +314,3 @@ class SyncService {
     }
   }
 }
-

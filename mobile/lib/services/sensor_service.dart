@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:sensors_plus/sensors_plus.dart';
@@ -12,6 +13,8 @@ import '../models/recording_session.dart';
 import '../models/sensor_sample.dart';
 import 'api_service.dart';
 import 'feature_extractor.dart';
+import 'local_db_service.dart';
+import 'location_result.dart';
 import 'session_storage_service.dart';
 
 /// Central service that captures IMU and GPS sensors on demand,
@@ -19,7 +22,7 @@ import 'session_storage_service.dart';
 /// and writes high-frequency CSV logs alongside compact low-telemetry JSON metadata.
 ///
 /// Remains completely dormant (sensors powered off) when not recording.
-class SensorService extends ChangeNotifier {
+class SensorService extends ChangeNotifier with WidgetsBindingObserver {
   static const _channel = MethodChannel('com.jarvis/foreground_service');
 
   // ── Recording State ────────────────────────────────────────────────────────
@@ -38,12 +41,29 @@ class SensorService extends ChangeNotifier {
 
   // ── Stage 1 Tripwire State ──────────────────────────────────────────────────
   bool _isTripwireActive = false;
+  bool _contextAwarenessRequested = false;
   bool get isTripwireActive => _isTripwireActive;
 
   String? _lastActivityTransition;
   String? get lastActivityTransition => _lastActivityTransition;
   DateTime? _lastActivityTransitionTime;
   DateTime? get lastActivityTransitionTime => _lastActivityTransitionTime;
+
+  // Activity Recognition already delivers transitions from Google Play
+  // Services.  This is only a guard against duplicate broadcasts, not a
+  // polling loop or an additional activity classifier.
+  static const _activityTransitionDebounce = Duration(seconds: 45);
+  static const _usableCachedLocationAge = Duration(minutes: 5);
+  static const _forwardableActivities = {
+    'IN_VEHICLE',
+    'WALKING',
+    'STILL',
+    'RUNNING',
+    'ON_BICYCLE',
+    'ON_FOOT',
+  };
+  String? _lastForwardedTransitionKey;
+  DateTime? _lastForwardedTransitionTime;
 
   // File handles during active recording
   File? _currentCsvFile;
@@ -69,9 +89,8 @@ class SensorService extends ChangeNotifier {
 
   double _sessionSpeedSumKmh = 0.0;
   int _sessionGpsFixCount = 0;
-  double get sessionAvgSpeedKmh => _sessionGpsFixCount > 0
-      ? _sessionSpeedSumKmh / _sessionGpsFixCount
-      : 0.0;
+  double get sessionAvgSpeedKmh =>
+      _sessionGpsFixCount > 0 ? _sessionSpeedSumKmh / _sessionGpsFixCount : 0.0;
 
   double? _prevGpsLat, _prevGpsLon;
   Map<String, dynamic>? _startGpsReading;
@@ -121,30 +140,96 @@ class SensorService extends ChangeNotifier {
 
   // ── Lifecycle & Initialization ─────────────────────────────────────────────
   Future<void> initialize() async {
+    WidgetsBinding.instance.addObserver(this);
     // Register native method channel callbacks (e.g. Activity Recognition transitions)
     _channel.setMethodCallHandler(_handleNativeCall);
     // Only check permissions on launch.
     // Sensors remain completely DORMANT to prevent battery drain when not recording.
     await _requestPermissions();
+    await _channel.invokeMethod('requestContextPermissions');
+    await startTripwire();
   }
 
   Future<void> _handleNativeCall(MethodCall call) async {
     if (call.method == 'onActivityTransition') {
       final args = Map<String, dynamic>.from(call.arguments ?? {});
-      final activity = args['activity']?.toString() ?? 'UNKNOWN';
-      final transition = args['transition']?.toString() ?? 'UNKNOWN';
+      final activity = (args['activity']?.toString() ?? 'UNKNOWN')
+          .trim()
+          .toUpperCase();
+      final transition = (args['transition']?.toString() ?? 'UNKNOWN')
+          .trim()
+          .toUpperCase();
       _lastActivityTransition = '$activity ($transition)';
       _lastActivityTransitionTime = DateTime.now();
       notifyListeners();
 
-      if (activity == 'IN_VEHICLE' && transition == 'ENTER') {
-        debugPrint('[SensorService] Stage 1 Tripwire Fired: IN_VEHICLE ENTER! Kicking off 10s Stage 2 burst.');
-        executeStage2Burst();
+      // Unknown callbacks must never wake GPS/network work. The native
+      // Activity Transition API is the source of recognised activities.
+      if ((transition != 'ENTER' && transition != 'EXIT') ||
+          !_forwardableActivities.contains(activity)) {
+        return;
       }
+
+      final eventKey = '$activity:$transition';
+      final now = DateTime.now();
+      if (_lastForwardedTransitionKey == eventKey &&
+          _lastForwardedTransitionTime != null &&
+          now.difference(_lastForwardedTransitionTime!) <
+              _activityTransitionDebounce) {
+        debugPrint(
+          '[SensorService] Ignoring duplicate activity transition: $eventKey',
+        );
+        return;
+      }
+      _lastForwardedTransitionKey = eventKey;
+      _lastForwardedTransitionTime = now;
+      if (activity == 'IN_VEHICLE' && transition == 'ENTER') {
+        debugPrint(
+          '[SensorService] Stage 1 Tripwire Fired: IN_VEHICLE ENTER! Kicking off 10s Stage 2 burst.',
+        );
+        unawaited(executeStage2Burst());
+      }
+      unawaited(_evaluateLocalActivityReminder(activity, transition));
+    }
+  }
+
+  /// Native Android persists and uploads the event even if Flutter is closed.
+  /// Keep only the local walking reminder fallback here.
+  Future<void> _evaluateLocalActivityReminder(
+    String activity,
+    String transition,
+  ) async {
+    try {
+      // Keep activity-only walking reminders instant; location-aware walking
+      // reminders are evaluated once the opportunistic location resolves.
+      final isWalkingEnter = activity == 'WALKING' && transition == 'ENTER';
+      if (!isWalkingEnter) return;
+      await LocalDbService().evaluateActivityReminders(
+        activity: activity,
+        latitude: null,
+        longitude: null,
+      );
+
+      final loc = await getCurrentLocation(
+        requestIfNeeded: false,
+        preferCached: false,
+      );
+      final lat = loc?['latitude'];
+      final lon = loc?['longitude'];
+      if (isWalkingEnter && loc != null) {
+        await LocalDbService().evaluateActivityReminders(
+          activity: activity,
+          latitude: lat,
+          longitude: lon,
+        );
+      }
+    } catch (e) {
+      debugPrint('[SensorService] Local activity reminder error: $e');
     }
   }
 
   Future<void> startTripwire() async {
+    _contextAwarenessRequested = true;
     try {
       await _channel.invokeMethod('startTripwire');
       _isTripwireActive = true;
@@ -154,9 +239,19 @@ class SensorService extends ChangeNotifier {
     }
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _contextAwarenessRequested) {
+      // Re-register passive location if the user changed its permission in Settings.
+      unawaited(startTripwire());
+    }
+  }
+
   Future<void> stopTripwire() async {
+    _contextAwarenessRequested = false;
     try {
       await _channel.invokeMethod('stopTripwire');
+      if (!_isRecording) await _channel.invokeMethod('stopService');
       _isTripwireActive = false;
       notifyListeners();
     } catch (e) {
@@ -171,7 +266,9 @@ class SensorService extends ChangeNotifier {
     await startRecording();
     await Future.delayed(const Duration(seconds: 10));
     final session = await stopRecording();
-    debugPrint('[SensorService] Stage 2 Bounded Burst complete: ${session?.sampleCount} samples.');
+    debugPrint(
+      '[SensorService] Stage 2 Bounded Burst complete: ${session?.sampleCount} samples.',
+    );
 
     // Stage 3 & 4: Automatically transmit Low Telemetry to Cloud Run
     if (session != null && _latestFeature != null) {
@@ -187,6 +284,8 @@ class SensorService extends ChangeNotifier {
       debugPrint('[SensorService] Offloading Low Telemetry to Cloud Run...');
       await api.sendContextEvent(
         eventType: 'BOUNDED_IMU_BURST',
+        activity: 'IN_VEHICLE',
+        transition: 'ENTER',
         featureSummary: _latestFeature!.toBackendFeatureSummary(),
         journeyGps: journey,
         transitionState: _lastActivityTransition ?? 'IN_VEHICLE_ENTER',
@@ -208,11 +307,21 @@ class SensorService extends ChangeNotifier {
 
   /// Retrieves the device's current GPS location on demand.
   /// Checks whether location services are enabled and permissions are granted.
-  /// Employs fast last-known position fallback followed by a high-accuracy fix (3s timeout).
-  Future<Map<String, double>?> getCurrentLocation({bool requestIfNeeded = true}) async {
+  /// Explicit requests allow 15 seconds; telemetry keeps its 3-second limit.
+  Future<Map<String, double>?> getCurrentLocation({
+    bool requestIfNeeded = true,
+    bool preferCached = false,
+    bool reportFailure = false,
+  }) async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
+        if (reportFailure) {
+          throw const LocationReadFailure(
+            'services_disabled',
+            'Phone location services are off. Turn on Location and try again.',
+          );
+        }
         debugPrint('[SensorService] Location services are disabled.');
         return null;
       }
@@ -222,8 +331,17 @@ class SensorService extends ChangeNotifier {
         permission = await Geolocator.requestPermission();
       }
 
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-        debugPrint('[SensorService] Location permissions are denied: $permission');
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (reportFailure) {
+          throw const LocationReadFailure(
+            'permission_denied',
+            'Jarvis does not have location permission. Allow Location in Android app settings and try again.',
+          );
+        }
+        debugPrint(
+          '[SensorService] Location permissions are denied: $permission',
+        );
         return null;
       }
 
@@ -235,14 +353,29 @@ class SensorService extends ChangeNotifier {
         _alt = position.altitude;
         _accuracy = position.accuracy;
         _hasGpsFix = true;
+
+        // An activity transition does not justify waking the GPS radio when a
+        // sufficiently recent fused location is already available.
+        final cachedAt = position.timestamp;
+        final cachedAge = DateTime.now().difference(cachedAt);
+        if (preferCached &&
+            cachedAge >= Duration.zero &&
+            cachedAge <= _usableCachedLocationAge) {
+          notifyListeners();
+          return {
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'accuracy': position.accuracy,
+          };
+        }
       }
 
-      // Fetch fresh high-accuracy position with 3-second timeout
+      // A foreground request can wait for a cold GPS fix; telemetry stays brief.
       try {
         final freshPos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
+          locationSettings: LocationSettings(
             accuracy: LocationAccuracy.high,
-            timeLimit: Duration(seconds: 3),
+            timeLimit: Duration(seconds: reportFailure ? 15 : 3),
           ),
         );
         _lat = freshPos.latitude;
@@ -255,52 +388,79 @@ class SensorService extends ChangeNotifier {
         _hasGpsFix = true;
         position = freshPos;
       } catch (e) {
-        debugPrint('[SensorService] High-accuracy GPS timeout/error, using last known: $e');
+        debugPrint(
+          '[SensorService] High-accuracy GPS timeout/error, using last known: $e',
+        );
       }
 
       if (position != null) {
+        final age = DateTime.now().difference(position.timestamp);
+        if (age < Duration.zero || age > _usableCachedLocationAge) {
+          if (reportFailure) {
+            throw const LocationReadFailure(
+              'no_recent_fix',
+              'The phone could not obtain a recent location fix within 15 seconds. Try near a window or outdoors, then retry.',
+            );
+          }
+          return null;
+        }
         notifyListeners();
         return {
           'latitude': position.latitude,
           'longitude': position.longitude,
           'accuracy': position.accuracy,
+          'timestamp_ms': position.timestamp.millisecondsSinceEpoch.toDouble(),
         };
       }
+    } on LocationReadFailure {
+      rethrow;
     } catch (e) {
+      if (reportFailure) {
+        throw const LocationReadFailure(
+          'read_failed',
+          'The phone location request failed. Try again; the cause could not be confirmed.',
+        );
+      }
       debugPrint('[SensorService] Error retrieving current location: $e');
+    }
+    if (reportFailure) {
+      throw const LocationReadFailure(
+        'no_recent_fix',
+        'The phone could not obtain a recent location fix within 15 seconds. Try near a window or outdoors, then retry.',
+      );
     }
     return null;
   }
 
-
   void _startSensorStreams() {
     // 1. Raw Accelerometer (~50 Hz / Game interval)
-    _accelSub = accelerometerEventStream(
-      samplingPeriod: SensorInterval.gameInterval,
-    ).listen((event) {
-      _rawAx = event.x;
-      _rawAy = event.y;
-      _rawAz = event.z;
-      _onImuTick();
-    });
+    _accelSub =
+        accelerometerEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          _rawAx = event.x;
+          _rawAy = event.y;
+          _rawAz = event.z;
+          _onImuTick();
+        });
 
     // 2. User Accelerometer (without gravity)
-    _userAccelSub = userAccelerometerEventStream(
-      samplingPeriod: SensorInterval.gameInterval,
-    ).listen((event) {
-      _userAx = event.x;
-      _userAy = event.y;
-      _userAz = event.z;
-    });
+    _userAccelSub =
+        userAccelerometerEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen((event) {
+          _userAx = event.x;
+          _userAy = event.y;
+          _userAz = event.z;
+        });
 
     // 3. Gyroscope (~50 Hz)
-    _gyroSub = gyroscopeEventStream(
-      samplingPeriod: SensorInterval.gameInterval,
-    ).listen((event) {
-      _gyroX = event.x;
-      _gyroY = event.y;
-      _gyroZ = event.z;
-    });
+    _gyroSub = gyroscopeEventStream(samplingPeriod: SensorInterval.gameInterval)
+        .listen((event) {
+          _gyroX = event.x;
+          _gyroY = event.y;
+          _gyroZ = event.z;
+        });
   }
 
   void _startGpsStream() {
@@ -310,16 +470,16 @@ class SensorService extends ChangeNotifier {
             accuracy: LocationAccuracy.high,
             distanceFilter: 1, // High Telemetry: 1-meter tracking
             forceLocationManager: false,
-            intervalDuration: const Duration(milliseconds: 1000), // 1 Hz polling
+            intervalDuration: const Duration(
+              milliseconds: 1000,
+            ), // 1 Hz polling
           )
         : const LocationSettings(
             accuracy: LocationAccuracy.high,
             distanceFilter: 1,
           );
 
-    _gpsSub = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen(
+    _gpsSub = Geolocator.getPositionStream(locationSettings: locationSettings).listen(
       (pos) {
         _lat = pos.latitude;
         _lon = pos.longitude;
@@ -379,7 +539,8 @@ class SensorService extends ChangeNotifier {
             if (_trajectoryCheckpoints.length < 50) {
               _trajectoryCheckpoints.add({
                 'relative_sec': _sessionStartTime != null
-                    ? (now.difference(_sessionStartTime!).inMilliseconds / 1000.0)
+                    ? (now.difference(_sessionStartTime!).inMilliseconds /
+                          1000.0)
                     : 0.0,
                 'lat': _lat,
                 'lon': _lon,
@@ -531,8 +692,9 @@ class SensorService extends ChangeNotifier {
     } catch (_) {}
 
     // 3. Initialize High-Telemetry CSV and Low-Telemetry JSON files
-    final handles =
-        await SessionStorageService.createSessionFiles(_currentSessionId!);
+    final handles = await SessionStorageService.createSessionFiles(
+      _currentSessionId!,
+    );
     _currentCsvFile = handles.csvFile;
     _currentJsonFile = handles.jsonFile;
     _currentCsvSink = handles.csvSink;
@@ -550,7 +712,7 @@ class SensorService extends ChangeNotifier {
       if (_sessionStartTime != null) {
         _recordingDurationSec =
             DateTime.now().difference(_sessionStartTime!).inMilliseconds /
-                1000.0;
+            1000.0;
         notifyListeners();
       }
     });
@@ -588,8 +750,9 @@ class SensorService extends ChangeNotifier {
 
     final journeyGps = {
       'has_gps_fix': _hasGpsFix,
-      'total_distance_meters':
-          double.parse(_sessionDistanceMeters.toStringAsFixed(1)),
+      'total_distance_meters': double.parse(
+        _sessionDistanceMeters.toStringAsFixed(1),
+      ),
       'max_speed_kmh': double.parse(_sessionMaxSpeedKmh.toStringAsFixed(1)),
       'avg_speed_kmh': double.parse(avgSpeedKmh.toStringAsFixed(1)),
       'start_location': _startGpsReading,
@@ -640,6 +803,7 @@ class SensorService extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _stopSensorStreams();
     WakelockPlus.disable();
     super.dispose();

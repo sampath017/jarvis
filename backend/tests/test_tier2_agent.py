@@ -25,6 +25,7 @@ def test_tier2_crud_tools_reminders(db):
     create_res = tools["create_reminder"].invoke({
         "title": "Check tire pressure",
         "location_name": "Indian Oil",
+        "latitude": 12.0, "longitude": 80.0, "confirmed": True,
     })
     assert "Successfully created reminder" in create_res
     assert "Check tire pressure" in create_res
@@ -40,7 +41,24 @@ def test_tier2_crud_tools_reminders(db):
 
     # Delete
     del_res = tools["delete_reminder"].invoke({"reminder_id": "Check tire pressure"})
-    assert "Successfully deleted reminder" in del_res
+    assert "Moved reminder" in del_res
+    assert db.list_reminders("user-456") == []
+    trashed = db.list_reminders("user-456", status="DELETED")
+    assert len(trashed) == 1
+    assert trashed[0]["previous_status"] == "ACTIVE"
+    assert trashed[0]["deleted_at"]
+    restore_res = tools["restore_reminder"].invoke({"reminder_id": trashed[0]["id"]})
+    assert "Restored reminder" in restore_res
+    assert len(db.list_reminders("user-456", status="ACTIVE")) == 1
+
+
+def test_old_session_is_explicitly_historical_in_chat_prompt(db):
+    node = Tier2AgentNode(db=db)
+    prompt = node._build_user_prompt({"raw_request": {"text": "What did I do?"},
+        "session": {"status": "PAUSED", "vehicle_class": "MOTORCYCLE", "last_updated": "2020-01-01T00:00:00Z"}})
+    assert "Last recorded mobility session" in prompt
+    assert "2020-01-01T00:00:00Z" in prompt
+    assert "not proof of the user's current action" in prompt
 
 
 def test_tier2_crud_tools_notes(db):
@@ -57,6 +75,13 @@ def test_tier2_crud_tools_notes(db):
     # List notes
     list_res = tools["list_notes"].invoke({"limit": 5})
     assert "Odometer 4250 km" in list_res
+
+    note = db.list_notes("user-456")[0]
+    assert "Moved note" in tools["delete_note"].invoke({"note_id": note["id"]})
+    assert db.list_notes("user-456") == []
+    assert db.get_note("user-456", note["id"])["deleted_at"]
+    assert "Restored note" in tools["restore_note"].invoke({"note_id": note["id"]})
+    assert len(db.list_notes("user-456")) == 1
 
 
 def test_tier2_crud_tools_tasks(db):
@@ -79,7 +104,8 @@ def test_tier2_tools_node_execution(db):
         content="",
         tool_calls=[{
             "name": "create_reminder",
-            "args": {"title": "Pick up helmet visor", "location_name": "Store"},
+            "args": {"title": "Pick up helmet visor", "location_name": "Store",
+                     "latitude": 12.0, "longitude": 80.0, "confirmed": True},
             "id": "call_rem_1",
             "type": "tool_call",
         }],
@@ -145,4 +171,3 @@ def test_tier2_agent_multi_turn_history_injection(tmp_path):
     assert captured_messages[2].content == "Created reminder for brake check"
     assert isinstance(captured_messages[3], HumanMessage)
     assert "What did I ask before?" in captured_messages[3].content
-

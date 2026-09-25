@@ -38,11 +38,14 @@ OPENROUTER_MODEL_TIER1: str = os.getenv(
 OPENROUTER_MODEL_TIER2: str = os.getenv(
     "OPENROUTER_MODEL_TIER2", "z-ai/glm-5.3-flash")
 OPENROUTER_TEMPERATURE: float = 0.1
+OPENROUTER_MODEL_MULTIMODAL: str = os.getenv("OPENROUTER_MODEL_MULTIMODAL", OPENROUTER_MODEL_TIER2)
+OPENROUTER_MODEL_PDF: str = os.getenv("OPENROUTER_MODEL_PDF", "google/gemini-3.8-flash")
 AGENT_MAX_ITERATIONS: int = int(os.getenv("JARVIS_AGENT_MAX_ITERATIONS", "50"))
 
 # ── LangSmith Observability ─────────────────────────────────────────────────
-LANGCHAIN_TRACING_V2: str = os.getenv(
-    "LANGCHAIN_TRACING_V2", os.getenv("LANGSMITH_TRACING", "false")).strip()
+LANGCHAIN_TRACING_V2: str = os.getenv("JARVIS_ENABLE_TRACING", "false").strip()
+os.environ["LANGSMITH_TRACING"] = LANGCHAIN_TRACING_V2
+os.environ["LANGCHAIN_TRACING_V2"] = LANGCHAIN_TRACING_V2
 LANGCHAIN_API_KEY: str = os.getenv(
     "LANGCHAIN_API_KEY", os.getenv("LANGSMITH_API_KEY", "")).strip()
 LANGCHAIN_PROJECT: str = os.getenv(
@@ -79,13 +82,18 @@ PORT = int(os.getenv("PORT", "8080"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 APP_CHECK_MODE = "monitor"
 
-# ── Rate Limiting & Token Budget Guards (Direct Configuration — No .env Needed) ──
-# All token limits and rate guards are kept directly in settings.py (no .env required)
-RATE_LIMIT_PER_USER_PER_MINUTE: int = 15       # Max requests per minute per user
-MAX_DAILY_LLM_CALLS: int = 150                # Max LLM invocations per day
+# ── Rate Limiting & Token Budget Guards ───────────────────────────────────────
+from .budget_profiles import budget_limits
+_budget_limits = budget_limits()
+LLM_BUDGET_PROFILE: str = _budget_limits.profile
+RATE_LIMIT_PER_USER_PER_MINUTE: int = _budget_limits.requests_per_minute
+MAX_DAILY_LLM_CALLS: int = _budget_limits.daily_calls
 MAX_TOKENS_PER_CALL: int = 2048               # Max output tokens per call (allows full structured JSON schemas without truncation)
+# Reasoning and the final answer share the provider's completion allowance.
+# An 8k ceiling exhausted the reasoning budget and forced a complete retry.
+TIER2_OUTPUT_TOKENS: int = max(2048, min(32768, int(os.getenv("JARVIS_TIER2_OUTPUT_TOKENS", "16384"))))
 OPENROUTER_MAX_TOKENS: int = MAX_TOKENS_PER_CALL # Enforced max token generation per call in OpenRouter
-MAX_DAILY_TOKENS: int = 150_000               # Max total tokens per day (~$0.01-$0.015/day max ceiling)
+MAX_DAILY_TOKENS: int = _budget_limits.daily_tokens
 LLM_CACHE_TTL_SECONDS: int = 300              # 5-minute cache to deduplicate duplicate mobile requests
 MAX_REQUEST_SIZE_BYTES: int = 65536           # 65 KB max payload size
 NOTIFICATION_SWEEP_SECONDS: float = 30.0

@@ -204,6 +204,7 @@ def test_relative_location_extracted_from_title(db_with_saved_places):
 
     # User omitted location_name, but title says "when I go out of this gate"
     result = create_tool.invoke({
+        "confirmed": True,
         "title": "buy eggs when I go out of this gate",
         "location_name": "",
         "activity": "WALKING",
@@ -216,6 +217,73 @@ def test_relative_location_extracted_from_title(db_with_saved_places):
     assert rem["location_name"] == "Creations Valencia (Home)"
     assert rem["latitude"] == 12.83711
     assert rem["longitude"] == 80.22559
+
+
+def test_semantic_reminder_with_resolved_place_needs_no_extra_confirmation(db_with_saved_places):
+    """A clear dwell request saves directly, but remains bound to a real place."""
+    db, uid = db_with_saved_places
+    tools = {t.name: t for t in build_tier2_tools(db, uid)}
+    create_tool = tools["create_reminder"]
+
+    result = create_tool.invoke({
+        "title": "Drink water",
+        "location_name": "Home",
+        "context_states": "DWELLING",
+    })
+    assert "created reminder" in result.lower()
+    rem = db.list_reminders(uid, status="ACTIVE")[0]
+    assert rem["location_name"] == "Creations Valencia (Home)"
+    assert rem["latitude"] == 12.83711
+    assert rem["longitude"] == 80.22559
+    assert rem["activity"] == "DWELLING"
+
+
+def test_saved_gym_arrival_reminder_needs_no_extra_confirmation(db_with_saved_places):
+    db, uid = db_with_saved_places
+    db.create_place(uid, {
+        "name": "TCS Clubhouse Gym", "category": "gym",
+        "latitude": 12.8401, "longitude": 80.2252,
+    })
+    tools = {t.name: t for t in build_tier2_tools(db, uid)}
+    result = tools["create_reminder"].invoke({
+        "title": "Drink pre-workout", "location_name": "gym",
+    })
+    assert "created reminder" in result.lower()
+    reminder = db.list_reminders(uid, status="ACTIVE")[0]
+    assert reminder["location_name"] == "TCS Clubhouse Gym"
+    assert reminder["latitude"] == 12.8401
+    assert reminder["longitude"] == 80.2252
+
+
+def test_multiple_saved_gyms_require_clarification(db_with_saved_places):
+    db, uid = db_with_saved_places
+    for name, latitude in (("Clubhouse Gym", 12.8401), ("Office Gym", 12.8501)):
+        db.create_place(uid, {
+            "name": name, "category": "gym",
+            "latitude": latitude, "longitude": 80.2252,
+        })
+    tools = {t.name: t for t in build_tier2_tools(db, uid)}
+    result = tools["create_reminder"].invoke({
+        "title": "Drink pre-workout", "location_name": "gym",
+    })
+    assert result.startswith("CONFIRMATION_REQUIRED")
+    assert db.list_reminders(uid, status="ACTIVE") == []
+
+
+def test_unresolved_place_cannot_create_location_reminder():
+    db = DatabaseService()
+    uid = f"test_user_unresolved_{uuid.uuid4().hex[:8]}"
+    tools = {t.name: t for t in build_tier2_tools(db, uid)}
+
+    result = tools["create_reminder"].invoke({
+        "title": "Drink water",
+        "location_name": "My desk",
+        "activity": "STILL",
+        "confirmed": True,
+    })
+
+    assert "CONFIRMATION_REQUIRED" in result
+    assert db.list_reminders(uid, status="ACTIVE") == []
 
 
 # ── Test 6: Fallback to Current GPS for Unsaved Location ───────────────────────
@@ -268,6 +336,7 @@ def test_location_aware_reminder_consolidation(db_with_saved_places):
 
     # 1. Existing reminder created with location "Creations Valencia (Home)"
     create_tool.invoke({
+        "confirmed": True,
         "title": "buy eggs",
         "location_name": "Creations Valencia (Home)",
         "activity": "WALKING",
@@ -278,6 +347,7 @@ def test_location_aware_reminder_consolidation(db_with_saved_places):
 
     # 2. User adds reminder with relative phrasing "when go out of this gate"
     result = create_tool.invoke({
+        "confirmed": True,
         "title": "get fresh eggs when go out of this gate",
         "location_name": "out of this gate",
         "activity": "IN_VEHICLE",
@@ -386,6 +456,7 @@ def test_multi_activity_and_relative_gate_reminder(db_with_saved_places):
     create_tool = tools["create_reminder"]
 
     result = create_tool.invoke({
+        "confirmed": True,
         "title": "check tire pressure",
         "location_name": "this gate",
         "activity": "walking or riding my bike",

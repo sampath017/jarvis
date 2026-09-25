@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..models.schemas import AuditEntry
@@ -63,7 +63,7 @@ class AuditLog:
         """Create, persist, and return an audit entry."""
         entry = AuditEntry(
             entry_id=str(uuid.uuid4()),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             uid=self._uid,
             run_id=self._run_id,
             event_id=event_id,

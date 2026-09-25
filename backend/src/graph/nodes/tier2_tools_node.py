@@ -5,6 +5,10 @@ Tier 2 Tools Node — executes tool calls in the LangGraph ReAct agent loop.
 from __future__ import annotations
 
 import logging
+import time
+import json
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any
 from langchain_core.messages import ToolMessage
 
@@ -12,8 +16,18 @@ from ...services.database import DatabaseService
 from ...cloud.tier2_agent_tools import build_tier2_tools
 from ...backend.audit_log import audit_from_state
 from ..state import JarvisState
+from ...backend.command_execution import execution, report_progress, TOOL_LABELS, CommandStopped
 
 logger = logging.getLogger(__name__)
+
+# Explicitly allow only reads. Writes and read-after-write dependencies remain
+# ordered, including repeated-write protection and cancellation checks.
+PARALLEL_READ_TOOLS = frozenset({
+    "list_reminders", "search_reminders", "list_notes", "search_notes",
+    "list_tasks", "list_saved_places", "get_current_location",
+    "search_nearby_places", "recall_context_history",
+})
+DEVICE_FILE_READ_TOOLS = {'search_file_memories': 'file_memory_search', 'analyze_saved_file': 'file_analyze'}
 
 
 class Tier2ToolsNode:
@@ -42,26 +56,45 @@ class Tier2ToolsNode:
         tool_messages: list[ToolMessage] = []
         changed_records = list(state.get("changed_records", []))
 
-        for call in tool_calls:
+        def invoke_tool(call):
+            started = time.perf_counter()
+            name = call.get("name", "")
+            t = tool_map.get(name)
+            try:
+                if not t:
+                    return f"Error: Tool '{name}' is not an allow-listed tool."
+                context = execution.get()
+                is_write = name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_'))
+                if context and context.approval_dispatch and is_write and 'calendar_event' not in name and name != 'save_file_to_drive':
+                    approved = context.approval_dispatch({'tool': name, 'arguments': call.get('args', {})})
+                    context.check()
+                    if approved.get('status') != 'approved':
+                        return 'Not executed: You did not approve this change. Do not claim it was saved.'
+                return str(t.invoke(call.get("args", {})))
+            except CommandStopped:
+                raise
+            except Exception as exc:
+                logger.error("Tool execution failed: %s: %s", name, exc)
+                return f"Error executing {name}: {exc}"
+            finally:
+                logger.info("Tool timing run=%s tool=%s latency_ms=%.1f",
+                            state.get("run_id", ""), name, (time.perf_counter() - started) * 1000)
+
+        def finish_call(call, key, res_content):
             tool_name = call.get("name", "")
             tool_args = call.get("args", {})
             call_id = call.get("id", tool_name)
-
-            t = tool_map.get(tool_name)
-            if not t:
-                res_content = f"Error: Tool '{tool_name}' is not an allow-listed tool."
-            else:
-                try:
-                    res_content = str(t.invoke(tool_args))
-                    # Check if an ID was created/modified
-                    if "ID:" in res_content:
-                        import re
-                        m = re.search(r"ID:\s*([a-zA-Z0-9_-]+)", res_content)
-                        if m:
-                            changed_records.append(m.group(1))
-                except Exception as e:
-                    logger.error("Tool execution failed: %s with args %s: %s", tool_name, tool_args, e)
-                    res_content = f"Error executing {tool_name}: {e}"
+            context = execution.get()
+            is_write = tool_name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_'))
+            if context and is_write:
+                context.writes[key] = res_content
+            if is_write and "ID:" in res_content:
+                import re
+                m = re.search(r"ID:\s*([a-zA-Z0-9_-]+)", res_content)
+                if m:
+                    changed_records.append(m.group(1))
+                    if context and m.group(1) not in context.changed_records:
+                        context.changed_records.append(m.group(1))
 
             audit.log(
                 node_name="tier2_tools",
@@ -75,6 +108,64 @@ class Tier2ToolsNode:
             tool_messages.append(
                 ToolMessage(content=res_content, tool_call_id=call_id, name=tool_name)
             )
+
+        def prepare(call):
+            context = execution.get()
+            name = call.get("name", "")
+            key = context.tool_key(name, call.get("args", {})) if context else ''
+            report_progress(TOOL_LABELS.get(name, 'Checking the next step'))
+            return key
+
+        index = 0
+        while index < len(tool_calls):
+            call = tool_calls[index]
+            context = execution.get()
+            if (context and context.approval_dispatch and call.get('name') in DEVICE_FILE_READ_TOOLS
+                    and index + 1 < len(tool_calls) and tool_calls[index + 1].get('name') in DEVICE_FILE_READ_TOOLS):
+                # One device action holds independent reads; never batch writes.
+                batch = [(tool_calls[index + n], prepare(tool_calls[index + n])) for n in range(2)]
+                try:
+                    actions = []
+                    for read_call, _ in batch:
+                        tool = tool_map[read_call['name']]
+                        arguments = tool.get_input_schema().model_validate(read_call.get('args', {})).model_dump()
+                        if read_call['name'] == 'search_file_memories':
+                            arguments['content_query'] = arguments.get('content_query') or arguments.get('query', '')
+                        actions.append({'call_id': read_call['id'], 'operation': DEVICE_FILE_READ_TOOLS[read_call['name']], **arguments})
+                    started = time.perf_counter()
+                    result = context.approval_dispatch({'operation': 'file_read_batch', 'actions': actions})
+                    context.check()
+                    by_id = {entry['call_id']: entry['result'] for entry in result.get('results', [])}
+                    for read_call, key in batch:
+                        finish_call(read_call, key, json.dumps(by_id.get(read_call['id'], {'status':'failed','message':'Batched file read did not complete'})))
+                    logger.info('File read batch timing run=%s reads=%s latency_ms=%.1f', state.get('run_id', ''), len(batch), (time.perf_counter()-started)*1000)
+                except CommandStopped:
+                    raise
+                except Exception as error:
+                    for read_call, key in batch:
+                        finish_call(read_call, key, f'Error executing file read batch: {error}')
+                index += 2
+            elif call.get("name") in PARALLEL_READ_TOOLS:
+                batch = []
+                while index < len(tool_calls) and tool_calls[index].get("name") in PARALLEL_READ_TOOLS:
+                    read_call = tool_calls[index]
+                    batch.append((read_call, prepare(read_call)))
+                    index += 1
+                with ThreadPoolExecutor(max_workers=min(4, len(batch))) as pool:
+                    pending = [pool.submit(copy_context().run, invoke_tool, read_call)
+                               for read_call, _ in batch]
+                    # Preserve model call order in ToolMessages and audit logs.
+                    for (read_call, key), future in zip(batch, pending):
+                        finish_call(read_call, key, future.result())
+            else:
+                key = prepare(call)
+                context = execution.get()
+                if context and key in context.writes:
+                    res_content = context.writes[key]
+                else:
+                    res_content = invoke_tool(call)
+                finish_call(call, key, res_content)
+                index += 1
 
         updated_messages = agent_messages + tool_messages
 

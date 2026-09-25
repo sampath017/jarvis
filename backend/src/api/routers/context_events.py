@@ -7,6 +7,8 @@ Handles activity transitions, sensor features, and locations from Android client
 from __future__ import annotations
 
 import logging
+import asyncio
+from datetime import datetime, timezone
 from typing import Annotated
 from fastapi import APIRouter, Depends, status
 
@@ -58,16 +60,30 @@ async def ingest_context_event(
     }
 
     # Event types eligible for user-facing automation (reminder/notification eval).
-    # Internal telemetry events (BOUNDED_IMU_BURST, TELEMETRY_PIPELINE_CHECK)
-    # are excluded so that riding-burst data never surfaces as notifications.
+    # Internal telemetry events are excluded from ordinary activity automation.
+    # A confidently classified car burst is evaluated separately for CAR rules.
     _AUTOMATION_ELIGIBLE_EVENTS = {
         "ACTIVITY_ENTER", "ACTIVITY_EXIT",
         "SESSION_START", "SESSION_END", "SESSION_STOP",
         "GEOFENCE_ENTER", "GEOFENCE_EXIT",
+        "CONTEXT_CHECKPOINT", "DWELL_CHECK", "ACTIVITY_SAMPLE",
     }
 
     try:
-        result = workflow.invoke(initial_state)
+        result = await asyncio.to_thread(workflow.invoke, initial_state)
+        if not result.get("error"):
+            # Derived sessions are cheap event-time reductions. They never add
+            # a model round or hold up durable raw-event persistence on failure.
+            try:
+                from ...services.firestore_service import FirestoreService
+                from ...backend.activity_sessions import enriched_history
+                from datetime import timedelta
+                fs = FirestoreService()
+                if fs.is_available:
+                    now = datetime.now(timezone.utc)
+                    await asyncio.to_thread(enriched_history, fs, uid, now - timedelta(days=1), now, persist=True)
+            except Exception:
+                logger.exception("Activity grouping deferred; raw observation remains stored")
 
         # Context-triggered actions are deliberately deterministic and run only
         # after the event has been persisted. They create durable notification
@@ -75,13 +91,30 @@ async def ingest_context_event(
         # Only genuine activity transitions are eligible — internal telemetry
         # bursts (e.g. 10s IMU burst while riding) must not create notifications.
         event_data = request.model_dump(mode="json")
+        event_data["semantic_contexts"] = result.get("semantic_contexts", [])
         event_type = str(event_data.get("event_type") or event_data.get("transition") or "").upper()
-        if event_type in _AUTOMATION_ELIGIBLE_EVENTS:
-            automation_changes = ContextAutomationService().process_context_event(
-                uid, event_data,
-            )
+        observed = datetime.fromisoformat(str(event_data["occurred_at"]).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        fresh = 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 300
+        is_classified_car_burst = (
+            event_type == "BOUNDED_IMU_BURST"
+            and event_data.get("activity") == "IN_VEHICLE"
+            and event_data.get("transition") == "ENTER"
+            and (event_data.get("feature_summary") or {}).get("vehicle_class_hint") == "CAR"
+            and float((event_data.get("feature_summary") or {}).get("classification_confidence") or 0) >= 0.8
+        )
+        if (event_type in _AUTOMATION_ELIGIBLE_EVENTS or is_classified_car_burst) and not result.get("error") and fresh:
+            automation_changes = await asyncio.to_thread(ContextAutomationService().process_context_event, uid, event_data)
         else:
             automation_changes = []
+
+        if automation_changes:
+            try:
+                from ...services.push_notifications import PushNotifications
+                await asyncio.to_thread(PushNotifications().deliver, uid)
+            except Exception:
+                logger.exception('Reminder push deferred; alert is stored in outbox')
 
         status_str = "error" if result.get("error") else "ok"
         error_msg = result.get("error")
@@ -104,7 +137,7 @@ async def ingest_context_event(
         )
 
     except Exception as e:
-        logger.error("Failed to run context-event workflow: %s", e)
+        logger.exception("Failed to run context-event workflow: %s", e)
         return APIResponse(
             status="error",
             message="Internal workflow execution error",

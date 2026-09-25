@@ -27,14 +27,14 @@ try:
     from ..services.database import get_db_path, init_database
     from ..settings import LOG_LEVEL, NOTIFICATION_SWEEP_SECONDS, PORT
     from .middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
-    from .routers import automation, commands, context_events, sync
+    from .routers import automation, commands, context_events, sync, session_library, file_memories
 except (ImportError, ValueError):
     from src.backend.context_automation import ContextAutomationService
     from src.backend.logging_config import configure_logging
     from src.services.database import get_db_path, init_database
     from src.settings import LOG_LEVEL, NOTIFICATION_SWEEP_SECONDS, PORT
     from src.api.middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
-    from src.api.routers import automation, commands, context_events, sync
+    from src.api.routers import automation, commands, context_events, sync, session_library, file_memories
 
 
 configure_logging()
@@ -83,7 +83,9 @@ async def lifespan(_app: FastAPI):
     logger.info("• LLM Tier 1: %s", OPENROUTER_MODEL_TIER1)
     logger.info("• LLM Tier 2: %s", OPENROUTER_MODEL_TIER2)
     logger.info("• Firestore Sync: %s", fs_status)
-    logger.info("• Token Limits: %d req/min | %d max tokens/call | %d daily token cap", RATE_LIMIT_PER_USER_PER_MINUTE, MAX_TOKENS_PER_CALL, MAX_DAILY_TOKENS)
+    logger.info("• AI allowance: Rs 20/day (fixed INR/USD budget conversion) | %d req/min | no daily token ceiling", RATE_LIMIT_PER_USER_PER_MINUTE)
+    from ..settings import LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS
+    logger.info("• AI budget profile: %s | daily calls: %d | reset: midnight IST", LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS)
     logger.info("=" * 72)
 
     stop_sweeper = asyncio.Event()
@@ -102,7 +104,20 @@ async def _notification_sweeper(stop: asyncio.Event) -> None:
     """Persist due time reminders even if no mobile client is polling."""
     while not stop.is_set():
         try:
-            _ = ContextAutomationService().process_due_reminders()
+            _ = await asyncio.to_thread(ContextAutomationService().process_due_reminders)
+            from ..services.push_notifications import PushNotifications
+            from ..services.background_tasks import BackgroundTasks
+            from ..services.firestore_service import FirestoreService
+            def refresh_delivery():
+                fs = FirestoreService()
+                if not fs.is_available: return
+                users = {'jarvis_local_user'}
+                for reminder in fs.get_reminders():
+                    uid = reminder.get('uid') or 'jarvis_local_user'
+                    users.add(uid)
+                    BackgroundTasks().schedule_reminder(uid, reminder)
+                for uid in users: PushNotifications().deliver(uid)
+            await asyncio.to_thread(refresh_delivery)
         except Exception:
             logger.exception("Notification sweeper failed")
         try:
@@ -132,6 +147,13 @@ async def health_check(response: Response) -> dict[str, object]:
         "timezone": "IST (Asia/Kolkata)",
         "database": {"status": "healthy"},
     }
+    from ..settings import LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS, MAX_DAILY_TOKENS, RATE_LIMIT_PER_USER_PER_MINUTE
+    from .spend_policy import DAILY_BUDGET_INR, DAILY_BUDGET_NANOS, BUDGET_INR_PER_USD
+    health_status['ai_budget'] = {'profile': LLM_BUDGET_PROFILE,
+        'daily_tokens': MAX_DAILY_TOKENS or None, 'daily_calls': MAX_DAILY_LLM_CALLS or None,
+        'daily_budget_inr': DAILY_BUDGET_INR, 'daily_budget_usd': DAILY_BUDGET_NANOS / 1_000_000_000, 'budget_inr_per_usd': BUDGET_INR_PER_USD,
+        'requests_per_minute': RATE_LIMIT_PER_USER_PER_MINUTE,
+        'reset_timezone': 'Asia/Kolkata'}
 
     try:
         db_path = get_db_path()
@@ -175,6 +197,10 @@ def create_app() -> FastAPI:
     app.include_router(context_events.router)
     app.include_router(commands.router)
     app.include_router(automation.router)
+    app.include_router(session_library.router)
+    app.include_router(file_memories.router)
+    from .routers import drive_index
+    app.include_router(drive_index.router)
     app.include_router(sync.router)
 
     # 3. Liveness/Readiness probes and Root landing

@@ -54,6 +54,14 @@ htmlcov/
 coverage.xml
 *.cover
 
+# Temporary files and test scratch directories
+.tmp*
+*.tmp
+*.temp
+.kotlin/
+tmp/
+temp/
+
 # mypy
 .mypy_cache/
 

@@ -16,6 +16,7 @@ from .nodes.verify import VerifyNode
 from .nodes.load_context import LoadContextNode
 from .nodes.context_gate import ContextGateNode
 from .nodes.session_reducer import SessionReducerNode
+from .nodes.semantic_context import SemanticContextNode
 from .nodes.intent_router import IntentRouterNode
 from .nodes.tier1_agent import Tier1AgentNode
 from .nodes.tier1_tools_node import Tier1ToolsNode
@@ -26,6 +27,7 @@ from ..services.database import DatabaseService
 from ..backend.context_resolver import ContextResolver
 from ..backend.session_manager import SessionManager
 from ..settings import AGENT_MAX_ITERATIONS
+from ..backend.command_execution import observed_node
 
 logger = logging.getLogger(__name__)
 
@@ -93,22 +95,23 @@ def build_workflow(db: DatabaseService | None = None):
     session_mgr = SessionManager()
 
     # 1. Instantiate Node Handlers with Dependency Injection
-    workflow.add_node("verify", VerifyNode(db=db_instance))
-    workflow.add_node("load_context", LoadContextNode(db=db_instance))
+    workflow.add_node("verify", observed_node("verify", VerifyNode(db=db_instance)))
+    workflow.add_node("load_context", observed_node("load_context", LoadContextNode(db=db_instance)))
     workflow.add_node("context_gate", ContextGateNode(resolver=resolver, db=db_instance))
     workflow.add_node("session_reducer", SessionReducerNode(session_manager=session_mgr, db=db_instance))
-    workflow.add_node("intent_router", IntentRouterNode(db=db_instance))
+    workflow.add_node("semantic_context", SemanticContextNode())
+    workflow.add_node("intent_router", observed_node("intent_router", IntentRouterNode(db=db_instance)))
 
     # Tier 1 Context Agent & Tools
     workflow.add_node("tier1_agent", Tier1AgentNode(db=db_instance))
     workflow.add_node("tier1_tools", Tier1ToolsNode(db=db_instance))
 
     # Tier 2 ReAct Agent & Tools
-    workflow.add_node("tier2_agent", Tier2AgentNode(db=db_instance))
+    workflow.add_node("tier2_agent", observed_node("tier2_agent", Tier2AgentNode(db=db_instance)))
     workflow.add_node("tier2_tools", Tier2ToolsNode(db=db_instance))
 
     # Persistence
-    workflow.add_node("persist", PersistNode(db=db_instance))
+    workflow.add_node("persist", observed_node("persist", PersistNode(db=db_instance)))
 
     # 2. Entry and Context Branching
     workflow.set_entry_point("verify")
@@ -163,7 +166,8 @@ def build_workflow(db: DatabaseService | None = None):
         },
     )
     workflow.add_edge("tier1_tools", "tier1_agent")  # Feedback loop for Tier 1!
-    workflow.add_edge("session_reducer", "persist")
+    workflow.add_edge("session_reducer", "semantic_context")
+    workflow.add_edge("semantic_context", "persist")
 
     # 6. Terminal Edge
     workflow.add_edge("persist", END)

@@ -1,11 +1,22 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import '../../models/chat_session.dart';
+import '../../utils/ist_time.dart';
 import '../../services/api_service.dart';
 import '../../services/chat_storage_service.dart';
 import '../../services/sensor_service.dart';
+import '../../services/health_service.dart';
+import '../../services/usage_service.dart';
 import '../theme.dart';
+import '../../services/command_client.dart';
+import '../../services/chat_notification_service.dart';
+import '../../services/sync_service.dart';
+import '../../services/local_db_service.dart';
+import '../widgets/chat_progress_bubble.dart';
+import '../widgets/workspace_widgets.dart';
+import '../widgets/action_approval_dialog.dart';
+import '../../services/google_drive_service.dart';
 
 /// ChatGPT-like Conversational Agent Screen:
 /// Features multi-session conversation history, rename/edit chat titles,
@@ -19,13 +30,28 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
+  Timer? _recoveryTimer;
+  Timer? _historyRefreshTimer;
+  int _historyRefreshVersion = 0;
+  bool _userSelectedChat = false;
+  bool _checkingRecovery = false;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final ApiService _apiService = ApiService();
   final TextEditingController _inputController = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
 
   bool _isSending = false;
+  bool _uploading = false;
+  bool _cancelUpload = false;
+  final List<Map<String, dynamic>> _pendingAttachments = [];
+  String? _activeSessionId;
+  String? _activeRequestId;
+  String _historyQuery = '';
+  CommandProgress _progress = const CommandProgress(
+    message: 'Preparing your request',
+  );
   bool _isLoadingSessions = true;
 
   List<ChatSession> _sessions = [];
@@ -34,30 +60,240 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _apiService.addListener(_onServiceUpdate);
+    LocalDbService().addListener(_onLocalHistoryChanged);
+    ChatNotificationService.openThread.addListener(_openNotification);
+    ChatNotificationService.updatedThread.addListener(_refreshNotification);
+    ChatNotificationService.chatVisible.addListener(_updateVisibleThread);
+    UsageService.openReport.addListener(_openUsageReport);
     _initChat();
   }
 
   Future<void> _initChat() async {
     await _loadSessions();
+    if (ChatNotificationService.openThread.value != null) {
+      await _reloadThread(
+        ChatNotificationService.openThread.value!,
+        select: true,
+      );
+    }
+    _updateVisibleThread();
+    if (UsageService.openReport.value != null) _openUsageReport();
+    _recoverRequest();
     // Non-blocking health check in background
     _apiService.checkHealth();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_isSending) {
+      final id = _currentSession?.id;
+      if (id != null) _reloadThread(id).then((_) => _recoverRequest());
+    }
+  }
+
+  Future<void> _recoverRequest() async {
+    if (_isSending || _checkingRecovery) return;
+    final session = _currentSession;
+    if (session == null ||
+        session.messages.isEmpty ||
+        !session.messages.last.isUser) {
+      return;
+    }
+    final message = session.messages.last;
+    if (DateTime.now().difference(message.timestamp).inMinutes > 20) return;
+    _checkingRecovery = true;
+    final snapshot = await _apiService.commandStatus(message.id);
+    _checkingRecovery = false;
+    if (!mounted || _isSending || snapshot == null) return;
+    if (snapshot['status'] == 'complete') {
+      await _reloadThread(session.id);
+      return;
+    }
+    setState(() {
+      _isSending = true;
+      _activeSessionId = session.id;
+      _activeRequestId = message.id;
+    });
+    _setProgress(CommandProgress.fromJson(snapshot));
+    Future<void> poll() async {
+      if (!mounted) return;
+      final next = await _apiService.commandStatus(message.id);
+      if (!mounted) return;
+      if (next?['status'] == 'complete') {
+        setState(() {
+          _isSending = false;
+          _activeRequestId = null;
+          _activeSessionId = null;
+        });
+        await _reloadThread(session.id);
+        return;
+      }
+      if (next != null) _setProgress(CommandProgress.fromJson(next));
+      if (next?['calendar_action'] is Map) {
+        try {
+          await _apiService.handleCalendarAction(
+            message.id,
+            Map<String, dynamic>.from(next!['calendar_action']),
+            approve: _approveAction,
+          );
+        } catch (_) {}
+      }
+      _recoveryTimer = Timer(const Duration(seconds: 3), poll);
+    }
+
+    _recoveryTimer = Timer(const Duration(seconds: 3), poll);
+  }
+
+  void _updateVisibleThread() => ChatNotificationService.setVisibleThread(
+    ChatNotificationService.chatVisible.value ? _currentSession?.id : null,
+  );
+
+  Future<void> _openUsageReport() async {
+    final day = UsageService.openReport.value;
+    if (day == null) return;
+    final text = await UsageService.savedReport(day);
+    final id = 'usage_report_$day';
+    final report = ChatSession(
+      id: id,
+      title: 'Screen time · $day',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+      messages: [
+        ChatMessage(
+          id: 'usage_message_$day',
+          text: text,
+          isUser: false,
+          timestamp: DateTime.now(),
+        ),
+      ],
+    );
+    await ChatStorageService.saveSession(report);
+    if (!mounted) return;
+    setState(() {
+      _sessions.removeWhere((s) => s.id == id);
+      _sessions.insert(0, report);
+      _currentSession = report;
+    });
+    ChatNotificationService.openThread.value = id;
+    _updateVisibleThread();
+  }
+
+  void _openNotification() {
+    final id = ChatNotificationService.openThread.value;
+    if (id != null) _reloadThread(id, select: true);
+  }
+
+  void _refreshNotification() {
+    final id = ChatNotificationService.updatedThread.value;
+    if (id != null) _reloadThread(id);
+  }
+
+  Future<void> _reloadThread(String id, {bool select = false}) async {
+    await SyncService().syncNow();
+    final loaded = await ChatStorageService.loadSessions();
+    if (!mounted) return;
+    // The streaming request retains its original session object until completion.
+    final active = _sessions.where((s) => s.id == _activeSessionId).firstOrNull;
+    final selected = select ? id : _currentSession?.id;
+    setState(() {
+      _sessions = loaded
+          .map((s) => _isSending && s.id == active?.id ? active! : s)
+          .toList();
+      _currentSession =
+          _sessions.where((s) => s.id == selected).firstOrNull ??
+          _currentSession;
+    });
+    _updateVisibleThread();
+    _scrollToBottom();
   }
 
   void _onServiceUpdate() {
     if (mounted) setState(() {});
   }
 
+  void _onLocalHistoryChanged() {
+    final version = ++_historyRefreshVersion;
+    _historyRefreshTimer?.cancel();
+    _historyRefreshTimer = Timer(const Duration(milliseconds: 150), () async {
+      final loaded = await ChatStorageService.loadSessions();
+      if (!mounted || _isLoadingSessions || version != _historyRefreshVersion) {
+        return;
+      }
+      final changed =
+          loaded.length != _sessions.length ||
+          loaded.any((saved) {
+            final current = _sessions
+                .where((s) => s.id == saved.id)
+                .firstOrNull;
+            if (current == null ||
+                current.title != saved.title ||
+                current.lastActivityAt != saved.lastActivityAt ||
+                current.messages.length != saved.messages.length) {
+              return true;
+            }
+            for (var i = 0; i < saved.messages.length; i++) {
+              if (current.messages[i].id != saved.messages[i].id ||
+                  current.messages[i].text != saved.messages[i].text) {
+                return true;
+              }
+            }
+            return false;
+          });
+      if (!changed) return;
+      final active = _sessions
+          .where((s) => s.id == _activeSessionId)
+          .firstOrNull;
+      final selected = _currentSession?.id;
+      final nearBottom =
+          !_scrollController.hasClients ||
+          _scrollController.position.extentAfter < 120;
+      setState(() {
+        _sessions = loaded
+            .map((s) => _isSending && s.id == active?.id ? active! : s)
+            .toList();
+        final restored = _sessions.where((s) => s.id == selected).firstOrNull;
+        _currentSession = restored ?? _currentSession;
+        if (!_userSelectedChat &&
+            !_isSending &&
+            _inputController.text.isEmpty &&
+            (_currentSession?.messages.isEmpty ?? true)) {
+          _currentSession =
+              _sessions.where((s) => s.messages.isNotEmpty).firstOrNull ??
+              _currentSession;
+        }
+      });
+      _updateVisibleThread();
+      if (_currentSession?.id != selected || nearBottom) _scrollToBottom();
+    });
+  }
+
   @override
   void dispose() {
+    UsageService.openReport.removeListener(_openUsageReport);
     _apiService.removeListener(_onServiceUpdate);
+    LocalDbService().removeListener(_onLocalHistoryChanged);
+    _historyRefreshTimer?.cancel();
+    ChatNotificationService.openThread.removeListener(_openNotification);
+    ChatNotificationService.updatedThread.removeListener(_refreshNotification);
+    ChatNotificationService.chatVisible.removeListener(_updateVisibleThread);
+    ChatNotificationService.setVisibleThread(null);
+    WidgetsBinding.instance.removeObserver(this);
+    _recoveryTimer?.cancel();
     _inputController.dispose();
+    _inputFocus.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
   Future<void> _loadSessions() async {
-    final loaded = await ChatStorageService.loadSessions();
+    var loaded = await ChatStorageService.loadSessions();
+    if (loaded.isEmpty) {
+      await SyncService().syncNow();
+      loaded = await ChatStorageService.loadSessions();
+    }
+    if (!mounted) return;
     if (loaded.isEmpty) {
       final initial = _createDefaultSession();
       await ChatStorageService.saveSession(initial);
@@ -65,7 +301,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _currentSession = initial;
     } else {
       _sessions = loaded;
-      _currentSession = loaded.first;
+      _currentSession =
+          loaded.where((s) => s.messages.isNotEmpty).firstOrNull ??
+          loaded.first;
     }
     if (mounted) {
       setState(() {
@@ -85,6 +323,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _startNewChat() async {
+    _userSelectedChat = true;
     final newSession = ChatSession(
       title: 'New Chat',
       createdAt: DateTime.now(),
@@ -97,6 +336,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _currentSession = newSession;
     });
 
+    _updateVisibleThread();
     await ChatStorageService.saveSession(newSession);
 
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
@@ -107,12 +347,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _selectSession(ChatSession session) {
+    _userSelectedChat = true;
     setState(() {
       _currentSession = session;
     });
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       _scaffoldKey.currentState?.closeDrawer();
     }
+    _updateVisibleThread();
     _scrollToBottom();
   }
 
@@ -151,7 +393,10 @@ class _ChatScreenState extends State<ChatScreen> {
               style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
               decoration: InputDecoration(
                 hintText: 'Enter new title...',
-                hintStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                hintStyle: const TextStyle(
+                  color: AppTheme.textSecondary,
+                  fontSize: 13,
+                ),
                 filled: true,
                 fillColor: AppTheme.surfaceBright,
                 border: OutlineInputBorder(
@@ -163,27 +408,36 @@ class _ChatScreenState extends State<ChatScreen> {
                   borderSide: const BorderSide(color: AppTheme.primary),
                 ),
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Title cannot be empty' : null,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? 'Title cannot be empty'
+                  : null,
             ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: AppTheme.textSecondary),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppTheme.primary,
                 foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
               onPressed: () {
                 if (formKey.currentState?.validate() ?? false) {
                   Navigator.of(ctx).pop(controller.text.trim());
                 }
               },
-              child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Save',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         );
@@ -200,6 +454,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _confirmDeleteSession(ChatSession session) async {
+    if (_isSending && session.id == _activeSessionId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Stop the active request before deleting this chat.'),
+        ),
+      );
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) {
@@ -225,21 +487,33 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           content: Text(
             'Are you sure you want to delete "${session.title}"?\nThis cannot be undone.',
-            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.4),
+            style: const TextStyle(
+              color: AppTheme.textSecondary,
+              fontSize: 13,
+              height: 1.4,
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('Cancel', style: TextStyle(color: AppTheme.textSecondary)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: AppTheme.textSecondary),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppTheme.red,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                foregroundColor: AppTheme.background,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('Delete', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Delete',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         );
@@ -276,133 +550,219 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _handleSendMessage(String text) async {
-    final query = text.trim();
-    if (query.isEmpty || _currentSession == null) return;
+  void _setProgress(CommandProgress progress) {
+    if (!mounted) return;
+    final followBottom =
+        !_scrollController.hasClients ||
+        _scrollController.position.extentAfter < 140;
+    setState(() => _progress = progress);
+    if (followBottom) _scrollToBottom();
+  }
 
-    _inputController.clear();
-
-    // Auto-generate title for first user prompt if still "New Chat"
-    final isNewChat = _currentSession!.title == 'New Chat';
-    if (isNewChat) {
-      String smartTitle = query;
-      if (smartTitle.length > 28) {
-        smartTitle = '${smartTitle.substring(0, 28).trim()}...';
-      }
-      _currentSession!.title = smartTitle;
+  Future<void> _stopRequest() async {
+    if (_uploading) {
+      _cancelUpload = true;
+      _setProgress(const CommandProgress(message: 'Pausing file upload'));
+      return;
     }
+    final id = _activeRequestId;
+    if (id == null) return;
+    final stopped = await _apiService.cancelCommand(id);
+    if (!mounted || !_isSending) return;
+    if (stopped) {
+      _setProgress(
+        CommandProgress(
+          message: 'Stopping after the current operation',
+          steps: _progress.steps,
+          elapsedSeconds: _progress.elapsedSeconds,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not reach Jarvis to stop it. The request may still be running.',
+          ),
+        ),
+      );
+    }
+  }
 
-    final recentMsgs = _currentSession!.messages;
-    final historyPayload = recentMsgs.length > 8
-        ? recentMsgs.sublist(recentMsgs.length - 8)
-        : recentMsgs;
-    final historyList = historyPayload
-        .map((m) => <String, dynamic>{
-              'role': m.isUser ? 'user' : 'assistant',
-              'content': m.text,
-            })
+  Future<void> _handleSendMessage(String text) async {
+    final query = text.trim().isEmpty && _pendingAttachments.isNotEmpty
+        ? 'Keep these attachments available for this conversation.'
+        : text.trim();
+    final session = _currentSession;
+    if (query.isEmpty || session == null || _isSending) return;
+    _userSelectedChat = true;
+    final historyList = session.messages
+        .where((m) => !m.id.startsWith('err_') && !m.isInternalAttachmentNotice)
+        .toList()
+        .reversed
+        .take(8)
+        .toList()
+        .reversed
+        .map(
+          (m) => <String, dynamic>{
+            'role': m.isUser ? 'user' : 'assistant',
+            'content': m.text,
+          },
+        )
         .toList();
-
     final userMsgId = 'msg_${DateTime.now().microsecondsSinceEpoch}';
-    final userMsg = ChatMessage(
-      id: userMsgId,
-      text: query,
-      isUser: true,
-      timestamp: DateTime.now(),
-    );
-
+    _inputController.clear();
+    if (session.title == 'New Chat') {
+      session.title = query.length > 28
+          ? '${query.substring(0, 28).trim()}…'
+          : query;
+    }
     setState(() {
-      _currentSession!.messages.add(userMsg);
-      _currentSession!.updatedAt = DateTime.now();
+      session.messages.add(
+        ChatMessage(
+          id: userMsgId,
+          text: query,
+          isUser: true,
+          timestamp: DateTime.now(),
+        ),
+      );
+      session.updatedAt = DateTime.now();
       _isSending = true;
+      _activeSessionId = session.id;
+      _activeRequestId = userMsgId;
+      _progress = const CommandProgress(message: 'Preparing your request');
     });
-
-    await ChatStorageService.saveSession(_currentSession!);
     _scrollToBottom();
-
-    // Check location accessibility and retrieve current GPS coordinates
-    double? lat;
-    double? lon;
+    final watch = Stopwatch()..start();
+    Map<String, dynamic>? response;
+    final attachedFileIds = <String>[];
     try {
-      final coords = await widget.sensorService.getCurrentLocation(requestIfNeeded: true);
-      if (coords != null) {
-        lat = coords['latitude'];
-        lon = coords['longitude'];
-      } else {
-        // If query asks for location and service is disabled, prompt user to open settings
-        final isLocationQuery = query.toLowerCase().contains('location') ||
-            query.toLowerCase().contains('where am i') ||
-            query.toLowerCase().contains('where i am') ||
-            query.toLowerCase().contains('place');
-        final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-        if (!serviceEnabled && isLocationQuery && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('Location services are turned off on your device.'),
-              action: SnackBarAction(
-                label: 'Settings',
-                onPressed: () => Geolocator.openLocationSettings(),
+      await ChatStorageService.saveSession(session);
+      if (_pendingAttachments.isNotEmpty) {
+        _uploading = true;
+        _cancelUpload = false;
+        final selected = [..._pendingAttachments];
+        for (final file in selected) {
+          final memory = await GoogleDriveService.instance.save(
+            file,
+            query,
+            saveToDrive: GoogleDriveService.requestsDriveSave(query),
+            shouldContinue: () => mounted && !_cancelUpload,
+            progress: (fraction) => _setProgress(
+              CommandProgress(
+                message:
+                    'Saving ${file['name']} · ${(fraction * 100).round()}%',
+                canStop: true,
               ),
-              duration: const Duration(seconds: 6),
             ),
           );
+          if (memory['storage'] == 'drive') {
+            session.messages.add(
+              ChatMessage(
+                text: 'Saved to My Drive: ${memory['name']}\n${memory['url']}',
+                isUser: false,
+                timestamp: DateTime.now(),
+              ),
+            );
+          }
+          _pendingAttachments.removeWhere((f) => f['id'] == file['id']);
+          attachedFileIds.add(memory['id'].toString());
+          try {
+            await GoogleDriveService.instance.removeCached(file);
+          } catch (_) {}
+          await ChatStorageService.saveSession(session);
+          if (mounted) setState(() {});
         }
+        _uploading = false;
       }
-    } catch (e) {
-      debugPrint('[ChatScreen] Error acquiring location for chat: $e');
-    }
-
-    final stopwatch = Stopwatch()..start();
-    final res = await _apiService.sendCommand(
-      query,
-      threadId: _currentSession!.id,
-      history: historyList,
-      latitude: lat,
-      longitude: lon,
-      requestId: userMsgId,
-    );
-    stopwatch.stop();
-    final durationMs = stopwatch.elapsedMilliseconds;
-
-    if (mounted) {
-      ChatMessage botMsg;
-      if (res != null && res['status'] == 'ok') {
-        final botMsgId = res['run_id'] ?? 'bot_${DateTime.now().microsecondsSinceEpoch}';
-        botMsg = ChatMessage(
-          id: botMsgId,
-          text: res['message'] ?? 'Action executed successfully.',
-          isUser: false,
-          timestamp: DateTime.now(),
-          runId: res['run_id'],
-          executedRecords: List<String>.from(res['changed_records'] ?? []),
-          durationMs: durationMs,
+      if (UsageService.isUsageQuestion(query)) {
+        _setProgress(const CommandProgress(message: 'Reading your app usage'));
+        response = {
+          'status': 'ok',
+          'message': await UsageService.answer(query),
+        };
+      } else if (HealthService.isHealthQuestion(query)) {
+        _setProgress(
+          const CommandProgress(message: 'Reading your health records'),
         );
+        response = {
+          'status': 'ok',
+          'message': await HealthService.instance.answer(query),
+        };
       } else {
-        final errText = res?['error']?.toString() ?? 'Unable to complete action due to connection error';
-        botMsg = ChatMessage(
-          id: 'err_${DateTime.now().microsecondsSinceEpoch}',
-          text: errText,
-          isUser: false,
-          timestamp: DateTime.now(),
-          durationMs: durationMs,
+        _setProgress(
+          const CommandProgress(
+            message: 'Connecting to Jarvis',
+            steps: ['Prepared your request'],
+          ),
+        );
+        response = await _apiService.sendCommand(
+          query,
+          threadId: session.id,
+          history: historyList,
+          requestId: userMsgId,
+          onProgress: _setProgress,
+          approve: _approveAction,
+          attachedFileIds: attachedFileIds,
         );
       }
-
-      setState(() {
-        _currentSession!.messages.add(botMsg);
-        _currentSession!.updatedAt = DateTime.now();
-        _isSending = false;
-      });
-
-      await ChatStorageService.saveSession(_currentSession!);
-      _scrollToBottom();
+    } catch (error) {
+      response = {
+        'status': 'error',
+        'error': error is DriveFailure
+            ? error.message
+            : 'Could not finish connecting to Jarvis. Please check your connection.',
+      };
     }
+    _uploading = false;
+    watch.stop();
+    final succeeded = response?['status'] == 'ok';
+    session.messages.add(
+      ChatMessage(
+        id: succeeded ? (response?['run_id']?.toString()) : 'err_$userMsgId',
+        text: succeeded
+            ? (response?['message']?.toString() ?? 'Done.')
+            : (response?['error']?.toString() ??
+                  'The request could not finish.'),
+        isUser: false,
+        timestamp: DateTime.now(),
+        runId: response?['run_id']?.toString(),
+        executedRecords: List<String>.from(response?['changed_records'] ?? []),
+        durationMs: watch.elapsedMilliseconds,
+      ),
+    );
+    session.updatedAt = DateTime.now();
+    // Persist into the original chat even if the user opened a different one.
+    if (mounted) {
+      setState(() {
+        _isSending = false;
+        _activeSessionId = null;
+        _activeRequestId = null;
+      });
+      if (_currentSession?.id == session.id) _scrollToBottom();
+    }
+    await ChatStorageService.saveSession(session);
+  }
+
+  Future<bool> _approveAction(Map<String, dynamic> preview) async {
+    if (!mounted ||
+        !_isSending ||
+        !ChatNotificationService.chatVisible.value ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return false;
+    }
+    return showActionApproval(context, preview);
   }
 
   @override
   Widget build(BuildContext context) {
-    final isOnline = _apiService.isOnline;
-    final currentTitle = _currentSession?.title ?? 'JARVIS AI ASSISTANT';
+    final currentTitle = _currentSession?.title ?? 'New chat';
+    final visibleMessages =
+        _currentSession?.messages
+            .where((m) => !m.isInternalAttachmentNotice)
+            .toList() ??
+        <ChatMessage>[];
+    final showingProgress =
+        _isSending && _currentSession?.id == _activeSessionId;
 
     return Scaffold(
       key: _scaffoldKey,
@@ -411,41 +771,49 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.menu_rounded, color: AppTheme.textPrimary),
-          tooltip: 'Previous Chats',
+          tooltip: 'Conversation history',
           onPressed: () => _scaffoldKey.currentState?.openDrawer(),
         ),
         title: Row(
           children: [
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: isOnline ? AppTheme.green : AppTheme.red,
-                boxShadow: [
-                  BoxShadow(
-                    color: (isOnline ? AppTheme.green : AppTheme.red).withAlpha(160),
-                    blurRadius: 6,
-                    spreadRadius: 1.5,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
+            const JarvisMark(),
+            const SizedBox(width: 12),
             Flexible(
               child: GestureDetector(
                 onTap: _currentSession != null
                     ? () => _showRenameDialog(_currentSession!)
                     : null,
                 behavior: HitTestBehavior.opaque,
-                child: Text(
-                  currentTitle,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5,
-                    fontSize: 15,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      (_currentSession?.messages.isEmpty ?? true)
+                          ? 'Jarvis'
+                          : currentTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontFamily: 'Roboto',
+                        fontWeight: FontWeight.w600,
+                        fontSize: 17,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _apiService.isOnline
+                          ? 'Personal assistant · Connected'
+                          : 'Personal assistant · Offline',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontFamily: 'Roboto',
+                        color: AppTheme.textSecondary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -453,270 +821,351 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.add_comment_outlined, color: AppTheme.primary, size: 20),
+            icon: const Icon(
+              Icons.edit_outlined,
+              color: AppTheme.textPrimary,
+              size: 21,
+            ),
             tooltip: 'New Chat',
             onPressed: _startNewChat,
           ),
         ],
       ),
       body: _isLoadingSessions
-          ? const Center(child: CircularProgressIndicator(color: AppTheme.primary))
-          : Column(
-              children: [
-                // ── Chat conversation list ────────────────────────────────────────
-                Expanded(
-                  child: (_currentSession?.messages.isEmpty ?? true)
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.auto_awesome_rounded,
-                                color: AppTheme.primary.withValues(alpha: 0.35),
-                                size: 40,
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                'Jarvis',
-                                style: TextStyle(
-                                  color: AppTheme.textPrimary.withValues(alpha: 0.7),
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 1.2,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'Ask anything or give a command',
-                                style: TextStyle(
-                                  color: AppTheme.textSecondary.withValues(alpha: 0.5),
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ],
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primary),
+            )
+          : WorkspaceBody(
+              child: Column(
+                children: [
+                  // ── Chat conversation list ────────────────────────────────────────
+                  Expanded(
+                    child: visibleMessages.isEmpty
+                        ? _buildWelcome()
+                        : ListView.builder(
+                            controller: _scrollController,
+                            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+                            keyboardDismissBehavior:
+                                ScrollViewKeyboardDismissBehavior.onDrag,
+                            itemCount:
+                                visibleMessages.length +
+                                (showingProgress ? 1 : 0),
+                            itemBuilder: (ctx, i) {
+                              if (i == visibleMessages.length) {
+                                return ChatProgressBubble(
+                                  key: ValueKey(_activeRequestId),
+                                  progress: _progress,
+                                  onStop: _progress.canStop
+                                      ? _stopRequest
+                                      : null,
+                                );
+                              }
+                              final msg = visibleMessages[i];
+                              return _buildMessageBubble(msg);
+                            },
                           ),
-                        )
-                      : ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _currentSession?.messages.length ?? 0,
-                          itemBuilder: (ctx, i) {
-                            final msg = _currentSession!.messages[i];
-                            return _buildMessageBubble(msg);
-                          },
-                        ),
-                ),
-
-                if (_isSending) ...[
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                    child: Row(
-                      children: const [
-                        SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.primary),
-                        ),
-                        SizedBox(width: 10),
-                        Text(
-                          'Jarvis is reasoning with OpenRouter & LangGraph...',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontStyle: FontStyle.italic,
-                            color: AppTheme.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
-                ],
 
-                // ── Bottom Input Bar ───────────────────────────────────────────────
-                _buildInputBar(),
-              ],
+                  // ── Bottom Input Bar ───────────────────────────────────────────────
+                  _buildInputBar(),
+                ],
+              ),
             ),
     );
   }
 
-  /// ChatGPT-style slide-out drawer showing all previous conversations
+  Widget _buildWelcome() => LayoutBuilder(
+    builder: (context, constraints) => SingleChildScrollView(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: constraints.maxHeight),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const JarvisMark(size: 48),
+              const SizedBox(height: 24),
+              Text(
+                'How can I help today?',
+                style: Theme.of(context).textTheme.headlineLarge,
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Keep track of what matters, with an assistant that understands your day.',
+                style: TextStyle(
+                  fontSize: 15,
+                  height: 1.6,
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 28),
+              _buildSuggestion(
+                Icons.alarm_outlined,
+                'Set a reminder',
+                'Stay on top of your next task',
+                'Remind me to ',
+              ),
+              const SizedBox(height: 8),
+              _buildSuggestion(
+                Icons.route_outlined,
+                'Review my activity',
+                'Look back at your recent day',
+                'What did I do in the last 10 minutes?',
+              ),
+              const SizedBox(height: 8),
+              _buildSuggestion(
+                Icons.note_alt_outlined,
+                'Save a note',
+                'Keep a thought for later',
+                'Remember that ',
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget _buildSuggestion(
+    IconData icon,
+    String label,
+    String description,
+    String prompt,
+  ) => Material(
+    color: AppTheme.surface,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(AppTheme.radius),
+      side: const BorderSide(color: AppTheme.border),
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: ListTile(
+      leading: Icon(icon, color: AppTheme.primaryLight),
+      title: Text(label),
+      subtitle: Text(description),
+      trailing: const Icon(Icons.arrow_forward_rounded, size: 18),
+      onTap: () {
+        setState(() => _inputController.text = prompt);
+        _inputController.selection = TextSelection.collapsed(
+          offset: prompt.length,
+        );
+        _inputFocus.requestFocus();
+      },
+    ),
+  );
+
   Widget _buildHistoryDrawer() {
-    final dateFormat = DateFormat('MMM d, h:mm a');
+    final sessions =
+        _sessions
+            .where(
+              (session) =>
+                  session.title.toLowerCase().contains(
+                    _historyQuery.toLowerCase(),
+                  ) ||
+                  session.messages.any(
+                    (m) => m.text.toLowerCase().contains(
+                      _historyQuery.toLowerCase(),
+                    ),
+                  ),
+            )
+            .toList()
+          ..sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
+    String dayLabel(DateTime date) {
+      final today = IstTime.display(DateTime.now());
+      final days = DateTime(
+        today.year,
+        today.month,
+        today.day,
+      ).difference(DateTime(date.year, date.month, date.day)).inDays;
+      return days == 0
+          ? 'Today'
+          : days == 1
+          ? 'Yesterday'
+          : DateFormat('MMMM d').format(date);
+    }
 
     return Drawer(
-      backgroundColor: AppTheme.surface,
+      backgroundColor: AppTheme.background,
       child: SafeArea(
         child: Column(
           children: [
-            // Drawer Header
-            Container(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: AppTheme.border)),
-              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
+                  const Row(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: AppTheme.primary.withAlpha(30),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.chat_bubble_outline_rounded,
-                            color: AppTheme.primary, size: 20),
-                      ),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Text(
-                          'Previous Chats',
-                          style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textPrimary,
-                          ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surfaceBright,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: AppTheme.border),
-                        ),
-                        child: Text(
-                          '${_sessions.length}',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.primary,
-                          ),
+                      JarvisMark(),
+                      SizedBox(width: 12),
+                      Text(
+                        'Your chats',
+                        style: TextStyle(
+                          fontSize: 23,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  // New Chat Action Button
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Pick up where you left off',
+                    style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
                   SizedBox(
                     width: double.infinity,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primary,
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
+                    child: FilledButton.icon(
                       onPressed: _startNewChat,
-                      icon: const Icon(Icons.add_rounded, size: 18),
-                      label: const Text(
-                        'New Chat',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text('New conversation'),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    onChanged: (value) => setState(() => _historyQuery = value),
+                    decoration: InputDecoration(
+                      hintText: 'Search conversations',
+                      prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                      filled: true,
+                      fillColor: AppTheme.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: BorderSide.none,
                       ),
                     ),
                   ),
                 ],
               ),
             ),
-
-            // Sessions List
             Expanded(
-              child: _sessions.isEmpty
+              child: sessions.isEmpty
                   ? const Center(
                       child: Text(
-                        'No previous chats',
-                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                        'No conversations found',
+                        style: TextStyle(color: AppTheme.textSecondary),
                       ),
                     )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                      itemCount: _sessions.length,
-                      separatorBuilder: (ctx, i) => const SizedBox(height: 4),
-                      itemBuilder: (ctx, i) {
-                        final session = _sessions[i];
-                        final isSelected = session.id == _currentSession?.id;
-                        final lastMsg = session.messages.isNotEmpty
-                            ? session.messages.last.text
-                            : 'Empty chat';
-
-                        return Container(
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? AppTheme.primary.withAlpha(25)
-                                : AppTheme.surfaceBright.withAlpha(50),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isSelected ? AppTheme.primary.withAlpha(120) : AppTheme.border,
-                            ),
-                          ),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                            leading: Icon(
-                              Icons.chat_outlined,
-                              size: 18,
-                              color: isSelected ? AppTheme.primary : AppTheme.textSecondary,
-                            ),
-                            title: Text(
-                              session.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                                color: isSelected ? Colors.white : AppTheme.textPrimary,
-                              ),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const SizedBox(height: 2),
-                                Text(
-                                  lastMsg,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+                      itemCount: sessions.length,
+                      itemBuilder: (context, index) {
+                        final session = sessions[index];
+                        final selected = session.id == _currentSession?.id;
+                        final label = dayLabel(
+                          IstTime.display(session.lastActivityAt),
+                        );
+                        final showLabel =
+                            index == 0 ||
+                            dayLabel(
+                                  IstTime.display(
+                                    sessions[index - 1].lastActivityAt,
+                                  ),
+                                ) !=
+                                label;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (showLabel)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  12,
+                                  16,
+                                  12,
+                                  8,
+                                ),
+                                child: Text(
+                                  label,
                                   style: const TextStyle(
-                                    fontSize: 11,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
                                     color: AppTheme.textSecondary,
                                   ),
                                 ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  dateFormat.format(session.updatedAt),
-                                  style: TextStyle(
-                                    fontSize: 9.5,
-                                    color: isSelected
-                                        ? AppTheme.primary.withAlpha(180)
-                                        : AppTheme.textSecondary.withAlpha(150),
+                              ),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Material(
+                                color: selected
+                                    ? AppTheme.primary.withValues(alpha: 0.13)
+                                    : Colors.transparent,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                  side: BorderSide(
+                                    color: selected
+                                        ? AppTheme.primary.withValues(
+                                            alpha: 0.25,
+                                          )
+                                        : Colors.transparent,
                                   ),
                                 ),
-                              ],
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.edit_outlined, size: 16),
-                                  color: AppTheme.textSecondary,
-                                  tooltip: 'Rename Chat',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                  onPressed: () => _showRenameDialog(session),
+                                clipBehavior: Clip.antiAlias,
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.only(
+                                    left: 12,
+                                    right: 2,
+                                  ),
+                                  title: Text(
+                                    session.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: selected
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                    ),
+                                  ),
+                                  subtitle: Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      _isSending &&
+                                              _activeSessionId == session.id
+                                          ? 'Jarvis is working on this request'
+                                          : session.messages.isEmpty
+                                          ? 'Start a conversation'
+                                          : session.messages.last.text,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        height: 1.4,
+                                        color: AppTheme.textSecondary,
+                                      ),
+                                    ),
+                                  ),
+                                  trailing: PopupMenuButton<String>(
+                                    tooltip: 'Chat options',
+                                    icon: const Icon(
+                                      Icons.more_horiz,
+                                      size: 20,
+                                    ),
+                                    onSelected: (value) {
+                                      if (value == 'rename') {
+                                        _showRenameDialog(session);
+                                      } else {
+                                        _confirmDeleteSession(session);
+                                      }
+                                    },
+                                    itemBuilder: (_) => const [
+                                      PopupMenuItem(
+                                        value: 'rename',
+                                        child: Text('Rename'),
+                                      ),
+                                      PopupMenuItem(
+                                        value: 'delete',
+                                        child: Text('Delete'),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () => _selectSession(session),
                                 ),
-                                const SizedBox(width: 8),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline_rounded, size: 16),
-                                  color: AppTheme.red.withAlpha(200),
-                                  tooltip: 'Delete Chat',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                  onPressed: () => _confirmDeleteSession(session),
-                                ),
-                              ],
+                              ),
                             ),
-                            onTap: () => _selectSession(session),
-                          ),
+                          ],
                         );
                       },
                     ),
@@ -729,59 +1178,64 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildMessageBubble(ChatMessage msg) {
     final isUser = msg.isUser;
-    final timeStr =
-        "${msg.timestamp.hour.toString().padLeft(2, '0')}:${msg.timestamp.minute.toString().padLeft(2, '0')}";
+    final timeStr = IstTime.clock(msg.timestamp);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: isUser
+            ? MainAxisAlignment.end
+            : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (!isUser) ...[
-            Container(
-              margin: const EdgeInsets.only(right: 8, top: 2),
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: AppTheme.primary.withAlpha(30),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.psychology, color: AppTheme.primary, size: 16),
+            const Padding(
+              padding: EdgeInsets.only(right: 12, top: 2),
+              child: JarvisMark(size: 28),
             ),
           ],
           Flexible(
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               decoration: BoxDecoration(
-                color: isUser ? AppTheme.primary.withAlpha(40) : AppTheme.surfaceBright,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(14),
-                  topRight: const Radius.circular(14),
-                  bottomLeft: Radius.circular(isUser ? 14 : 2),
-                  bottomRight: Radius.circular(isUser ? 2 : 14),
-                ),
-                border: Border.all(
-                  color: isUser ? AppTheme.primary.withAlpha(120) : AppTheme.border,
-                ),
+                color: isUser ? AppTheme.primarySurface : Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
               ),
               child: Column(
-                crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                crossAxisAlignment: isUser
+                    ? CrossAxisAlignment.end
+                    : CrossAxisAlignment.start,
                 children: [
                   _buildFormattedMessageText(msg.text, isUser),
                   const SizedBox(height: 4),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (!isUser && msg.durationMs != null) ...[
-                        Text(
-                          'Completed in ${_formatDuration(msg.durationMs!)} • ',
-                          style: const TextStyle(fontSize: 9, color: AppTheme.textSecondary),
-                        ),
-                      ],
                       Text(
                         timeStr,
-                        style: const TextStyle(fontSize: 9, color: AppTheme.textSecondary),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: isUser
+                              ? Colors.white70
+                              : AppTheme.textSecondary,
+                        ),
                       ),
+                      if (!isUser && msg.durationMs != null) ...[
+                        const SizedBox(width: 8),
+                        const Icon(
+                          Icons.timer_outlined,
+                          size: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          _formatReplyDuration(msg.durationMs!),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -793,72 +1247,168 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  String _formatReplyDuration(int milliseconds) {
+    final seconds = milliseconds / 1000;
+    if (seconds < 10) return '${seconds.toStringAsFixed(1)}s';
+    final roundedSeconds = seconds.round();
+    if (roundedSeconds < 60) return '${roundedSeconds}s';
+    final minutes = roundedSeconds ~/ 60;
+    final remainingSeconds = roundedSeconds % 60;
+    return remainingSeconds == 0
+        ? '${minutes}m'
+        : '${minutes}m ${remainingSeconds}s';
+  }
+
   Widget _buildInputBar() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      decoration: const BoxDecoration(
-        color: AppTheme.surface,
-        border: Border(top: BorderSide(color: AppTheme.border)),
-      ),
-      child: SafeArea(
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _inputController,
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13.5),
-                decoration: InputDecoration(
-                  hintText: 'Ask Jarvis, set reminder, log note...',
-                  hintStyle: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                  filled: true,
-                  fillColor: AppTheme.surfaceBright,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none,
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(16, 6, 8, 8),
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppTheme.border),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_pendingAttachments.isNotEmpty)
+                SizedBox(
+                  height: 42,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      for (final file in _pendingAttachments)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: InputChip(
+                            label: SizedBox(
+                              width: 140,
+                              child: Text(
+                                file['name'].toString(),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            onDeleted: _isSending
+                                ? null
+                                : () async {
+                                    await GoogleDriveService.instance
+                                        .removeCached(file);
+                                    if (mounted) {
+                                      setState(
+                                        () => _pendingAttachments.remove(file),
+                                      );
+                                    }
+                                  },
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-                onSubmitted: _handleSendMessage,
+              TextField(
+                controller: _inputController,
+                focusNode: _inputFocus,
+                minLines: 1,
+                maxLines: 5,
+                textCapitalization: TextCapitalization.sentences,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(
+                  color: AppTheme.textPrimary,
+                  fontSize: 15,
+                  height: 1.5,
+                ),
+                decoration: const InputDecoration(
+                  hintText: 'Message Jarvis…',
+                  filled: false,
+                  hintStyle: TextStyle(color: AppTheme.textSecondary),
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(vertical: 12),
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              decoration: const BoxDecoration(
-                color: AppTheme.primary,
-                shape: BoxShape.circle,
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Attach PDF, image or video',
+                    onPressed: _isSending ? null : _pickAttachment,
+                    icon: const Icon(Icons.attach_file, size: 19),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _isSending
+                          ? 'You can keep writing while Jarvis works'
+                          : 'Ask, plan, or remember something',
+                      style: const TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    tooltip: 'Send message',
+                    onPressed:
+                        _isSending ||
+                            (_inputController.text.trim().isEmpty &&
+                                _pendingAttachments.isEmpty)
+                        ? null
+                        : () => _handleSendMessage(_inputController.text),
+                    icon: const Icon(Icons.arrow_upward_rounded, size: 21),
+                  ),
+                ],
               ),
-              child: IconButton(
-                icon: const Icon(Icons.send, color: Colors.black, size: 18),
-                onPressed: _isSending ? null : () => _handleSendMessage(_inputController.text),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  String _formatDuration(int ms) {
-    if (ms < 1000) {
-      return '${(ms / 1000).toStringAsFixed(1)}s';
-    } else if (ms < 60000) {
-      return '${(ms / 1000).toStringAsFixed(1)}s';
-    } else {
-      final m = ms ~/ 60000;
-      final s = ((ms % 60000) / 1000).toStringAsFixed(0);
-      return '${m}m ${s}s';
+  Future<void> _pickAttachment() async {
+    try {
+      if (_pendingAttachments.length >= 5) {
+        throw const DriveFailure('Send up to five files at a time.');
+      }
+      await GoogleDriveService.instance.refresh();
+      if (!GoogleDriveService.instance.connected) {
+        if (!mounted) return;
+        await GoogleDriveService.instance.connect();
+        if (!GoogleDriveService.instance.connected || !mounted) return;
+      }
+      final file = await GoogleDriveService.instance.pick();
+      if (file != null && mounted) {
+        setState(() => _pendingAttachments.add(file));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              e is DriveFailure
+                  ? e.message
+                  : 'Could not attach this file. Try again.',
+            ),
+          ),
+        );
+      }
     }
   }
 
   Widget _buildFormattedMessageText(String text, bool isUser) {
     final baseStyle = TextStyle(
-      fontSize: 13,
+      fontSize: 15,
       color: isUser ? Colors.white : AppTheme.textPrimary,
-      height: 1.35,
+      height: 1.45,
     );
 
     if (!text.contains('**') && !text.contains('*') && !text.contains('`')) {
-      return Text(text, style: baseStyle);
+      return SelectableText(text, style: baseStyle);
     }
 
     final spans = <InlineSpan>[];
@@ -871,26 +1421,32 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (match.group(2) != null) {
         // **bold**
-        spans.add(TextSpan(
-          text: match.group(2),
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ));
+        spans.add(
+          TextSpan(
+            text: match.group(2),
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+        );
       } else if (match.group(3) != null) {
         // *italic*
-        spans.add(TextSpan(
-          text: match.group(3),
-          style: const TextStyle(fontStyle: FontStyle.italic),
-        ));
+        spans.add(
+          TextSpan(
+            text: match.group(3),
+            style: const TextStyle(fontStyle: FontStyle.italic),
+          ),
+        );
       } else if (match.group(4) != null) {
         // `code`
-        spans.add(TextSpan(
-          text: match.group(4),
-          style: TextStyle(
-            fontFamily: 'monospace',
-            backgroundColor: AppTheme.surface.withAlpha(120),
-            fontSize: 12,
+        spans.add(
+          TextSpan(
+            text: match.group(4),
+            style: TextStyle(
+              fontFamily: 'monospace',
+              backgroundColor: AppTheme.surface.withAlpha(120),
+              fontSize: 12,
+            ),
           ),
-        ));
+        );
       }
       lastIndex = match.end;
     }
@@ -900,10 +1456,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     return RichText(
-      text: TextSpan(
-        style: baseStyle,
-        children: spans,
-      ),
+      text: TextSpan(style: baseStyle, children: spans),
     );
   }
 }

@@ -5,26 +5,115 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.Manifest
+import android.content.pm.PackageManager
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.google.android.gms.location.ActivityRecognition
-import com.google.android.gms.location.ActivityTransition
-import com.google.android.gms.location.ActivityTransitionRequest
-import com.google.android.gms.location.DetectedActivity
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
+    companion object {
+        @Volatile var isVisible = false
+        @Volatile var visibleThreadId = ""
+        var chatUpdateListener: ((String) -> Unit)? = null
+    }
+    private var usageChannel: MethodChannel? = null
+    private var chatChannel: MethodChannel? = null
+    private var calendarAuthorization: GoogleAccountAuthorization? = null
+    private var driveAuthorization: GoogleAccountAuthorization? = null
+    private var attachmentPicker: ChatAttachmentPicker? = null
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        calendarAuthorization?.onActivityResult(requestCode, resultCode, data)
+        driveAuthorization?.onActivityResult(requestCode, resultCode, data)
+        attachmentPicker?.onActivityResult(requestCode, resultCode, data)
+    }
+
+    override fun onResume() { super.onResume(); isVisible = true; UsageReporting.schedule(applicationContext) }
+    override fun onPause() { isVisible = false; super.onPause() }
+    override fun onDestroy() { chatUpdateListener = null; chatChannel = null; super.onDestroy() }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra("jarvis_usage_day")?.let {
+            usageChannel?.invokeMethod("openReport", it)
+            intent.removeExtra("jarvis_usage_day")
+        }
+        intent.getStringExtra("jarvis_thread_id")?.takeIf { it.isNotEmpty() }?.let {
+            chatChannel?.invokeMethod("openChat", it)
+            intent.removeExtra("jarvis_thread_id")
+        }
+    }
     private val CHANNEL = "com.jarvis/foreground_service"
     private val TAG = "JarvisMainActivity"
-    private var pendingIntent: PendingIntent? = null
+    private var legacyServiceCleared = false
+    private var contextPermissionResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        calendarAuthorization = GoogleAccountAuthorization(this, flutterEngine.dartExecutor.binaryMessenger)
+        driveAuthorization = GoogleAccountAuthorization(this, flutterEngine.dartExecutor.binaryMessenger, "drive")
+        attachmentPicker = ChatAttachmentPicker(this, flutterEngine.dartExecutor.binaryMessenger)
+        // An explicit maintenance launch establishes a new collection boundary.
+        // Ordinary app launches preserve it, and Android redeliveries before it
+        // are rejected by the transition and passive-location receivers.
+        val resetAt = intent.getLongExtra("jarvis_history_reset_at", 0L)
+        if (resetAt > 0L && resetAt <= System.currentTimeMillis()) {
+            applicationContext.getSharedPreferences("jarvis_context_events", Context.MODE_PRIVATE)
+                .edit().putLong("history_reset_at", resetAt).commit()
+            intent.removeExtra("jarvis_history_reset_at")
+        }
+        usageChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jarvis/usage")
+        usageChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "status" -> result.success(UsageReporting.status(applicationContext))
+                "takeInitialDay" -> { val day = intent.getStringExtra("jarvis_usage_day"); intent.removeExtra("jarvis_usage_day"); result.success(day) }
+                "openAccess" -> { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).setData(Uri.parse("package:$packageName"))); result.success(true) }
+                "openExactAlarm" -> {
+                    if (Build.VERSION.SDK_INT >= 31) startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+                    result.success(true)
+                }
+                "setEnabled" -> { UsageReporting.setEnabled(applicationContext, call.arguments as? Boolean ?: true); result.success(true) }
+                "read", "savedReport" -> Thread {
+                    try {
+                        val day = java.time.LocalDate.parse(call.arguments as String)
+                        val data = if (call.method == "savedReport") UsageReporting.saved(applicationContext, day.toString()) ?: UsageReporting.read(applicationContext, day, true).toString()
+                            else UsageReporting.read(applicationContext, day).toString()
+                        runOnUiThread { result.success(data) }
+                    } catch (error: Exception) { runOnUiThread { result.error("usage_unavailable", "Could not read app usage", null) } }
+                }.start()
+                else -> result.notImplemented()
+            }
+        }
+        chatChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jarvis/chat_notifications")
+        chatChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "takeInitialThread" -> {
+                    val thread = intent.getStringExtra("jarvis_thread_id")
+                    intent.removeExtra("jarvis_thread_id")
+                    result.success(thread)
+                }
+                "setVisibleThread" -> { visibleThreadId = call.arguments as? String ?: ""; result.success(true) }
+                else -> result.notImplemented()
+            }
+        }
+        chatUpdateListener = { thread -> runOnUiThread { chatChannel?.invokeMethod("chatUpdated", thread) } }
+        com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { PushDelivery.register(applicationContext, it) }
+            .addOnFailureListener { Log.w(TAG, "Push registration deferred", it) }
 
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        ActivityTransitionReceiver.sampleListener = { activity, confidence ->
+            runOnUiThread {
+                channel.invokeMethod("onActivitySample", mapOf("activity" to activity, "confidence" to confidence))
+            }
+        }
 
         // Wire listener from ActivityTransitionReceiver back to Flutter
         ActivityTransitionReceiver.transitionListener = { activity, transition ->
@@ -41,6 +130,62 @@ class MainActivity : FlutterActivity() {
 
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
+                "contextLocationStatus" -> {
+                    val foreground = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                        checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    val background = foreground && (Build.VERSION.SDK_INT < 29 ||
+                        checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED)
+                    val manager = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+                    result.success(mapOf("foreground" to foreground, "background" to background,
+                        "enabled" to (manager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
+                            manager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER))))
+                }
+                "openLocationSettings" -> {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                    result.success(true)
+                }
+                "setDynamicMonitoring" -> {
+                    ActivityRecognitionRegistrar.setDynamicMonitoring(applicationContext, call.arguments as? Boolean ?: false)
+                    result.success(true)
+                }
+                "notificationsEnabled" -> {
+                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    result.success(manager.areNotificationsEnabled())
+                }
+                "openNotificationSettings" -> {
+                    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        }
+                    } else {
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+                    }
+                    startActivity(intent)
+                    result.success(true)
+                }
+                "requestContextPermissions" -> {
+                    val needed = mutableListOf<String>()
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        for (permission in listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)) {
+                            if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) needed.add(permission)
+                        }
+                    }
+                    if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+                        needed.add(Manifest.permission.READ_PHONE_STATE)
+                    }
+                    if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED) {
+                        needed.add(Manifest.permission.ACTIVITY_RECOGNITION)
+                    }
+                    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        needed.add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    if (needed.isEmpty()) result.success(true)
+                    else if (contextPermissionResult != null) result.success(false)
+                    else {
+                        contextPermissionResult = result
+                        requestPermissions(needed.toTypedArray(), 4102)
+                    }
+                }
                 "startService" -> {
                     val title = call.argument<String>("title") ?: "Jarvis Active"
                     val content = call.argument<String>("content") ?: "Collecting 50Hz sensor telemetry in background"
@@ -66,10 +211,20 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "startTripwire" -> {
+                    if (!legacyServiceCleared) {
+                        // Stop a persistent service left running by earlier app versions.
+                        stopService(Intent(this, TelemetryForegroundService::class.java))
+                        legacyServiceCleared = true
+                    }
                     startActivityRecognitionUpdates(result)
                 }
                 "stopTripwire" -> {
                     stopActivityRecognitionUpdates(result)
+                }
+                "showCloudNotification" -> {
+                    result.success(PushDelivery.show(this, call.argument<String>("id") ?: "",
+                        call.argument<String>("title") ?: "Jarvis", call.argument<String>("body") ?: "",
+                        call.argument<String>("thread_id") ?: "", call.argument<String>("kind") ?: ""))
                 }
                 "showSystemNotification" -> {
                     val id = call.argument<Int>("id") ?: ((System.currentTimeMillis() % 100000).toInt())
@@ -80,6 +235,14 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 4102) {
+            contextPermissionResult?.success(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
+            contextPermissionResult = null
         }
     }
 
@@ -125,58 +288,18 @@ class MainActivity : FlutterActivity() {
         notificationManager.notify(id, notification)
     }
 
-    private fun getPendingIntent(): PendingIntent {
-        if (pendingIntent != null) return pendingIntent!!
-
-        val intent = Intent(this, ActivityTransitionReceiver::class.java).apply {
-            action = ActivityTransitionReceiver.ACTION_PROCESS_ACTIVITY_TRANSITIONS
-        }
-
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-
-        pendingIntent = PendingIntent.getBroadcast(this, 2002, intent, flags)
-        return pendingIntent!!
-    }
-
     private fun startActivityRecognitionUpdates(result: MethodChannel.Result) {
         try {
-            val transitions = listOf(
-                // IN_VEHICLE transitions
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.IN_VEHICLE)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build(),
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.IN_VEHICLE)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
-                    .build(),
-                // STILL & WALKING (for Stop-Shop-Return dwell resolution)
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.STILL)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build(),
-                ActivityTransition.Builder()
-                    .setActivityType(DetectedActivity.WALKING)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build()
-            )
-
-            val request = ActivityTransitionRequest(transitions)
-            val client = ActivityRecognition.getClient(this)
-
-            client.requestActivityTransitionUpdates(request, getPendingIntent())
-                .addOnSuccessListener {
+            ActivityRecognitionRegistrar.register(this,
+                onSuccess = {
                     Log.i(TAG, "Successfully registered Google Activity Recognition tripwire")
                     result.success(true)
-                }
-                .addOnFailureListener { e ->
+                },
+                onFailure = { e ->
                     Log.e(TAG, "Failed to register Google Activity Recognition tripwire: ${e.message}")
                     result.error("GAR_ERROR", e.message, null)
-                }
+                },
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Exception starting tripwire: ${e.message}")
             result.error("GAR_EXCEPTION", e.message, null)
@@ -185,15 +308,15 @@ class MainActivity : FlutterActivity() {
 
     private fun stopActivityRecognitionUpdates(result: MethodChannel.Result) {
         try {
-            val client = ActivityRecognition.getClient(this)
-            client.removeActivityTransitionUpdates(getPendingIntent())
-                .addOnSuccessListener {
+            ActivityRecognitionRegistrar.unregister(this,
+                onSuccess = {
                     Log.i(TAG, "Successfully removed Google Activity Recognition tripwire")
                     result.success(true)
-                }
-                .addOnFailureListener { e ->
+                },
+                onFailure = { e ->
                     result.error("GAR_ERROR", e.message, null)
-                }
+                },
+            )
         } catch (e: Exception) {
             result.error("GAR_EXCEPTION", e.message, null)
         }

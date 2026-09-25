@@ -6,6 +6,7 @@ import '../../services/local_db_service.dart';
 import '../../services/sensor_service.dart';
 import '../../services/sync_service.dart';
 import '../theme.dart';
+import '../widgets/workspace_widgets.dart';
 
 /// Dedicated Reminders Screen:
 /// Displays all active and fired reminders directly from offline-first Local Mobile SQLite.
@@ -26,7 +27,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
   final SyncService _syncService = SyncService();
 
   List<Map<String, dynamic>> _reminders = [];
+  List<Map<String, dynamic>> _trashedReminders = [];
   List<Map<String, dynamic>> _places = [];
+  bool _showTrash = false;
   bool _isLoading = false;
   Timer? _timeReminderTimer;
   DateTime? _lastContextPipelineCall;
@@ -52,7 +55,6 @@ class _RemindersScreenState extends State<RemindersScreen> {
     super.dispose();
   }
 
-
   void _onServiceUpdate() {
     if (mounted) setState(() {});
   }
@@ -68,10 +70,12 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
   Future<void> _refreshFromLocalDb() async {
     final list = await _localDb.getReminders();
+    final trashed = await _localDb.getReminders(status: 'DELETED');
     final places = await _localDb.getPlaces();
     if (mounted) {
       setState(() {
         _reminders = list;
+        _trashedReminders = trashed;
         _places = places;
       });
     }
@@ -105,7 +109,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
       // Also forward context event to cloud if online (throttled to at most once per 30 seconds)
       if (_apiService.isOnline) {
         final now = DateTime.now();
-        if (_lastContextPipelineCall == null || now.difference(_lastContextPipelineCall!).inSeconds >= 30) {
+        if (_lastContextPipelineCall == null ||
+            now.difference(_lastContextPipelineCall!).inSeconds >= 30) {
           _lastContextPipelineCall = now;
           _apiService.evaluateAndTriggerContextPipeline(
             latitude: widget.sensorService.lat,
@@ -120,7 +125,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
   /// Offline Haversine distance calculation in meters
   double _distanceMeters(double lat1, double lon1, double lat2, double lon2) {
     const p = 0.017453292519943295;
-    final a = 0.5 -
+    final a =
+        0.5 -
         cos((lat2 - lat1) * p) / 2 +
         cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
     return 12742000 * asin(sqrt(a));
@@ -135,21 +141,29 @@ class _RemindersScreenState extends State<RemindersScreen> {
     double speedKmh = 0.0,
   }) {
     for (final r in _reminders) {
+      if (r['dynamic_policy'] != null) continue;
       final status = (r['status'] ?? 'ACTIVE').toString().toUpperCase();
       if (status != 'ACTIVE') continue;
 
       double? rLat = (r['latitude'] as num?)?.toDouble();
       double? rLon = (r['longitude'] as num?)?.toDouble();
       final rLocName = r['location_name']?.toString().trim();
-      final hasLocationRequirement = (rLat != null && rLon != null) || (rLocName != null && rLocName.isNotEmpty);
+      final hasLocationRequirement =
+          (rLat != null && rLon != null) ||
+          (rLocName != null && rLocName.isNotEmpty);
 
       // If lat/lon missing but location_name exists, try resolving from saved places
-      if ((rLat == null || rLon == null) && rLocName != null && rLocName.isNotEmpty) {
+      if ((rLat == null || rLon == null) &&
+          rLocName != null &&
+          rLocName.isNotEmpty) {
         final locLower = rLocName.toLowerCase();
         for (final p in _places) {
           final pName = (p['name'] ?? '').toString().toLowerCase().trim();
           final pAlias = (p['alias'] ?? '').toString().toLowerCase().trim();
-          if (locLower == pName || locLower == pAlias || locLower.contains(pName) || pName.contains(locLower)) {
+          if (locLower == pName ||
+              locLower == pAlias ||
+              locLower.contains(pName) ||
+              pName.contains(locLower)) {
             rLat = (p['latitude'] as num?)?.toDouble();
             rLon = (p['longitude'] as num?)?.toDouble();
             break;
@@ -165,6 +179,13 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
       // Require at least one valid trigger condition
       if (!hasLocationRequirement && !hasActivity) continue;
+      final dueRaw = (r['due_at'] ?? '').toString().trim();
+      if (dueRaw.isNotEmpty) {
+        final due = DateTime.tryParse(dueRaw);
+        if (due == null || DateTime.now().toUtc().isBefore(due.toUtc())) {
+          continue;
+        }
+      }
 
       bool geofenceMatched = false;
       if (hasGeofence) {
@@ -174,20 +195,34 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
       bool activityMatched = false;
       if (hasActivity && activity != null && activityTransitionTime != null) {
-        final createdAt = DateTime.tryParse(r['created_at']?.toString() ?? '') ??
+        final createdAt =
+            DateTime.tryParse(r['created_at']?.toString() ?? '') ??
             DateTime.tryParse(r['updated_at']?.toString() ?? '');
 
         // Freshness check: The activity transition MUST occur AFTER the reminder was created
-        final isFreshTransition = (createdAt == null || activityTransitionTime.isAfter(createdAt.subtract(const Duration(seconds: 10)))) &&
+        final isFreshTransition =
+            (createdAt == null ||
+                activityTransitionTime.isAfter(
+                  createdAt.subtract(const Duration(seconds: 10)),
+                )) &&
             DateTime.now().difference(activityTransitionTime).inMinutes < 5;
 
         // Support comma/pipe/slash-separated activities (e.g. 'WALKING, IN_VEHICLE')
-        final expectedList = rAct.split(RegExp(r'[,/|]|(?:\bor\b)')).map((s) => s.trim().toUpperCase()).where((s) => s.isNotEmpty).toList();
+        final expectedList = rAct
+            .split(RegExp(r'[,/|]|(?:\bor\b)'))
+            .map((s) => s.trim().toUpperCase())
+            .where((s) => s.isNotEmpty)
+            .toList();
         final upperActivity = activity.toUpperCase();
-        final matchesActivity = expectedList.any((exp) => upperActivity.contains(exp) || exp.contains(upperActivity));
+        final matchesActivity = expectedList.any(
+          (exp) => upperActivity.contains(exp) || exp.contains(upperActivity),
+        );
 
         // For walking, verify movement speed > 0.8 km/h or a fresh transition event
-        final isMoving = (expectedList.contains('WALKING') && expectedList.length == 1) ? (speedKmh > 0.8 || isFreshTransition) : true;
+        final isMoving =
+            (expectedList.contains('WALKING') && expectedList.length == 1)
+            ? (speedKmh > 0.8 || isFreshTransition)
+            : true;
 
         if (isFreshTransition && matchesActivity && isMoving) {
           activityMatched = true;
@@ -223,10 +258,22 @@ class _RemindersScreenState extends State<RemindersScreen> {
         final normTitle = title.toString().trim().toLowerCase();
         for (final other in _reminders) {
           final otherId = other['id']?.toString() ?? '';
-          final otherTitle = (other['title'] ?? other['body'] ?? '').toString().trim().toLowerCase();
-          final otherStatus = (other['status'] ?? 'ACTIVE').toString().toUpperCase();
-          if (otherId.isNotEmpty && otherId != id && otherTitle == normTitle && otherStatus == 'ACTIVE') {
-            _localDb.updateReminderStatus(otherId, 'TRIGGERED', markPending: true);
+          final otherTitle = (other['title'] ?? other['body'] ?? '')
+              .toString()
+              .trim()
+              .toLowerCase();
+          final otherStatus = (other['status'] ?? 'ACTIVE')
+              .toString()
+              .toUpperCase();
+          if (otherId.isNotEmpty &&
+              otherId != id &&
+              otherTitle == normTitle &&
+              otherStatus == 'ACTIVE') {
+            _localDb.updateReminderStatus(
+              otherId,
+              'TRIGGERED',
+              markPending: true,
+            );
           }
         }
 
@@ -239,8 +286,15 @@ class _RemindersScreenState extends State<RemindersScreen> {
   void _evaluateTimeReminders() {
     final now = DateTime.now().toUtc();
     for (final r in _reminders) {
+      if (r['dynamic_policy'] != null) continue;
       final status = (r['status'] ?? 'ACTIVE').toString().toUpperCase();
       if (status != 'ACTIVE') continue;
+      if ((r['activity'] ?? '').toString().trim().isNotEmpty ||
+          (r['location_name'] ?? '').toString().trim().isNotEmpty ||
+          r['latitude'] != null ||
+          r['longitude'] != null) {
+        continue;
+      }
 
       final dueAtRaw = r['due_at']?.toString().trim();
       if (dueAtRaw == null || dueAtRaw.isEmpty) continue;
@@ -249,11 +303,14 @@ class _RemindersScreenState extends State<RemindersScreen> {
       // Fallback for relative strings like "in 29 seconds" or "in 5 minutes"
       if (dueDate == null) {
         final lower = dueAtRaw.toLowerCase();
-        final match = RegExp(r'(\d+)\s*(s|sec|second|min|minute|hour|hr|day)').firstMatch(lower);
+        final match = RegExp(
+          r'(\d+)\s*(s|sec|second|min|minute|hour|hr|day)',
+        ).firstMatch(lower);
         if (match != null) {
           final count = int.tryParse(match.group(1) ?? '0') ?? 0;
           final unit = match.group(2) ?? '';
-          final createdAt = DateTime.tryParse(r['created_at']?.toString() ?? '') ??
+          final createdAt =
+              DateTime.tryParse(r['created_at']?.toString() ?? '') ??
               DateTime.tryParse(r['updated_at']?.toString() ?? '') ??
               DateTime.now().toUtc();
           if (unit.startsWith('s')) {
@@ -268,7 +325,8 @@ class _RemindersScreenState extends State<RemindersScreen> {
         }
       }
 
-      if (dueDate != null && (now.isAfter(dueDate) || now.isAtSameMomentAs(dueDate))) {
+      if (dueDate != null &&
+          (now.isAfter(dueDate) || now.isAtSameMomentAs(dueDate))) {
         final id = r['id']?.toString() ?? '';
         final title = r['title'] ?? r['body'] ?? 'Reminder Alert';
 
@@ -289,37 +347,114 @@ class _RemindersScreenState extends State<RemindersScreen> {
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text(
-          'Reminders',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            letterSpacing: 0.5,
-            fontSize: 16,
+        title: Text(_showTrash ? 'Reminder Trash' : 'Reminders'),
+        actions: [
+          TextButton.icon(
+            icon: Icon(_showTrash ? Icons.arrow_back : Icons.delete_outline),
+            label: Text(_showTrash ? 'Back' : 'Trash'),
+            onPressed: () => setState(() => _showTrash = !_showTrash),
           ),
-        ),
+        ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: AppTheme.primary))
-          : RefreshIndicator(
-              onRefresh: () => _syncWithCloud(showFullLoader: false),
-              backgroundColor: AppTheme.surfaceBright,
-              color: AppTheme.primary,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
-                children: [
-                  if (_reminders.isEmpty)
-                    _buildEmptyState()
-                  else
-                    for (final r in _reminders) ...[
-                      _buildReminderTile(r),
-                      const SizedBox(height: 10),
+          ? const Center(
+              child: CircularProgressIndicator(color: AppTheme.primary),
+            )
+          : WorkspaceBody(
+              child: RefreshIndicator(
+                onRefresh: () => _syncWithCloud(showFullLoader: false),
+                backgroundColor: AppTheme.surfaceBright,
+                color: AppTheme.primary,
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 96),
+                  children: [
+                    if (!_showTrash)
+                      const PageIntro(
+                        title: 'Stay on track',
+                        description:
+                            'Your upcoming tasks and reminders, in one place.',
+                      ),
+                    if (_showTrash && _trashedReminders.isEmpty)
+                      const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(32),
+                          child: Text(
+                            'Trash is empty',
+                            style: TextStyle(color: AppTheme.textSecondary),
+                          ),
+                        ),
+                      )
+                    else if (_showTrash)
+                      for (final r in _trashedReminders) ...[
+                        _buildReminderTile(r),
+                        const SizedBox(height: 10),
+                      ]
+                    else if (_reminders.isEmpty)
+                      _buildEmptyState()
+                    else ...[
+                      _buildSectionTitle(
+                        'Active',
+                        _reminders
+                            .where(
+                              (r) =>
+                                  (r['status'] ?? 'ACTIVE')
+                                      .toString()
+                                      .toUpperCase() ==
+                                  'ACTIVE',
+                            )
+                            .length,
+                      ),
+                      for (final r in _reminders.where(
+                        (r) =>
+                            (r['status'] ?? 'ACTIVE')
+                                .toString()
+                                .toUpperCase() ==
+                            'ACTIVE',
+                      )) ...[_buildReminderTile(r), const SizedBox(height: 10)],
+                      const SizedBox(height: 12),
+                      _buildSectionTitle(
+                        'Completed',
+                        _reminders
+                            .where(
+                              (r) =>
+                                  (r['status'] ?? '')
+                                      .toString()
+                                      .toUpperCase() !=
+                                  'ACTIVE',
+                            )
+                            .length,
+                      ),
+                      for (final r in _reminders.where(
+                        (r) =>
+                            (r['status'] ?? '').toString().toUpperCase() !=
+                            'ACTIVE',
+                      )) ...[_buildReminderTile(r), const SizedBox(height: 10)],
                     ],
-                ],
+                  ],
+                ),
               ),
             ),
     );
   }
+
+  Widget _buildSectionTitle(String title, int count) => Padding(
+    padding: const EdgeInsets.fromLTRB(4, 14, 4, 12),
+    child: Row(
+      children: [
+        Text(
+          '$title ($count)',
+          style: const TextStyle(
+            color: AppTheme.textPrimary,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(width: 10),
+        const Expanded(child: Divider(color: AppTheme.border)),
+      ],
+    ),
+  );
 
   Widget _buildReminderTile(Map<String, dynamic> r) {
     final id = r['id']?.toString() ?? '';
@@ -332,32 +467,32 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final isActive = status == 'ACTIVE';
 
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
       decoration: BoxDecoration(
         color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isActive ? AppTheme.border : AppTheme.border.withValues(alpha: 0.4),
-        ),
+        borderRadius: BorderRadius.circular(AppTheme.radius),
+        border: Border.all(color: AppTheme.border),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: isActive
-                  ? AppTheme.primary.withValues(alpha: 0.15)
-                  : AppTheme.textSecondary.withValues(alpha: 0.1),
-              shape: BoxShape.circle,
-            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
             child: Icon(
-              isActive ? Icons.alarm_on : Icons.alarm_off,
-              color: isActive ? AppTheme.primary : AppTheme.textSecondary,
-              size: 18,
+              _showTrash
+                  ? Icons.inventory_2_outlined
+                  : isActive
+                  ? Icons.radio_button_unchecked
+                  : Icons.check_circle_outline,
+              color: _showTrash
+                  ? AppTheme.textSecondary
+                  : isActive
+                  ? AppTheme.primaryLight
+                  : AppTheme.green,
+              size: 25,
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -369,36 +504,37 @@ class _RemindersScreenState extends State<RemindersScreen> {
                       child: Text(
                         title,
                         style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: isActive ? AppTheme.textPrimary : AppTheme.textSecondary,
-                          decoration: isActive ? null : TextDecoration.lineThrough,
+                          fontSize: 15,
+                          height: 1.5,
+                          fontWeight: FontWeight.w500,
+                          color: isActive
+                              ? AppTheme.textPrimary
+                              : AppTheme.textSecondary,
+                          decoration: isActive || _showTrash
+                              ? null
+                              : TextDecoration.lineThrough,
                         ),
                       ),
                     ),
                     Row(
                       children: [
                         if (syncStatus == 'pending') ...[
-                          const Icon(Icons.cloud_upload_outlined, size: 12, color: AppTheme.amber),
+                          const Icon(
+                            Icons.cloud_upload_outlined,
+                            size: 12,
+                            color: AppTheme.amber,
+                          ),
                           const SizedBox(width: 4),
                         ],
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: isActive
-                                ? AppTheme.green.withValues(alpha: 0.15)
-                                : AppTheme.textSecondary.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            status,
-                            style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                              color: isActive ? AppTheme.green : AppTheme.textSecondary,
+                        if (!isActive || _showTrash)
+                          Text(
+                            _showTrash ? 'Trash' : 'Done',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              color: AppTheme.textSecondary,
                             ),
                           ),
-                        ),
                       ],
                     ),
                   ],
@@ -407,11 +543,22 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 if (loc.isNotEmpty)
                   Row(
                     children: [
-                      const Icon(Icons.location_on, color: AppTheme.cyan, size: 13),
+                      const Icon(
+                        Icons.location_on_outlined,
+                        color: AppTheme.textSecondary,
+                        size: 13,
+                      ),
                       const SizedBox(width: 4),
-                      Text(
-                        loc,
-                        style: const TextStyle(fontSize: 11, color: AppTheme.cyan),
+                      Flexible(
+                        child: Text(
+                          loc,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppTheme.textSecondary,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -420,11 +567,22 @@ class _RemindersScreenState extends State<RemindersScreen> {
                     padding: const EdgeInsets.only(top: 3),
                     child: Row(
                       children: [
-                        const Icon(Icons.motorcycle, color: AppTheme.accent, size: 13),
+                        const Icon(
+                          Icons.directions_car_outlined,
+                          color: AppTheme.textSecondary,
+                          size: 13,
+                        ),
                         const SizedBox(width: 4),
-                        Text(
-                          'Triggers on: $activity',
-                          style: const TextStyle(fontSize: 11, color: AppTheme.accent),
+                        Flexible(
+                          child: Text(
+                            'Triggers on: $activity',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.textSecondary,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -433,20 +591,27 @@ class _RemindersScreenState extends State<RemindersScreen> {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.delete_outline, color: AppTheme.red, size: 20),
-            tooltip: 'Delete Reminder',
+            icon: Icon(
+              _showTrash ? Icons.restore : Icons.move_to_inbox_outlined,
+              color: _showTrash ? AppTheme.primary : AppTheme.textSecondary,
+              size: 20,
+            ),
+            tooltip: _showTrash ? 'Restore Reminder' : 'Move to Trash',
             onPressed: () async {
-              // 1. Delete locally from SQLite immediately
-              await _localDb.deleteReminder(id);
-              // 2. Delete remotely if online
-              if (_apiService.isOnline) {
-                _apiService.deleteReminder(id);
+              if (_showTrash) {
+                await _localDb.restoreReminder(id);
+              } else {
+                await _localDb.deleteReminder(id);
               }
+              _syncService.syncNow();
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text('Reminder "$title" deleted'),
-                    backgroundColor: AppTheme.surfaceBright,
+                    content: Text(
+                      _showTrash
+                          ? 'Reminder "$title" restored'
+                          : 'Reminder "$title" moved to Trash',
+                    ),
                     duration: const Duration(seconds: 2),
                   ),
                 );
@@ -458,27 +623,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
     );
   }
 
-  Widget _buildEmptyState() {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 40),
-      alignment: Alignment.center,
-      child: Column(
-        children: [
-          Icon(Icons.notifications_none,
-              color: AppTheme.textSecondary.withValues(alpha: 0.5), size: 48),
-          const SizedBox(height: 12),
-          const Text(
-            'No Active Reminders',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'All reminders are stored locally in SQLite\nand synchronized with Cloud Firestore.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildEmptyState() => const WorkspaceEmptyState(
+    icon: Icons.alarm_outlined,
+    title: 'No reminders yet',
+    description:
+        'Ask Jarvis in chat to set a reminder for a time, place, or activity.',
+  );
 }

@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import '../models/chat_session.dart';
+import 'api_service.dart';
+import 'sync_service.dart';
 
 /// Offline-first Local SQLite Database Service for Jarvis Mobile.
 ///
@@ -28,12 +31,57 @@ class LocalDbService extends ChangeNotifier {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 7,
+      onOpen: (db) async {
+        await db.execute(
+          'CREATE TABLE IF NOT EXISTS context_outbox '
+          '(event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, occurred_at TEXT NOT NULL)',
+        );
+      },
       onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 7) {
+          await db.execute(
+            'ALTER TABLE reminders ADD COLUMN dynamic_policy TEXT',
+          );
+        }
         if (oldVersion < 2) {
           try {
-            await db.execute("ALTER TABLE chat_sessions ADD COLUMN sync_status TEXT DEFAULT 'pending'");
+            await db.execute(
+              "ALTER TABLE chat_sessions ADD COLUMN sync_status TEXT DEFAULT 'pending'",
+            );
           } catch (_) {}
+        }
+        if (oldVersion < 3) {
+          try {
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS pending_deletions (
+                id TEXT PRIMARY KEY,
+                record_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+              )
+            ''');
+          } catch (_) {}
+        }
+        if (oldVersion < 4) {
+          await db.execute(
+            'ALTER TABLE reminders ADD COLUMN previous_status TEXT',
+          );
+          await db.execute('ALTER TABLE reminders ADD COLUMN deleted_at TEXT');
+          await db.execute('ALTER TABLE notes ADD COLUMN deleted_at TEXT');
+        }
+        if (oldVersion < 5) {
+          await db.execute(
+            'ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER',
+          );
+        }
+        if (oldVersion < 6) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS activity_days (
+              day_key TEXT PRIMARY KEY,
+              payload TEXT NOT NULL,
+              fetched_at TEXT NOT NULL
+            )
+          ''');
         }
       },
       onCreate: (db, version) async {
@@ -48,8 +96,11 @@ class LocalDbService extends ChangeNotifier {
             latitude REAL,
             longitude REAL,
             radius_m REAL DEFAULT 150.0,
+            dynamic_policy TEXT,
             activity TEXT,
             status TEXT DEFAULT 'ACTIVE',
+            previous_status TEXT,
+            deleted_at TEXT,
             sync_status TEXT DEFAULT 'pending',
             created_at TEXT,
             updated_at TEXT
@@ -64,6 +115,7 @@ class LocalDbService extends ChangeNotifier {
             content TEXT NOT NULL,
             place TEXT,
             category TEXT,
+            deleted_at TEXT,
             sync_status TEXT DEFAULT 'pending',
             created_at TEXT,
             updated_at TEXT
@@ -107,23 +159,116 @@ class LocalDbService extends ChangeNotifier {
             timestamp TEXT NOT NULL,
             run_id TEXT,
             executed_records TEXT,
+            duration_ms INTEGER,
             sync_status TEXT DEFAULT 'pending'
           )
         ''');
 
+        await db.execute('''
+          CREATE TABLE activity_days (
+            day_key TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            fetched_at TEXT NOT NULL
+          )
+        ''');
+
+        // Pending Deletions table for reliable offline-first deletion sync
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS pending_deletions (
+            id TEXT PRIMARY KEY,
+            record_type TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          )
+        ''');
+
         // Create indexes for fast querying
-        await db.execute('CREATE INDEX idx_reminders_status ON reminders(status)');
-        await db.execute('CREATE INDEX idx_messages_thread ON chat_messages(thread_id)');
+        await db.execute(
+          'CREATE INDEX idx_reminders_status ON reminders(status)',
+        );
+        await db.execute(
+          'CREATE INDEX idx_messages_thread ON chat_messages(thread_id)',
+        );
       },
     );
   }
 
+  Future<Map<String, dynamic>?> loadActivityDay(String dayKey) async {
+    final db = await database;
+    final rows = await db.query(
+      'activity_days',
+      columns: ['payload'],
+      where: 'day_key = ?',
+      whereArgs: [dayKey],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Map<String, dynamic>.from(
+      jsonDecode(rows.first['payload'] as String),
+    );
+  }
+
+  Future<void> saveActivityDay(
+    String dayKey,
+    Map<String, dynamic> payload,
+  ) async {
+    final db = await database;
+    await db.insert('activity_days', {
+      'day_key': dayKey,
+      'payload': jsonEncode(payload),
+      'fetched_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<int> activityCacheDayCount() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS count FROM activity_days',
+    );
+    return (rows.first['count'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<void> clearActivityCache() async {
+    final db = await database;
+    await db.delete('activity_days');
+  }
+
+  Future<void> queueContextEvent(Map<String, dynamic> event) async {
+    final db = await database;
+    await db.insert('context_outbox', {
+      'event_id': event['event_id'],
+      'payload': jsonEncode(event),
+      'occurred_at': event['occurred_at'],
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<List<Map<String, dynamic>>> pendingContextEvents() async {
+    final db = await database;
+    final rows = await db.query(
+      'context_outbox',
+      orderBy: 'occurred_at ASC',
+      limit: 10,
+    );
+    return rows
+        .map(
+          (row) =>
+              Map<String, dynamic>.from(jsonDecode(row['payload'] as String)),
+        )
+        .toList();
+  }
+
+  Future<void> acknowledgeContextEvent(String id) async {
+    final db = await database;
+    await db.delete('context_outbox', where: 'event_id = ?', whereArgs: [id]);
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // REMINDERS CRUD
   // ═══════════════════════════════════════════════════════════════════════════
 
-  Future<List<Map<String, dynamic>>> getReminders({String? status}) async {
+  Future<List<Map<String, dynamic>>> getReminders({
+    String? status,
+    bool includeDeleted = false,
+  }) async {
     final db = await database;
     List<Map<String, dynamic>> raw;
     if (status != null) {
@@ -134,14 +279,20 @@ class LocalDbService extends ChangeNotifier {
         orderBy: 'updated_at DESC',
       );
     } else {
-      raw = await db.query('reminders', orderBy: 'updated_at DESC');
+      raw = await db.query(
+        'reminders',
+        where: includeDeleted ? null : "status != 'DELETED'",
+        orderBy: 'updated_at DESC',
+      );
     }
+    if (status == 'DELETED') return raw;
 
     // Deduplicate by title + due_at + location_name so user never sees duplicate rows
     final seen = <String>{};
     final List<Map<String, dynamic>> deduped = [];
     for (final item in raw) {
-      final key = '${(item['title'] ?? '').toString().trim().toLowerCase()}|${(item['due_at'] ?? '').toString().trim()}|${(item['location_name'] ?? '').toString().trim().toLowerCase()}';
+      final key =
+          '${(item['title'] ?? '').toString().trim().toLowerCase()}|${(item['due_at'] ?? '').toString().trim()}|${(item['location_name'] ?? '').toString().trim().toLowerCase()}|${(item['status'] ?? '').toString().toUpperCase()}';
       if (seen.add(key)) {
         deduped.add(item);
       }
@@ -149,7 +300,10 @@ class LocalDbService extends ChangeNotifier {
     return deduped;
   }
 
-  Future<void> saveReminder(Map<String, dynamic> reminder, {bool markPending = true}) async {
+  Future<void> saveReminder(
+    Map<String, dynamic> reminder, {
+    bool markPending = true,
+  }) async {
     final db = await database;
     final now = DateTime.now().toUtc().toIso8601String();
     final data = Map<String, dynamic>.from(reminder);
@@ -168,7 +322,11 @@ class LocalDbService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateReminderStatus(String id, String newStatus, {bool markPending = true}) async {
+  Future<void> updateReminderStatus(
+    String id,
+    String newStatus, {
+    bool markPending = true,
+  }) async {
     final db = await database;
     final now = DateTime.now().toUtc().toIso8601String();
     await db.update(
@@ -186,21 +344,158 @@ class LocalDbService extends ChangeNotifier {
 
   Future<void> deleteReminder(String id) async {
     final db = await database;
-    await db.delete('reminders', where: 'id = ?', whereArgs: [id]);
+    final rows = await db.query(
+      'reminders',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty || rows.first['status'] == 'DELETED') return;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.update(
+      'reminders',
+      {
+        'previous_status': rows.first['status'] ?? 'ACTIVE',
+        'status': 'DELETED',
+        'deleted_at': now,
+        'updated_at': now,
+        'sync_status': 'pending',
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
     notifyListeners();
+  }
+
+  Future<void> restoreReminder(String id) async {
+    final db = await database;
+    final rows = await db.query(
+      'reminders',
+      where: 'id = ? AND status = ?',
+      whereArgs: [id, 'DELETED'],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    await db.update(
+      'reminders',
+      {
+        'status': rows.first['previous_status'] ?? 'ACTIVE',
+        'previous_status': null,
+        'deleted_at': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+        'sync_status': 'pending',
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    notifyListeners();
+  }
+
+  /// Evaluate active reminders that match an activity (e.g. WALKING) and location.
+  /// Fires system notification immediately and marks reminder as COMPLETED.
+  Future<List<String>> evaluateActivityReminders({
+    required String activity,
+    double? latitude,
+    double? longitude,
+  }) async {
+    final triggeredIds = <String>[];
+    try {
+      final reminders = await getReminders(status: 'ACTIVE');
+      final normAct = activity.toUpperCase().trim();
+
+      for (final r in reminders) {
+        final rAct = (r['activity'] ?? '').toString().toUpperCase();
+        if (rAct.isEmpty) continue;
+
+        // Check if reminder activity matches (e.g. "WALKING" or "WALKING, IN_VEHICLE")
+        final acts = rAct.split(RegExp(r'[,/|]|(\bOR\b)'));
+        final matchesAct = acts.any(
+          (a) => a.trim().isNotEmpty && a.trim() == normAct,
+        );
+        if (!matchesAct) continue;
+        final dueRaw = (r['due_at'] ?? '').toString().trim();
+        if (dueRaw.isNotEmpty) {
+          final due = DateTime.tryParse(dueRaw);
+          if (due == null || DateTime.now().toUtc().isBefore(due.toUtc())) {
+            continue;
+          }
+        }
+
+        final rLat = (r['latitude'] is num)
+            ? (r['latitude'] as num).toDouble()
+            : null;
+        final rLon = (r['longitude'] is num)
+            ? (r['longitude'] as num).toDouble()
+            : null;
+        if ((r['location_name'] ?? '').toString().trim().isNotEmpty &&
+            (rLat == null || rLon == null)) {
+          continue;
+        }
+        final radius = (r['radius_m'] is num)
+            ? (r['radius_m'] as num).toDouble()
+            : 150.0;
+
+        bool shouldTrigger = false;
+        if (rLat != null && rLon != null) {
+          if (latitude != null && longitude != null) {
+            final dist = _haversineMeters(latitude, longitude, rLat, rLon);
+            if (dist <= radius) {
+              shouldTrigger = true;
+            }
+          }
+        } else {
+          // Activity-only reminder (no location constraint)
+          shouldTrigger = true;
+        }
+
+        if (shouldTrigger) {
+          final id = r['id']?.toString() ?? '';
+          final title = r['title'] ?? r['body'] ?? 'Reminder Alert';
+          final body = r['body'] ?? title;
+
+          ApiService().showSystemNotification(
+            id: id.hashCode,
+            title: 'Jarvis Reminder: $title',
+            content: body,
+          );
+
+          await updateReminderStatus(id, 'COMPLETED', markPending: true);
+          triggeredIds.add(id);
+          debugPrint(
+            '[LocalDbService] Triggered activity reminder: "$title" ($id)',
+          );
+        }
+      }
+
+      if (triggeredIds.isNotEmpty) {
+        notifyListeners();
+        SyncService().syncNow();
+      }
+    } catch (e) {
+      debugPrint('[LocalDbService] evaluateActivityReminders error: $e');
+    }
+    return triggeredIds;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // NOTES CRUD
   // ═══════════════════════════════════════════════════════════════════════════
 
-  Future<List<Map<String, dynamic>>> getNotes() async {
+  Future<List<Map<String, dynamic>>> getNotes({bool deleted = false}) async {
     final db = await database;
-    final raw = await db.query('notes', orderBy: 'updated_at DESC');
+    final raw = await db.query(
+      'notes',
+      where: deleted ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL',
+      orderBy: 'updated_at DESC',
+    );
+    if (deleted) return raw;
     final seen = <String>{};
     final List<Map<String, dynamic>> deduped = [];
     for (final item in raw) {
-      final key = (item['content'] ?? item['text'] ?? '').toString().trim().toLowerCase();
+      final key = (item['content'] ?? item['text'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
       if (seen.add(key)) {
         deduped.add(item);
       }
@@ -208,8 +503,10 @@ class LocalDbService extends ChangeNotifier {
     return deduped;
   }
 
-
-  Future<void> saveNote(Map<String, dynamic> note, {bool markPending = true}) async {
+  Future<void> saveNote(
+    Map<String, dynamic> note, {
+    bool markPending = true,
+  }) async {
     final db = await database;
     final now = DateTime.now().toUtc().toIso8601String();
     final data = Map<String, dynamic>.from(note);
@@ -230,7 +527,28 @@ class LocalDbService extends ChangeNotifier {
 
   Future<void> deleteNote(String id) async {
     final db = await database;
-    await db.delete('notes', where: 'id = ?', whereArgs: [id]);
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.update(
+      'notes',
+      {'deleted_at': now, 'updated_at': now, 'sync_status': 'pending'},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    notifyListeners();
+  }
+
+  Future<void> restoreNote(String id) async {
+    final db = await database;
+    await db.update(
+      'notes',
+      {
+        'deleted_at': null,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+        'sync_status': 'pending',
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
     notifyListeners();
   }
 
@@ -243,7 +561,10 @@ class LocalDbService extends ChangeNotifier {
     return await db.query('places', orderBy: 'updated_at DESC');
   }
 
-  Future<void> savePlace(Map<String, dynamic> place, {bool markPending = true}) async {
+  Future<void> savePlace(
+    Map<String, dynamic> place, {
+    bool markPending = true,
+  }) async {
     final db = await database;
     final now = DateTime.now().toUtc().toIso8601String();
     final data = Map<String, dynamic>.from(place);
@@ -268,7 +589,10 @@ class LocalDbService extends ChangeNotifier {
 
   Future<List<ChatSession>> loadChatSessions() async {
     final db = await database;
-    final sessionRows = await db.query('chat_sessions', orderBy: 'updated_at DESC');
+    final sessionRows = await db.query(
+      'chat_sessions',
+      orderBy: 'updated_at DESC',
+    );
     final List<ChatSession> sessions = [];
 
     for (final sRow in sessionRows) {
@@ -284,7 +608,9 @@ class LocalDbService extends ChangeNotifier {
         List<String> executed = [];
         if (m['executed_records'] != null) {
           try {
-            executed = List<String>.from(jsonDecode(m['executed_records'] as String));
+            executed = List<String>.from(
+              jsonDecode(m['executed_records'] as String),
+            );
           } catch (_) {}
         }
 
@@ -292,66 +618,117 @@ class LocalDbService extends ChangeNotifier {
           id: m['id'] as String?,
           text: m['content'] as String? ?? '',
           isUser: (m['role'] as String?) == 'user',
-          timestamp: DateTime.tryParse(m['timestamp'] as String? ?? '') ?? DateTime.now(),
+          timestamp:
+              DateTime.tryParse(m['timestamp'] as String? ?? '') ??
+              DateTime.now(),
           runId: m['run_id'] as String?,
           executedRecords: executed,
+          durationMs: (m['duration_ms'] as num?)?.toInt(),
         );
       }).toList();
 
-      sessions.add(ChatSession(
-        id: threadId,
-        title: sRow['title'] as String? ?? 'New Chat',
-        createdAt: DateTime.tryParse(sRow['created_at'] as String? ?? '') ?? DateTime.now(),
-        updatedAt: DateTime.tryParse(sRow['updated_at'] as String? ?? '') ?? DateTime.now(),
-        messages: messages,
-      ));
+      sessions.add(
+        ChatSession(
+          id: threadId,
+          title: sRow['title'] as String? ?? 'New Chat',
+          createdAt:
+              DateTime.tryParse(sRow['created_at'] as String? ?? '') ??
+              DateTime.now(),
+          updatedAt:
+              DateTime.tryParse(sRow['updated_at'] as String? ?? '') ??
+              DateTime.now(),
+          messages: messages,
+        ),
+      );
     }
 
+    // SQLite text ordering cannot compare timestamps with mixed UTC offsets.
+    sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
     return sessions;
   }
 
-  Future<void> saveChatSession(ChatSession session, {bool markPending = true}) async {
+  Future<void> saveChatSession(
+    ChatSession session, {
+    bool markPending = true,
+  }) async {
     final db = await database;
     final batch = db.batch();
 
-    batch.insert(
-      'chat_sessions',
-      {
-        'id': session.id,
-        'title': session.title,
-        'created_at': session.createdAt.toIso8601String(),
-        'updated_at': session.updatedAt.toIso8601String(),
-        if (markPending) 'sync_status': 'pending',
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    batch.insert('chat_sessions', {
+      'id': session.id,
+      'title': session.title,
+      'created_at': session.createdAt.toUtc().toIso8601String(),
+      'updated_at': session.updatedAt.toUtc().toIso8601String(),
+      if (markPending) 'sync_status': 'pending',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     for (final m in session.messages) {
-      batch.insert(
-        'chat_messages',
-        {
-          'id': m.id,
-          'thread_id': session.id,
-          'role': m.isUser ? 'user' : 'assistant',
-          'content': m.text,
-          'timestamp': m.timestamp.toIso8601String(),
-          'run_id': m.runId,
-          'executed_records': jsonEncode(m.executedRecords),
-          if (markPending) 'sync_status': 'pending',
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      batch.insert('chat_messages', {
+        'id': m.id,
+        'thread_id': session.id,
+        'role': m.isUser ? 'user' : 'assistant',
+        'content': m.text,
+        'timestamp': m.timestamp.toUtc().toIso8601String(),
+        'run_id': m.runId,
+        'executed_records': jsonEncode(m.executedRecords),
+        'duration_ms': m.durationMs,
+        if (markPending) 'sync_status': 'pending',
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
 
     await batch.commit(noResult: true);
     notifyListeners();
   }
 
-  Future<void> deleteChatSession(String sessionId) async {
+  Future<void> deleteChatSession(
+    String sessionId, {
+    bool queueDeletion = true,
+  }) async {
     final db = await database;
-    await db.delete('chat_messages', where: 'thread_id = ?', whereArgs: [sessionId]);
+    await db.delete(
+      'chat_messages',
+      where: 'thread_id = ?',
+      whereArgs: [sessionId],
+    );
     await db.delete('chat_sessions', where: 'id = ?', whereArgs: [sessionId]);
+    if (queueDeletion) {
+      await db.insert('pending_deletions', {
+        'id': sessionId,
+        'record_type': 'chat_session',
+        'created_at': DateTime.now().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
     notifyListeners();
+  }
+
+  Future<void> deleteAllChatSessionsLocal({bool queueDeletion = false}) async {
+    final db = await database;
+    await db.delete('chat_messages');
+    await db.delete('chat_sessions');
+    if (queueDeletion) {
+      await db.insert('pending_deletions', {
+        'id': 'ALL_CHAT_SESSIONS',
+        'record_type': 'all_chat_sessions',
+        'created_at': DateTime.now().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    notifyListeners();
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingDeletions() async {
+    final db = await database;
+    try {
+      return await db.query('pending_deletions');
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> removePendingDeletion(String id) async {
+    final db = await database;
+    try {
+      await db.delete('pending_deletions', where: 'id = ?', whereArgs: [id]);
+    } catch (_) {}
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -359,13 +736,23 @@ class LocalDbService extends ChangeNotifier {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /// Retrieve all locally modified records waiting to be pushed to Firestore
-  Future<Map<String, List<Map<String, dynamic>>>> getPendingSyncRecords() async {
+  Future<Map<String, List<Map<String, dynamic>>>>
+  getPendingSyncRecords() async {
     final db = await database;
-    final reminders = await db.query('reminders', where: "sync_status = 'pending'");
+    final reminders = await db.query(
+      'reminders',
+      where: "sync_status = 'pending'",
+    );
     final notes = await db.query('notes', where: "sync_status = 'pending'");
     final places = await db.query('places', where: "sync_status = 'pending'");
-    final sessions = await db.query('chat_sessions', where: "sync_status = 'pending'");
-    final messages = await db.query('chat_messages', where: "sync_status = 'pending'");
+    final sessions = await db.query(
+      'chat_sessions',
+      where: "sync_status = 'pending'",
+    );
+    final messages = await db.query(
+      'chat_messages',
+      where: "sync_status = 'pending'",
+    );
 
     return {
       'reminders': reminders,
@@ -442,13 +829,22 @@ class LocalDbService extends ChangeNotifier {
     final batch = db.batch();
 
     if (remoteReminders != null) {
+      final pendingIds = (await db.query(
+        'reminders',
+        columns: ['id'],
+        where: "sync_status = 'pending'",
+      )).map((row) => row['id'] as String).toSet();
       final remoteIds = remoteReminders
           .map((r) => r['id']?.toString() ?? '')
           .where((id) => id.isNotEmpty)
           .toSet();
 
       // Delete any local items that were deleted from Firestore in the cloud
-      final localSynced = await db.query('reminders', columns: ['id'], where: "sync_status = 'synced'");
+      final localSynced = await db.query(
+        'reminders',
+        columns: ['id'],
+        where: "sync_status = 'synced'",
+      );
       for (final row in localSynced) {
         final localId = row['id'] as String;
         if (!remoteIds.contains(localId)) {
@@ -458,7 +854,7 @@ class LocalDbService extends ChangeNotifier {
 
       for (final r in remoteReminders) {
         final id = r['id']?.toString() ?? '';
-        if (id.isEmpty) continue;
+        if (id.isEmpty || pendingIds.contains(id)) continue;
         final isActive = r['active'] == null
             ? (r['status'] == 'ACTIVE' || r['status'] == null)
             : (r['active'] == true);
@@ -468,14 +864,28 @@ class LocalDbService extends ChangeNotifier {
           'body': r['body']?.toString() ?? r['title']?.toString() ?? '',
           'due_at': r['due_at']?.toString(),
           'location_name': r['location_name']?.toString(),
-          'latitude': (r['latitude'] is num) ? (r['latitude'] as num).toDouble() : null,
-          'longitude': (r['longitude'] is num) ? (r['longitude'] as num).toDouble() : null,
-          'radius_m': (r['radius_m'] is num) ? (r['radius_m'] as num).toDouble() : 150.0,
+          'latitude': (r['latitude'] is num)
+              ? (r['latitude'] as num).toDouble()
+              : null,
+          'longitude': (r['longitude'] is num)
+              ? (r['longitude'] as num).toDouble()
+              : null,
+          'radius_m': (r['radius_m'] is num)
+              ? (r['radius_m'] as num).toDouble()
+              : 150.0,
+          'dynamic_policy': r['dynamic_policy'] is Map
+              ? jsonEncode(r['dynamic_policy'])
+              : r['dynamic_policy']?.toString(),
           'activity': r['activity']?.toString(),
-          'status': isActive ? 'ACTIVE' : 'INACTIVE',
+          'status':
+              r['status']?.toString() ?? (isActive ? 'ACTIVE' : 'INACTIVE'),
+          'previous_status': r['previous_status']?.toString(),
+          'deleted_at': r['deleted_at']?.toString(),
           'sync_status': 'synced',
-          'created_at': r['created_at']?.toString() ?? DateTime.now().toIso8601String(),
-          'updated_at': r['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'created_at':
+              r['created_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'updated_at':
+              r['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
         };
         batch.insert(
           'reminders',
@@ -486,13 +896,22 @@ class LocalDbService extends ChangeNotifier {
     }
 
     if (remoteNotes != null) {
+      final pendingIds = (await db.query(
+        'notes',
+        columns: ['id'],
+        where: "sync_status = 'pending'",
+      )).map((row) => row['id'] as String).toSet();
       final remoteIds = remoteNotes
           .map((n) => n['id']?.toString() ?? '')
           .where((id) => id.isNotEmpty)
           .toSet();
 
       // Delete any local notes that were deleted from Firestore in the cloud
-      final localSynced = await db.query('notes', columns: ['id'], where: "sync_status = 'synced'");
+      final localSynced = await db.query(
+        'notes',
+        columns: ['id'],
+        where: "sync_status = 'synced'",
+      );
       for (final row in localSynced) {
         final localId = row['id'] as String;
         if (!remoteIds.contains(localId)) {
@@ -502,16 +921,19 @@ class LocalDbService extends ChangeNotifier {
 
       for (final n in remoteNotes) {
         final id = n['id']?.toString() ?? '';
-        if (id.isEmpty) continue;
+        if (id.isEmpty || pendingIds.contains(id)) continue;
         final sanitized = {
           'id': id,
           'title': n['title']?.toString() ?? 'Note',
           'content': n['content']?.toString() ?? n['text']?.toString() ?? '',
           'place': n['place']?.toString(),
           'category': n['category']?.toString(),
+          'deleted_at': n['deleted_at']?.toString(),
           'sync_status': 'synced',
-          'created_at': n['created_at']?.toString() ?? DateTime.now().toIso8601String(),
-          'updated_at': n['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'created_at':
+              n['created_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'updated_at':
+              n['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
         };
         batch.insert(
           'notes',
@@ -527,7 +949,11 @@ class LocalDbService extends ChangeNotifier {
           .where((id) => id.isNotEmpty)
           .toSet();
 
-      final localSynced = await db.query('places', columns: ['id'], where: "sync_status = 'synced'");
+      final localSynced = await db.query(
+        'places',
+        columns: ['id'],
+        where: "sync_status = 'synced'",
+      );
       for (final row in localSynced) {
         final localId = row['id'] as String;
         if (!remoteIds.contains(localId)) {
@@ -542,13 +968,21 @@ class LocalDbService extends ChangeNotifier {
           'id': id,
           'name': p['name']?.toString() ?? '',
           'address': p['address']?.toString(),
-          'latitude': (p['latitude'] is num) ? (p['latitude'] as num).toDouble() : null,
-          'longitude': (p['longitude'] is num) ? (p['longitude'] as num).toDouble() : null,
-          'radius_m': (p['radius_m'] is num) ? (p['radius_m'] as num).toDouble() : 150.0,
+          'latitude': (p['latitude'] is num)
+              ? (p['latitude'] as num).toDouble()
+              : null,
+          'longitude': (p['longitude'] is num)
+              ? (p['longitude'] as num).toDouble()
+              : null,
+          'radius_m': (p['radius_m'] is num)
+              ? (p['radius_m'] as num).toDouble()
+              : 150.0,
           'category': p['category']?.toString(),
           'sync_status': 'synced',
-          'created_at': p['created_at']?.toString() ?? DateTime.now().toIso8601String(),
-          'updated_at': p['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'created_at':
+              p['created_at']?.toString() ?? DateTime.now().toIso8601String(),
+          'updated_at':
+              p['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
         };
         batch.insert(
           'places',
@@ -558,45 +992,90 @@ class LocalDbService extends ChangeNotifier {
       }
     }
 
-
     if (remoteChatSessions != null) {
+      final pendingDeletions = await getPendingDeletions();
+      final deletedSessionIds = pendingDeletions
+          .where((d) => d['record_type'] == 'chat_session')
+          .map((d) => d['id'] as String)
+          .toSet();
+      final allSessionsDeleted = pendingDeletions.any(
+        (d) => d['record_type'] == 'all_chat_sessions',
+      );
+
       final remoteIds = remoteChatSessions
           .map((s) => s['id']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
+          .where(
+            (id) =>
+                id.isNotEmpty &&
+                !deletedSessionIds.contains(id) &&
+                !allSessionsDeleted,
+          )
           .toSet();
 
-      final localSynced = await db.query('chat_sessions', columns: ['id'], where: "sync_status = 'synced'");
+      final localSynced = await db.query(
+        'chat_sessions',
+        columns: ['id'],
+        where: "sync_status = 'synced'",
+      );
       for (final row in localSynced) {
         final localId = row['id'] as String;
         if (!remoteIds.contains(localId)) {
           batch.delete('chat_sessions', where: 'id = ?', whereArgs: [localId]);
-          batch.delete('chat_messages', where: 'thread_id = ?', whereArgs: [localId]);
+          batch.delete(
+            'chat_messages',
+            where: 'thread_id = ?',
+            whereArgs: [localId],
+          );
         }
       }
 
-      for (final s in remoteChatSessions) {
-        final data = Map<String, dynamic>.from(s);
-        batch.insert(
-          'chat_sessions',
-          {
+      if (!allSessionsDeleted) {
+        for (final s in remoteChatSessions) {
+          final data = Map<String, dynamic>.from(s);
+          final sId = data['id']?.toString() ?? '';
+          if (deletedSessionIds.contains(sId)) continue;
+
+          batch.insert('chat_sessions', {
             'id': data['id'],
             'title': data['title'] ?? 'New Chat',
-            'created_at': data['created_at'] ?? DateTime.now().toIso8601String(),
-            'updated_at': data['updated_at'] ?? DateTime.now().toIso8601String(),
+            'created_at':
+                data['created_at'] ?? DateTime.now().toIso8601String(),
+            'updated_at':
+                data['updated_at'] ?? DateTime.now().toIso8601String(),
             'sync_status': 'synced',
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
       }
     }
 
     if (remoteChatMessages != null) {
+      final pendingDeletions = await getPendingDeletions();
+      final deletedSessionIds = pendingDeletions
+          .where((d) => d['record_type'] == 'chat_session')
+          .map((d) => d['id'] as String)
+          .toSet();
+      final allSessionsDeleted = pendingDeletions.any(
+        (d) => d['record_type'] == 'all_chat_sessions',
+      );
+
       final remoteMsgIds = remoteChatMessages
           .map((m) => m['id']?.toString() ?? '')
           .where((id) => id.isNotEmpty)
           .toSet();
 
-      final localSyncedMsgs = await db.query('chat_messages', columns: ['id'], where: "sync_status = 'synced'");
+      final localSyncedMsgs = await db.query(
+        'chat_messages',
+        columns: ['id', 'duration_ms'],
+        where: "sync_status = 'synced'",
+      );
+      final localDurationRows = await db.query(
+        'chat_messages',
+        columns: ['id', 'duration_ms'],
+      );
+      final localDurations = {
+        for (final row in localDurationRows)
+          row['id'] as String: row['duration_ms'],
+      };
       for (final row in localSyncedMsgs) {
         final localId = row['id'] as String;
         if (!remoteMsgIds.contains(localId)) {
@@ -604,13 +1083,19 @@ class LocalDbService extends ChangeNotifier {
         }
       }
 
-      for (final m in remoteChatMessages) {
-        final data = Map<String, dynamic>.from(m);
-        batch.insert(
-          'chat_messages',
-          {
+      if (!allSessionsDeleted) {
+        for (final m in remoteChatMessages) {
+          final data = Map<String, dynamic>.from(m);
+          final threadId = data['thread_id']?.toString() ?? 'default';
+          final mId = data['id']?.toString() ?? '';
+          if (deletedSessionIds.contains(threadId) ||
+              deletedSessionIds.contains(mId)) {
+            continue;
+          }
+
+          batch.insert('chat_messages', {
             'id': data['id'],
-            'thread_id': data['thread_id'] ?? 'default',
+            'thread_id': threadId,
             'role': data['role'] ?? 'user',
             'content': data['content'] ?? '',
             'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
@@ -618,15 +1103,28 @@ class LocalDbService extends ChangeNotifier {
             'executed_records': data['executed_records'] is String
                 ? data['executed_records']
                 : jsonEncode(data['executed_records'] ?? []),
+            'duration_ms': data['duration_ms'] ?? localDurations[mId],
             'sync_status': 'synced',
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
       }
     }
 
     await batch.commit(noResult: true);
     notifyListeners();
   }
+}
 
+double _haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+  const r = 6371000.0;
+  final dLat = (lat2 - lat1) * (pi / 180.0);
+  final dLon = (lon2 - lon1) * (pi / 180.0);
+  final a =
+      sin(dLat / 2) * sin(dLat / 2) +
+      cos(lat1 * (pi / 180.0)) *
+          cos(lat2 * (pi / 180.0)) *
+          sin(dLon / 2) *
+          sin(dLon / 2);
+  final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return r * c;
 }
