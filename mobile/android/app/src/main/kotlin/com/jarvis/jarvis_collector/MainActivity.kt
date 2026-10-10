@@ -35,7 +35,7 @@ class MainActivity : FlutterFragmentActivity() {
         attachmentPicker?.onActivityResult(requestCode, resultCode, data)
     }
 
-    override fun onResume() { super.onResume(); isVisible = true; UsageReporting.schedule(applicationContext) }
+    override fun onResume() { super.onResume(); isVisible = true; UsageReporting.schedule(applicationContext); ReminderAlerts.restore(applicationContext) }
     override fun onPause() { isVisible = false; super.onPause() }
     override fun onDestroy() { chatUpdateListener = null; chatChannel = null; super.onDestroy() }
     override fun onNewIntent(intent: Intent) {
@@ -224,7 +224,18 @@ class MainActivity : FlutterFragmentActivity() {
                 "showCloudNotification" -> {
                     result.success(PushDelivery.show(this, call.argument<String>("id") ?: "",
                         call.argument<String>("title") ?: "Jarvis", call.argument<String>("body") ?: "",
-                        call.argument<String>("thread_id") ?: "", call.argument<String>("kind") ?: ""))
+                        call.argument<String>("thread_id") ?: "", call.argument<String>("kind") ?: "",
+                        call.argument<String>("delivery_mode") ?: "notification", call.argument<String>("reminder_id") ?: "",
+                        call.argument<String>("alarm_due_at") ?: "", call.argument<String>("occurred_at") ?: ""))
+                }
+                "syncRingingReminders" -> {
+                    ReminderAlerts.reconcile(this, org.json.JSONArray(call.arguments as? String ?: "[]"))
+                    result.success(ReminderAlerts.status(this))
+                }
+                "ringingStatus" -> result.success(ReminderAlerts.status(this))
+                "openFullScreenAlerts" -> {
+                    if (Build.VERSION.SDK_INT >= 34) startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName")))
+                    result.success(true)
                 }
                 "showSystemNotification" -> {
                     val id = call.argument<Int>("id") ?: ((System.currentTimeMillis() % 100000).toInt())

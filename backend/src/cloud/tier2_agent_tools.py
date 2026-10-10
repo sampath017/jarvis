@@ -381,14 +381,18 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         journey_origin: str = "",
         journey_destination: str = "",
         nearby_radius_m: float = 350,
+        activity_delay_seconds: int = 0,
+        delivery_mode: str = "notification",
     ) -> str:
         """Create a new context-aware reminder for the user.
         Args:
             title: The reminder text (e.g. 'Refuel at Indian Oil', 'Check tire pressure').
+            delivery_mode: notification (default), alarm (ringing alarm), or in_app_call (free ringing screen; Answer reads the reminder). Use alarm or in_app_call only when explicitly requested. These are Android alerts, not telephone calls. Exact timing and full-screen display require phone permissions; context alerts require connectivity. Only one-shot alarms are supported.
             location_name: Optional location trigger (e.g. 'Indian Oil', 'Home', 'Office').
             activity: Canonical trigger emitted by the context agent (e.g. 'WALKING', 'IN_VEHICLE', or car-specific 'CAR'). Multiple values are ORed. Use CAR for a car-only request; IN_VEHICLE includes other vehicles.
             context_states: Canonical session-state trigger emitted by the context agent: 'PARKED', 'DWELLING', and/or 'IN_SHOP'. Multiple values are ORed with activity values. Use only when the conversation explicitly calls for that journey state.
             due_at: Optional ISO timestamp or relative duration (e.g. 'in 29 seconds'). Leave empty if not time-based.
+            activity_delay_seconds: 0 for immediate, or 1–86400 to start a durable one-shot timer at the next detected physical activity ENTER. For '10 minutes after I start walking', use activity=WALKING and 600. Place conditions apply at the start. The timer still fires if the activity ends; do not describe this as verified continuous walking for 10 minutes.
             latitude: Optional GPS latitude coordinate.
             longitude: Optional GPS longitude coordinate.
             place_category: Dynamic Google Places primary type, e.g. gas_station, pharmacy, supermarket, restaurant, hospital. Use for ANY matching place as the user travels, not a fixed coordinate.
@@ -399,6 +403,8 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 with a resolvable trigger does not need a separate confirmation.
         """
         try:
+            if delivery_mode not in {'notification', 'alarm', 'in_app_call'}:
+                return 'Not saved: choose notification, alarm, or in_app_call. Telephone calls are not supported.'
             parsed_due = normalize_due_at(due_at) or None
             if parsed_due:
                 try:
@@ -411,6 +417,13 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
             norm_activity = _normalize_activity_string(
                 ", ".join(part for part in (activity, context_states) if part)
             ) or None
+            if activity_delay_seconds:
+                if (not 1 <= activity_delay_seconds <= 86400 or
+                        norm_activity not in {'WALKING','RUNNING','IN_VEHICLE','ON_BICYCLE','STILL'} or place_category):
+                    return 'Not saved: an activity timer needs one physical activity, 1–86400 seconds, and no dynamic place category.'
+                from ..services.background_tasks import BackgroundTasks
+                if not is_test_environment() and not BackgroundTasks().configured:
+                    return 'Not saved: durable background timer delivery is unavailable.'
 
             # Legacy/direct-call fallback.  The agent path supplies activity
             # explicitly, so free text is never the primary policy parser.
@@ -440,7 +453,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 if journey_origin: description += f' after leaving {journey_origin}'
                 if journey_destination: description += f' on the way to {journey_destination}'
                 data = {'title': title, 'location_name': description, 'dynamic_policy': policy,
-                    'activity': norm_activity, 'due_at': parsed_due, 'status': 'ACTIVE', 'one_shot': True}
+                    'activity': norm_activity, 'due_at': parsed_due, 'status': 'ACTIVE', 'one_shot': True, 'delivery_mode': delivery_mode}
                 saved = db.create_reminder(uid, data)
                 if fs.is_available and not is_test_environment(): fs.save_reminder(saved['id'], saved)
                 return f"Saved dynamic reminder (ID: {saved['id']}): {description}; activity={norm_activity}; alerts once within {policy['radius_m']}m of a verified matching place during the observed journey. Requires fresh background location."
@@ -505,6 +518,10 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
             existing_rems = db.list_reminders(uid, status="ACTIVE", limit=50)
             matching_existing = None
             for r in existing_rems:
+                if r.get('delivery_mode', 'notification') != delivery_mode:
+                    continue
+                if int(r.get('activity_delay_seconds') or 0) != activity_delay_seconds:
+                    continue
                 if _are_matching_errands(title, resolved_loc, r.get("title", ""), r.get("location_name")):
                     matching_existing = r
                     break
@@ -535,6 +552,8 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     "latitude": final_lat,
                     "longitude": final_lon,
                     "status": "ACTIVE",
+                    "activity_delay_seconds": activity_delay_seconds,
+                    "delivery_mode": delivery_mode,
                 }
                 db.update_reminder(uid, rem_id, merged_data)
                 if fs.is_available and not is_test_environment():
@@ -543,6 +562,10 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 # Clean up any other sibling duplicate active reminders with matching title/errand
                 for other in existing_rems:
                     if other["id"] != rem_id:
+                        if other.get('delivery_mode', 'notification') != delivery_mode:
+                            continue
+                        if int(other.get('activity_delay_seconds') or 0) != activity_delay_seconds:
+                            continue
                         if _are_matching_errands(title, resolved_loc, other.get("title", ""), other.get("location_name")):
                             db.delete_reminder(uid, other["id"])
                             if fs.is_available and not is_test_environment():
@@ -560,6 +583,8 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 "latitude": res_lat,
                 "longitude": res_lon,
                 "status": "ACTIVE",
+                "activity_delay_seconds": activity_delay_seconds,
+                "delivery_mode": delivery_mode,
             }
             res = db.create_reminder(uid, data)
             rem_id = res.get("id", "saved")
@@ -582,15 +607,19 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         due_at: str = "",
         status: str = "",
         confirmed: bool = False,
+        activity_delay_seconds: int | None = None,
+        delivery_mode: str | None = None,
     ) -> str:
         """Update an existing reminder's conditions, title, location, activity, or status.
         Args:
             reminder_id: The ID or title of the reminder to update.
+            delivery_mode: Optional notification, alarm, or in_app_call. The latter rings inside Jarvis and reads the reminder when answered; it does not place a telephone call.
             title: Optional updated title.
             location_name: Optional updated location trigger name.
             activity: Optional updated physical-activity trigger (e.g. 'WALKING, IN_VEHICLE').
             context_states: Optional updated session-state trigger(s): 'PARKED', 'DWELLING', and/or 'IN_SHOP'.
             due_at: Optional updated ISO timestamp or relative duration.
+            activity_delay_seconds: Optional one-shot timer delay after activity start, 0–86400 seconds. Zero removes the delay. This measures elapsed time after the start, not uninterrupted activity.
             status: Optional updated status: 'ACTIVE', 'PAUSED', 'COMPLETED'.
             confirmed: Deprecated compatibility argument. Clear updates do not
                 need a separate confirmation.
@@ -609,6 +638,10 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 return f"Could not find reminder matching '{reminder_id}' to update."
 
             patch: dict[str, Any] = {}
+            if delivery_mode is not None:
+                if delivery_mode not in {'notification', 'alarm', 'in_app_call'}:
+                    return 'Not changed: choose notification, alarm, or in_app_call.'
+                patch['delivery_mode'] = delivery_mode
             if title:
                 patch["title"] = title
             if location_name:
@@ -629,8 +662,15 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 patch["due_at"] = normalize_due_at(due_at) or None
             if status:
                 patch["status"] = status.upper()
+            if activity_delay_seconds is not None:
+                if not 0 <= activity_delay_seconds <= 86400:
+                    return 'Not changed: activity delay must be 0–86400 seconds.'
+                patch['activity_delay_seconds'] = activity_delay_seconds
 
             candidate = {**existing, **patch}
+            if candidate.get('activity_delay_seconds'):
+                if candidate.get('activity') not in {'WALKING','RUNNING','IN_VEHICLE','ON_BICYCLE','STILL'} or candidate.get('dynamic_policy') or not candidate.get('one_shot', True):
+                    return 'Not changed: activity timers require one physical activity and a one-shot reminder without a dynamic place category.'
             if candidate.get("status") == "ACTIVE":
                 acts = set((candidate.get("activity") or "").replace(" ", "").split(","))
                 if (candidate.get("location_name") or acts & {"DWELLING", "PARKED", "IN_SHOP"}) and (
@@ -686,6 +726,11 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     return f"No active reminders found matching criteria '{criteria}'."
 
             # Group target reminders into clusters by matching errand/task/location
+            # Delayed activity policies must not be merged into immediate or
+            # multi-activity rules by the generic errand consolidation flow.
+            target_rems = [r for r in target_rems if not r.get('activity_delay_seconds')]
+            if not target_rems:
+                return 'Activity timers need individual updates; no reminders were consolidated.'
             clusters: list[list[dict[str, Any]]] = []
             for r in target_rems:
                 placed = False
@@ -1341,7 +1386,11 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
 
         For last 10 minutes use lookback_minutes=10; last 2 days use 2880.
         For calendar dates use start_at/end_at ISO timestamps with timezone offsets.
-        Maximum query window is 31 days. If truncated, query smaller windows.
+        Maximum query window is 31 days. Dense source windows are read in smaller
+        windows automatically. activity_totals are deterministic classified-session
+        spans; uncertain_seconds is the part with missing/uncertain evidence.
+        ON_FOOT alone is not WALKING. session_history_truncated means no complete
+        duration total is available; timeline_truncated only caps the preview.
         Use for trip recaps or questions about previous locations. Results are
         historical evidence: nearby candidates are not confirmed shop visits,
         stationary is not proof of sitting, and a shop visit is not a purchase.

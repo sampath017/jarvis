@@ -1,0 +1,241 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:05.706
+Jarvis is a personal Android assistant that combines chat with observations from your phone.
+
+00:00:05.706 --> 00:00:13.857
+It can manage notes and reminders, explain sampled activity history, work with Google Calendar, and retrieve information from Drive files.
+
+00:00:13.857 --> 00:00:22.823
+Think of it as a phone application connected to a modular Python backend, with a separate embedding service and an indexing worker.
+
+00:00:22.823 --> 00:00:25.676
+This explanation follows the current local code.
+
+00:00:25.676 --> 00:00:30.159
+It does not verify which revision is running in the cloud.
+
+00:00:30.159 --> 00:00:33.604
+The visible interface is built with Flutter.
+
+00:00:33.604 --> 00:00:38.526
+Its main tabs are Chat, Activity, Reminders, Notes, and Settings.
+
+00:00:38.526 --> 00:00:44.924
+Singleton services and Flutter notifiers manage transport, local data, sensors and Google connections.
+
+00:00:44.924 --> 00:00:56.736
+Underneath, Kotlin handles Android capabilities that need to work when Flutter is closed: activity recognition, background location, upload workers, push messages and reminder alarms.
+
+00:00:56.736 --> 00:00:59.197
+Method channels connect these layers.
+
+00:00:59.197 --> 00:01:03.134
+The frontend is therefore more than the screens.
+
+00:01:03.134 --> 00:01:08.056
+Native Android code is an essential part of its reliability.
+
+00:01:08.056 --> 00:01:12.885
+The phone stores app records in a local SQLite database.
+
+00:01:12.885 --> 00:01:16.266
+Flutter telemetry also has a SQLite outbox.
+
+00:01:16.266 --> 00:01:22.544
+Native background events use a different queue: a JSON array committed to SharedPreferences.
+
+00:01:22.544 --> 00:01:28.339
+This differs from the README, which describes that native queue as SQLite.
+
+00:01:28.339 --> 00:01:33.652
+WorkManager uploads queued events and retries failures while preserving their identifiers.
+
+00:01:33.652 --> 00:01:37.998
+Explicit sensor recordings produce CSV files and JSON summaries.
+
+00:01:37.998 --> 00:01:45.242
+These recordings are distinct from the journey sessions and activity intervals reconstructed by the backend.
+
+00:01:45.242 --> 00:01:51.037
+Offline capture is supported, but cloud chat and integrations still need connectivity.
+
+00:01:51.037 --> 00:01:58.942
+The backend uses FastAPI to expose telemetry, commands, reminders, notes, synchronization, recording backups and file operations.
+
+00:01:58.942 --> 00:02:04.870
+Chat progress uses server sent events, with request status and reconnect support.
+
+00:02:04.870 --> 00:02:07.834
+This is not a WebSocket design.
+
+00:02:07.834 --> 00:02:13.269
+The API invokes a cached LangGraph workflow and deterministic domain services.
+
+00:02:13.269 --> 00:02:21.173
+Tier one and tier two are reasoning paths inside the same application, not independent deployed microservices.
+
+00:02:21.173 --> 00:02:28.090
+Blocking graph and cloud operations are moved to worker threads in important async endpoints.
+
+00:02:28.090 --> 00:02:34.019
+A separate embedding service and an indexing job handle file retrieval workloads.
+
+00:02:34.019 --> 00:02:38.261
+Every graph run begins with normalization and context loading.
+
+00:02:38.261 --> 00:02:41.560
+Context events go through an evidence gate.
+
+00:02:41.560 --> 00:02:51.458
+Ordinary sparse observations can use the deterministic reducer directly, while ambiguous feature bearing telemetry can invoke tier one and its tools.
+
+00:02:51.458 --> 00:02:53.815
+Commands go through intent routing.
+
+00:02:53.815 --> 00:03:00.414
+Greetings have a fast path; other requests enter tier two and its tool loop.
+
+00:03:00.414 --> 00:03:08.898
+Chat now loads context on demand, so a file question does not automatically fetch GPS or nearby places.
+
+00:03:08.898 --> 00:03:11.726
+Both branches eventually persist their results.
+
+00:03:11.726 --> 00:03:19.739
+Journey statuses are Created, Active, Paused, Resumed, Completed and Expired; parking and shop context are separate concepts.
+
+00:03:19.739 --> 00:03:24.510
+There is no PostgreSQL or MySQL server in this checkout.
+
+00:03:24.510 --> 00:03:28.326
+SQLite holds device data and backend local state.
+
+00:03:28.326 --> 00:03:34.527
+Firestore holds cloud records, context memory, command requests, notifications, budgets and indexing metadata.
+
+00:03:34.527 --> 00:03:38.343
+Cloud Storage holds recording backups and staged imports.
+
+00:03:38.343 --> 00:03:42.160
+Chroma stores derived file chunks and their vectors.
+
+00:03:42.160 --> 00:03:55.039
+Firestore does not have one uniform layout: reminders and chats use top level collections with user fields, while context and requests use collections under a user document.
+
+00:03:55.039 --> 00:04:01.718
+Some task tools write only to backend SQLite, so their cloud durability needs attention.
+
+00:04:01.718 --> 00:04:06.965
+A local table does not automatically imply a durable cloud copy.
+
+00:04:06.965 --> 00:04:12.558
+A command starts with a stable request identifier and a Firestore claim.
+
+00:04:12.558 --> 00:04:20.015
+Fingerprints reject reuse of an identifier for a different message, and leases prevent competing command execution.
+
+00:04:20.015 --> 00:04:25.142
+Cloud Tasks can continue the work when the phone connection ends.
+
+00:04:25.142 --> 00:04:29.803
+The device receives progress and proposals through the command stream.
+
+00:04:29.803 --> 00:04:39.591
+For Calendar writes, the phone shows a concrete proposal, obtains approval, calls Google using its own authorization, and returns the result.
+
+00:04:39.591 --> 00:04:44.717
+ETags and receipts protect against changed events and uncertain repeat writes.
+
+00:04:44.717 --> 00:04:50.777
+Ordinary requested notes and reminders are currently allowlisted without a second approval dialog.
+
+00:04:50.777 --> 00:04:52.641
+Older documentation says otherwise.
+
+00:04:52.641 --> 00:04:57.710
+A background phone event is persisted before reminder rules are evaluated.
+
+00:04:57.710 --> 00:05:05.084
+Immediate context alerts require fresh matching evidence; the ingestion route uses a five minute freshness window.
+
+00:05:05.084 --> 00:05:10.153
+Older uploads can still improve history without triggering an immediate alert.
+
+00:05:10.153 --> 00:05:16.605
+A one shot reminder and its notification outbox entry are committed together in Firestore.
+
+00:05:16.605 --> 00:05:23.518
+Push delivery or polling brings the alert to the phone, and acknowledgement prevents ordinary duplicates.
+
+00:05:23.518 --> 00:05:28.126
+Activity delay reminders use durable timer state and task callbacks.
+
+00:05:28.126 --> 00:05:29.970
+Sensor gaps remain gaps.
+
+00:05:29.970 --> 00:05:36.422
+The timeline does not prove continuous exercise, and Android scheduling can delay background work.
+
+00:05:36.422 --> 00:05:39.108
+Drive retrieval has its own pipeline.
+
+00:05:39.108 --> 00:05:46.271
+The phone downloads or exports an authorized source, registers metadata, and uploads bytes to private staging.
+
+00:05:46.271 --> 00:05:54.329
+A leased cloud indexing job reads formats, creates bounded chunks, and asks the separate embedding service for vectors.
+
+00:05:54.329 --> 00:06:01.939
+The code pins the model revision and checks that vectors have seven hundred and sixty eight dimensions.
+
+00:06:01.939 --> 00:06:07.311
+Chroma stores the derived evidence with owner, account and source version metadata.
+
+00:06:07.311 --> 00:06:10.893
+Queries embed the question and retrieve filtered evidence.
+
+00:06:10.893 --> 00:06:15.369
+Successful staged sources are deleted; failed ones remain for retry.
+
+00:06:15.369 --> 00:06:18.951
+Large imports also have a local bulk workflow.
+
+00:06:18.951 --> 00:06:24.323
+Direct multimodal file analysis is another path, not the same as indexing.
+
+00:06:24.323 --> 00:06:26.723
+The largest boundary is identity.
+
+00:06:26.723 --> 00:06:36.326
+The backend currently returns the same local user for every caller; the mobile user header is not authenticated account identity.
+
+00:06:36.326 --> 00:06:44.008
+File capabilities and Calendar sessions protect specific paths, but they do not isolate all API data.
+
+00:06:44.008 --> 00:06:46.408
+Synchronization also has important gaps.
+
+00:06:46.408 --> 00:06:51.209
+The push route can acknowledge records without confirming Firestore persistence.
+
+00:06:51.209 --> 00:06:59.371
+Some cloud readers convert errors into empty lists, while the phone interprets missing remote records as deletions.
+
+00:06:59.371 --> 00:07:11.374
+Additional concerns include instance local tasks, full collection scans, concurrent session updates, an unbounded direct index upload path, and different frontend and native backend URLs.
+
+00:07:11.374 --> 00:07:22.522
+The project already has useful reliability mechanisms: stable event and request IDs, command leases, transactional notifications, cautious write receipts, and selective model use.
+
+00:07:22.522 --> 00:07:34.640
+The AI allowance uses durable reservations in Cloud Run and resets by Indian time, but this does not cap indexing, compute, storage or database costs.
+
+00:07:34.640 --> 00:07:48.696
+Before expanding the system, decide whether it is single user or multi user, choose an authoritative durable store for every entity, and define exactly what a sync acknowledgement guarantees.
+
+00:07:48.696 --> 00:07:52.574
+Then test outages, retries, races and permission denial.
+
+00:07:52.574 --> 00:07:58.875
+The companion report provides detailed diagrams, source evidence and a prioritized action list.

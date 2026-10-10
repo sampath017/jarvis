@@ -83,3 +83,44 @@ def test_missing_finish_reason_still_detects_exhausted_generation_budget(monkeyp
     second = AIMessage(content="Complete answer.", response_metadata={"finish_reason": "stop"})
     agent, tools, _ = node(monkeypatch, first, second)
     assert agent._invoke_complete("u", [HumanMessage(content="Question")], tools) is second
+
+
+PROVIDER_ACCOUNT_ERROR = ('Your quota is exhausted.\nAPI key status: exceeded\n'
+                          'Name: upstream\nUSDT balance: -1\nUSDT spent: 2\nexp_date: later')
+
+
+def test_provider_account_error_retries_same_generation_without_replaying_actions(monkeypatch):
+    first = AIMessage(content=PROVIDER_ACCOUNT_ERROR, response_metadata={'finish_reason': 'stop'})
+    second = AIMessage(content='Your Gym was saved.', response_metadata={'finish_reason': 'stop'})
+    agent, tools, guard = node(monkeypatch, first, second)
+    tools.invoke.side_effect = [first, second]
+    messages = [HumanMessage(content='Save my Gym'),
+                ToolMessage(content='Saved. ID: gym-1', tool_call_id='save')]
+    context = CommandExecution(lambda _: None, writes={'save_place:{}': 'Saved. ID: gym-1'})
+    token = execution.set(context)
+    try:
+        assert agent._invoke_complete('u', messages, tools) is second
+    finally:
+        execution.reset(token)
+    assert tools.invoke.call_count == 2
+    assert all(call.args[0] == messages for call in tools.invoke.call_args_list)
+    assert guard.record_llm_usage.call_count == 2
+    tools.bind.assert_not_called()
+    agent.llm.bind.assert_not_called()
+    assert context.writes == {'save_place:{}': 'Saved. ID: gym-1'}
+
+
+def test_repeated_provider_account_error_is_failure_without_account_details(monkeypatch):
+    failure = AIMessage(content=PROVIDER_ACCOUNT_ERROR, response_metadata={'finish_reason': 'stop'})
+    agent, tools, _ = node(monkeypatch, failure, failure)
+    with pytest.raises(CommandStopped, match='AI provider is temporarily unavailable') as raised:
+        agent._invoke_complete('u', [HumanMessage(content='Save Gym')], tools)
+    assert tools.invoke.call_count == 2
+    assert 'USDT' not in str(raised.value) and 'API key' not in str(raised.value)
+
+
+def test_quota_explanation_is_not_mistaken_for_upstream_account_error(monkeypatch):
+    answer = AIMessage(content='Your quota is exhausted in that provider error. Check the provider account.', response_metadata={'finish_reason': 'stop'})
+    agent, tools, _ = node(monkeypatch, answer, answer)
+    assert agent._invoke_complete('u', [HumanMessage(content='Explain this error')], tools) is answer
+    tools.invoke.assert_called_once()

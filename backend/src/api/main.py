@@ -116,6 +116,9 @@ async def _notification_sweeper(stop: asyncio.Event) -> None:
                     uid = reminder.get('uid') or 'jarvis_local_user'
                     users.add(uid)
                     BackgroundTasks().schedule_reminder(uid, reminder)
+                    if reminder.get('activity_delay_seconds'):
+                        from ..services.activity_reminder_timers import ActivityReminderTimers
+                        ActivityReminderTimers(fs).reconcile(uid, reminder)
                 for uid in users: PushNotifications().deliver(uid)
             await asyncio.to_thread(refresh_delivery)
         except Exception:

@@ -45,6 +45,11 @@ object ContextEventQueue {
             put("transition", transition)
             put("occurred_at", occurredAt(time))
             put("timestamp", occurredAt(time))
+            if (type !in setOf("ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE")) {
+                put("activity_evidence", "cached_state")
+                put("reported_activity", activity)
+                put("activity", "UNKNOWN")
+            }
         }
 
     @Synchronized
@@ -54,6 +59,7 @@ object ContextEventQueue {
         if (!event.has("location")) event.put("location_pending", true)
         entries.put(event)
         check(prefs(context).edit().putString(EVENTS, entries.toString()).commit())
+        android.util.Log.i("JarvisQueue", "Queued ${event.optString("event_type")} ${event.optString("activity")} id=${event.optString("event_id")} pending=${entries.length()}")
         if (event.optBoolean("location_pending")) {
             if (!deferCapture) scheduleLocationCapture(context)
         } else scheduleFlush(context)
@@ -100,12 +106,19 @@ object ContextEventQueue {
         check(prefs(context).edit().putString(EVENTS, remaining.toString()).commit())
     }
 
-    fun currentActivity(context: Context): String = prefs(context).getString(ACTIVITY, "") ?: ""
+    fun currentActivity(context: Context): String =
+        if (MotionEvidence.fresh(prefs(context).getLong("activity_observed_at", 0L), System.currentTimeMillis()))
+            prefs(context).getString(ACTIVITY, "") ?: "" else "UNKNOWN"
 
     fun historyResetAt(context: Context): Long = prefs(context).getLong("history_reset_at", 0L)
 
-    fun setCurrentActivity(context: Context, activity: String) {
-        check(prefs(context).edit().putString(ACTIVITY, activity).commit())
+    fun setCurrentActivity(context: Context, activity: String, at: Long = System.currentTimeMillis()) {
+        if (at < prefs(context).getLong("activity_observed_at", 0L)) return
+        val previous = currentActivity(context)
+        check(prefs(context).edit().putString(ACTIVITY, activity).putLong("activity_observed_at", at).commit())
+        if (previous != activity && ActivityRecognitionRegistrar.isEnabled(context)) {
+            runCatching { ActivityRecognitionRegistrar.registerPassiveLocation(context) }
+        }
     }
 
     fun scheduleFlush(context: Context) {

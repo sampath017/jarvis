@@ -27,9 +27,11 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        // Older app versions also registered periodic samples. Ignore any
-        // already in flight; transitions now wake the app only when needed.
-        if (ActivityRecognitionResult.hasResult(intent)) return
+        if (!ActivityRecognitionRegistrar.isEnabled(context)) return
+        if (ActivityRecognitionResult.hasResult(intent)) {
+            recordSample(context, ActivityRecognitionResult.extractResult(intent) ?: return)
+            return
+        }
         if (!ActivityTransitionResult.hasResult(intent)) {
             Log.d(TAG, "Received intent with no ActivityTransitionResult")
             return
@@ -71,16 +73,19 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
                 eventType, activityName, transitionName,
                 occurredAtMillis,
             )
+            queued.put("activity_evidence", "android_transition")
+            queued.put("activity_observed_at", ContextEventQueue.occurredAt(occurredAtMillis))
+            queued.put("received_at", ContextEventQueue.occurredAt())
             ContextEventQueue.add(context, queued, deferCapture = true)
             locationEvents.add(queued)
             val lastStateTime = deliveryPrefs.getLong("state_time", 0L)
             if (occurredAtMillis >= lastStateTime && transitionName == "ENTER") {
-                ContextEventQueue.setCurrentActivity(context, activityName)
+                ContextEventQueue.setCurrentActivity(context, activityName, occurredAtMillis)
                 if (activityName == "STILL" || activityName == "WALKING") {
                     ContextEventQueue.scheduleDwell(context, activityName)
                 }
             } else if (occurredAtMillis >= lastStateTime && ContextEventQueue.currentActivity(context) == activityName) {
-                ContextEventQueue.setCurrentActivity(context, "")
+                ContextEventQueue.setCurrentActivity(context, "", occurredAtMillis)
             }
 
             seen.add(key)
@@ -92,6 +97,7 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
 
         }
         if (locationEvents.isEmpty()) return
+        MonitoringService.ensure(context)
         val appContext = context.applicationContext
         // Persist a fallback before starting the immediate fix, in case Android
         // terminates this process. It runs offline too.
@@ -116,5 +122,40 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
                 }
             }
         }.start()
+    }
+
+    private fun recordSample(context: Context, result: ActivityRecognitionResult) {
+        val at = result.time
+        if (at < ContextEventQueue.historyResetAt(context)) return
+        val prefs = context.getSharedPreferences("jarvis_motion_samples", Context.MODE_PRIVATE)
+        if (at <= prefs.getLong("at", 0L)) return
+        fun name(type: Int) = when (type) {
+            DetectedActivity.IN_VEHICLE -> "IN_VEHICLE"
+            DetectedActivity.ON_BICYCLE -> "ON_BICYCLE"
+            DetectedActivity.WALKING -> "WALKING"
+            DetectedActivity.RUNNING -> "RUNNING"
+            DetectedActivity.ON_FOOT -> "ON_FOOT"
+            DetectedActivity.STILL -> "STILL"
+            else -> "UNKNOWN"
+        }
+        val best = result.mostProbableActivity
+        val candidate = name(best.type)
+        val accepted = MotionEvidence.accepted(candidate, best.confidence, at,
+            prefs.getString("candidate", "") ?: "", prefs.getInt("confidence", 0), prefs.getLong("at", 0L))
+        val lastEmitted = prefs.getString("emitted_activity", "")
+        val shouldEmit = accepted != lastEmitted || at - prefs.getLong("emitted_at", 0L) >= 60_000L
+        prefs.edit().putString("candidate", candidate).putInt("confidence", best.confidence).putLong("at", at).commit()
+        ContextEventQueue.setCurrentActivity(context, accepted, at)
+        Log.i(TAG, "Sample candidate=$candidate confidence=${best.confidence} accepted=$accepted delayMs=${System.currentTimeMillis()-at}")
+        if (!shouldEmit) return
+        val event = ContextEventQueue.newEvent("ACTIVITY_SAMPLE", accepted, "ENTER", at)
+            .put("activity_evidence", if (accepted == "UNKNOWN") "uncertain_sample" else "repeated_android_samples")
+            .put("activity_confidence", best.confidence)
+            .put("reported_activity", candidate)
+            .put("activity_observed_at", ContextEventQueue.occurredAt(at))
+            .put("received_at", ContextEventQueue.occurredAt())
+        ContextEventQueue.add(context, event)
+        prefs.edit().putString("emitted_activity", accepted).putLong("emitted_at", at).commit()
+        sampleListener?.invoke(accepted, best.confidence)
     }
 }

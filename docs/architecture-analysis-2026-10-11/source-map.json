@@ -1,0 +1,5093 @@
+{
+  "review_date": "2026-10-11",
+  "scope": "local source, not a live deployment audit",
+  "files": [
+    {
+      "path": "backend/src/__init__.py",
+      "lines": 1,
+      "sha256": "f247c7b624c5aa77a60a8136facca3395b7d9e206289d4ffd78dad73a7b48dc1",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/auth.py",
+      "lines": 13,
+      "sha256": "d9df2eeecb08a95db35027ceb0701676cccc9c463a7c15db19eb24b6993957fa",
+      "definitions": [
+        {
+          "name": "get_current_user",
+          "line": 11,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/dependencies.py",
+      "lines": 10,
+      "sha256": "497bd8e6e230802eac5d1f9ffdfb60b7055a3c5a13e5e3413b5fb10b5b65495a",
+      "definitions": [
+        {
+          "name": "get_workflow",
+          "line": 8,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/main.py",
+      "lines": 234,
+      "sha256": "bd70bc92a86ed89292c7c59c119ff2dff682ddebfe613f09961f52f9e37694da",
+      "definitions": [
+        {
+          "name": "lifespan",
+          "line": 46,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "_notification_sweeper",
+          "line": 103,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "health_check",
+          "line": 132,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "create_app",
+          "line": 179,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "run",
+          "line": 221,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "refresh_delivery",
+          "line": 111,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/middleware.py",
+      "lines": 159,
+      "sha256": "fb07275e1b0ed1b3029c67460187cb0780d49be290307e9aea474378cf98dd9f",
+      "definitions": [
+        {
+          "name": "RequestLimitingMiddleware",
+          "line": 24,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "StructuredLoggingMiddleware",
+          "line": 110,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "dispatch",
+          "line": 36,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "_check_rate_limit",
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "dispatch",
+          "line": 114,
+          "kind": "AsyncFunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/rate_limiter.py",
+      "lines": 249,
+      "sha256": "96274904700e0727e06027aa48b9ace71ab60bf5b2e3658da91104dd4637d9bf",
+      "definitions": [
+        {
+          "name": "budget_day",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "DailyUsageRecord",
+          "line": 53,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "TokenBudgetGuard",
+          "line": 61,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__new__",
+          "line": 66,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_init_state",
+          "line": 72,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_mutate_usage",
+          "line": 79,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_mutate_usage_impl",
+          "line": 89,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_get_daily_record",
+          "line": 124,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "check_request_rate",
+          "line": 143,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "check_and_reserve_tokens",
+          "line": 166,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "record_llm_usage",
+          "line": 205,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_cached_response",
+          "line": 231,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "store_cached_response",
+          "line": 241,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "compute_cache_key",
+          "line": 246,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reserve",
+          "line": 173,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "settle",
+          "line": 210,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update",
+          "line": 102,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/routers/__init__.py",
+      "lines": 1,
+      "sha256": "ab4eff605f539c197af1ba9c442be13d4e3ecd14f2be63e81d57a1c0ee96ed03",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/api/routers/automation.py",
+      "lines": 426,
+      "sha256": "eb3466c603080382d54c22fc3e114cb4d8e091f9a5eeb7420295b1c33339d1bd",
+      "definitions": [
+        {
+          "name": "request_device_context",
+          "line": 28,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "device_context_status",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_db",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_fs",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "context_identity",
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "context_memory",
+          "line": 76,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "activity_history",
+          "line": 97,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_notes",
+          "line": 175,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_note",
+          "line": 185,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_note",
+          "line": 200,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_note",
+          "line": 215,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "restore_note",
+          "line": 232,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_notes_endpoint",
+          "line": 248,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_reminders",
+          "line": 258,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_reminder",
+          "line": 277,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_reminder",
+          "line": 289,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_reminder",
+          "line": 308,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "restore_reminder",
+          "line": 326,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_reminders_endpoint",
+          "line": 344,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_context_rules",
+          "line": 354,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_context_rule",
+          "line": 363,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_context_rule",
+          "line": 371,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_context_rule",
+          "line": 386,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_notifications",
+          "line": 392,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "acknowledge_notification",
+          "line": 417,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "identity",
+          "line": 61,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "POST",
+          "declared_path": "/devices/request-context",
+          "handler": "request_device_context",
+          "line": 28
+        },
+        {
+          "method": "GET",
+          "declared_path": "/devices/context-requests/{request_id}",
+          "handler": "device_context_status",
+          "line": 36
+        },
+        {
+          "method": "GET",
+          "declared_path": "/context-identity",
+          "handler": "context_identity",
+          "line": 53
+        },
+        {
+          "method": "GET",
+          "declared_path": "/context-memory",
+          "handler": "context_memory",
+          "line": 76
+        },
+        {
+          "method": "GET",
+          "declared_path": "/activity-history",
+          "handler": "activity_history",
+          "line": 97
+        },
+        {
+          "method": "GET",
+          "declared_path": "/notes",
+          "handler": "list_notes",
+          "line": 175
+        },
+        {
+          "method": "POST",
+          "declared_path": "/notes",
+          "handler": "create_note",
+          "line": 185
+        },
+        {
+          "method": "PATCH",
+          "declared_path": "/notes/{note_id}",
+          "handler": "update_note",
+          "line": 200
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/notes/{note_id}",
+          "handler": "delete_note",
+          "line": 215
+        },
+        {
+          "method": "POST",
+          "declared_path": "/notes/{note_id}/restore",
+          "handler": "restore_note",
+          "line": 232
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/notes",
+          "handler": "delete_all_notes_endpoint",
+          "line": 248
+        },
+        {
+          "method": "GET",
+          "declared_path": "/reminders",
+          "handler": "list_reminders",
+          "line": 258
+        },
+        {
+          "method": "POST",
+          "declared_path": "/reminders",
+          "handler": "create_reminder",
+          "line": 277
+        },
+        {
+          "method": "PATCH",
+          "declared_path": "/reminders/{reminder_id}",
+          "handler": "update_reminder",
+          "line": 289
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/reminders/{reminder_id}",
+          "handler": "delete_reminder",
+          "line": 308
+        },
+        {
+          "method": "POST",
+          "declared_path": "/reminders/{reminder_id}/restore",
+          "handler": "restore_reminder",
+          "line": 326
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/reminders",
+          "handler": "delete_all_reminders_endpoint",
+          "line": 344
+        },
+        {
+          "method": "GET",
+          "declared_path": "/context-rules",
+          "handler": "list_context_rules",
+          "line": 354
+        },
+        {
+          "method": "POST",
+          "declared_path": "/context-rules",
+          "handler": "create_context_rule",
+          "line": 363
+        },
+        {
+          "method": "PATCH",
+          "declared_path": "/context-rules/{rule_id}",
+          "handler": "update_context_rule",
+          "line": 371
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/context-rules/{rule_id}",
+          "handler": "delete_context_rule",
+          "line": 386
+        },
+        {
+          "method": "GET",
+          "declared_path": "/notifications",
+          "handler": "list_notifications",
+          "line": 392
+        },
+        {
+          "method": "POST",
+          "declared_path": "/notifications/{notification_id}/acknowledge",
+          "handler": "acknowledge_notification",
+          "line": 417
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/routers/commands.py",
+      "lines": 433,
+      "sha256": "b8294e8843685fb306adcb8046497db0b9e1b126a3467713d4e987ce63352d4f",
+      "definitions": [
+        {
+          "name": "_execute_user_command",
+          "line": 37,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_run_owned",
+          "line": 199,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_start_run",
+          "line": 240,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "_command_events",
+          "line": 270,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "stream_user_command",
+          "line": 291,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "execute_background_command",
+          "line": 305,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "execute_due_reminder",
+          "line": 321,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "deliver_background_notification",
+          "line": 339,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "deliver_activity_reminder",
+          "line": 346,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "register_push_token",
+          "line": 360,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "command_status",
+          "line": 369,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "calendar_result",
+          "line": 380,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "cancel_command",
+          "line": 389,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "process_user_command",
+          "line": 397,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "delete_chat_session_endpoint",
+          "line": 414,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_chat_sessions_endpoint",
+          "line": 426,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "deliver_due",
+          "line": 324,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "deliver",
+          "line": 348,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "finished",
+          "line": 262,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "POST",
+          "declared_path": "/commands/stream",
+          "handler": "stream_user_command",
+          "line": 291
+        },
+        {
+          "method": "POST",
+          "declared_path": "/internal/background/command",
+          "handler": "execute_background_command",
+          "line": 305
+        },
+        {
+          "method": "POST",
+          "declared_path": "/internal/background/reminder",
+          "handler": "execute_due_reminder",
+          "line": 321
+        },
+        {
+          "method": "POST",
+          "declared_path": "/internal/background/notification",
+          "handler": "deliver_background_notification",
+          "line": 339
+        },
+        {
+          "method": "POST",
+          "declared_path": "/internal/background/activity-reminder",
+          "handler": "deliver_activity_reminder",
+          "line": 346
+        },
+        {
+          "method": "POST",
+          "declared_path": "/devices/push-token",
+          "handler": "register_push_token",
+          "line": 360
+        },
+        {
+          "method": "GET",
+          "declared_path": "/commands/requests/{request_id}",
+          "handler": "command_status",
+          "line": 369
+        },
+        {
+          "method": "POST",
+          "declared_path": "/commands/requests/{request_id}/calendar-result",
+          "handler": "calendar_result",
+          "line": 380
+        },
+        {
+          "method": "POST",
+          "declared_path": "/commands/requests/{request_id}/cancel",
+          "handler": "cancel_command",
+          "line": 389
+        },
+        {
+          "method": "POST",
+          "declared_path": "/commands",
+          "handler": "process_user_command",
+          "line": 397
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/chat-sessions/{session_id}",
+          "handler": "delete_chat_session_endpoint",
+          "line": 414
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/chat-sessions",
+          "handler": "delete_all_chat_sessions_endpoint",
+          "line": 426
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/routers/context_events.py",
+      "lines": 153,
+      "sha256": "986e6633b5ba335a3f12206e491ff3ac230bf79c9911faf84152f27b2d39bcd0",
+      "definitions": [
+        {
+          "name": "ingest_context_event",
+          "line": 33,
+          "kind": "AsyncFunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "POST",
+          "declared_path": "/context-events",
+          "handler": "ingest_context_event",
+          "line": 33
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/routers/drive_index.py",
+      "lines": 147,
+      "sha256": "59ae3dd5efdf8958600f032151487e2fc5cee4692edffe6f6447c6a9bb82bf5a",
+      "definitions": [
+        {
+          "name": "ready",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "status",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "begin_upload",
+          "line": 31,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "FinishedUpload",
+          "line": 36,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "finish_upload",
+          "line": 42,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "job_status",
+          "line": 51,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "file_results",
+          "line": 57,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Search",
+          "line": 65,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Evidence",
+          "line": 70,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "VerifiedFile",
+          "line": 75,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ContentSearch",
+          "line": 80,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "content_search",
+          "line": 85,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "read_evidence",
+          "line": 91,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Catalog",
+          "line": 96,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "catalogue",
+          "line": 103,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search",
+          "line": 109,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "put",
+          "line": 119,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "put_stream",
+          "line": 126,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "remove",
+          "line": 144,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "GET",
+          "declared_path": "/status",
+          "handler": "status",
+          "line": 25
+        },
+        {
+          "method": "POST",
+          "declared_path": "/uploads",
+          "handler": "begin_upload",
+          "line": 31
+        },
+        {
+          "method": "POST",
+          "declared_path": "/uploads/{job_id}/complete",
+          "handler": "finish_upload",
+          "line": 42
+        },
+        {
+          "method": "GET",
+          "declared_path": "/jobs",
+          "handler": "job_status",
+          "line": 51
+        },
+        {
+          "method": "GET",
+          "declared_path": "/results",
+          "handler": "file_results",
+          "line": 57
+        },
+        {
+          "method": "POST",
+          "declared_path": "/search-contents",
+          "handler": "content_search",
+          "line": 85
+        },
+        {
+          "method": "POST",
+          "declared_path": "/evidence",
+          "handler": "read_evidence",
+          "line": 91
+        },
+        {
+          "method": "POST",
+          "declared_path": "/catalog",
+          "handler": "catalogue",
+          "line": 103
+        },
+        {
+          "method": "POST",
+          "declared_path": "/search",
+          "handler": "search",
+          "line": 109
+        },
+        {
+          "method": "POST",
+          "declared_path": "/files/{file_id}",
+          "handler": "put",
+          "line": 119
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/files/{file_id}",
+          "handler": "remove",
+          "line": 144
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/routers/file_memories.py",
+      "lines": 182,
+      "sha256": "a7c99c59c81254b01d344a1180475a6ce257fa38870b800ef152c89c27ffa497",
+      "definitions": [
+        {
+          "name": "owner",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "collection",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "key",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "FileMemory",
+          "line": 47,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "memories",
+          "line": 62,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "config",
+          "line": 67,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_memory",
+          "line": 73,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "native_payload",
+          "line": 83,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "claim_analysis",
+          "line": 104,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "analyze",
+          "line": 121,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "claim",
+          "line": 107,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "GET",
+          "declared_path": "",
+          "handler": "memories",
+          "line": 62
+        },
+        {
+          "method": "GET",
+          "declared_path": "/config",
+          "handler": "config",
+          "line": 67
+        },
+        {
+          "method": "PUT",
+          "declared_path": "/{file_id}",
+          "handler": "save_memory",
+          "line": 73
+        },
+        {
+          "method": "POST",
+          "declared_path": "/{file_id}/analyze",
+          "handler": "analyze",
+          "line": 121
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/routers/session_library.py",
+      "lines": 132,
+      "sha256": "b346e7678cb38bba0e005a3f017d7e0da543f29da8f47e0b95380bbc22ea1cab",
+      "definitions": [
+        {
+          "name": "collection",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "key",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Preference",
+          "line": 29,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "preferences",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_preference",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Recording",
+          "line": 46,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "blob",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "recordings",
+          "line": 67,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "upload",
+          "line": 72,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "save_recording",
+          "line": 98,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "download",
+          "line": 112,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_recording",
+          "line": 124,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "chunks",
+          "line": 116,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "GET",
+          "declared_path": "/preferences",
+          "handler": "preferences",
+          "line": 36
+        },
+        {
+          "method": "PUT",
+          "declared_path": "/preferences",
+          "handler": "save_preference",
+          "line": 41
+        },
+        {
+          "method": "GET",
+          "declared_path": "/recordings",
+          "handler": "recordings",
+          "line": 67
+        },
+        {
+          "method": "PUT",
+          "declared_path": "/recordings/{recording_id}/files/{kind}",
+          "handler": "upload",
+          "line": 72
+        },
+        {
+          "method": "PUT",
+          "declared_path": "/recordings",
+          "handler": "save_recording",
+          "line": 98
+        },
+        {
+          "method": "GET",
+          "declared_path": "/recordings/{recording_id}/files/{kind}",
+          "handler": "download",
+          "line": 112
+        },
+        {
+          "method": "DELETE",
+          "declared_path": "/recordings/{recording_id}",
+          "handler": "delete_recording",
+          "line": 124
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/routers/sync.py",
+      "lines": 145,
+      "sha256": "b87425a2f286f64e3948b75af58344fd18fd991ef0b501cd3842e1ee401433e7",
+      "definitions": [
+        {
+          "name": "SyncPushRequest",
+          "line": 23,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SyncPushResponse",
+          "line": 31,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SyncPullResponse",
+          "line": 36,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "push_offline_records",
+          "line": 46,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "pull_remote_records",
+          "line": 118,
+          "kind": "AsyncFunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "POST",
+          "declared_path": "/push",
+          "handler": "push_offline_records",
+          "line": 46
+        },
+        {
+          "method": "GET",
+          "declared_path": "/pull",
+          "handler": "pull_remote_records",
+          "line": 118
+        }
+      ]
+    },
+    {
+      "path": "backend/src/api/spend_policy.py",
+      "lines": 45,
+      "sha256": "e84604073eb9a1207b9ff78e156b7702e1e7eda02f642278ce81011692f541ee",
+      "definitions": [
+        {
+          "name": "provider_limits",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "token_cost_nanos",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reported_cost_nanos",
+          "line": 32,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "rupees",
+          "line": 44,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/__init__.py",
+      "lines": 5,
+      "sha256": "59b24cffee1e369b746473cc1c94464bed984c4a2c07dfc62f718c9a614ca041",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/action_service.py",
+      "lines": 128,
+      "sha256": "7d49a9598c4d19f34377e7b5931b598db54cb5c8ab33f41638afda8ea1c9a715",
+      "definitions": [
+        {
+          "name": "ActionService",
+          "line": 24,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "_without_id",
+          "line": 117,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_without_title_match",
+          "line": 121,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_require_record",
+          "line": 125,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "execute",
+          "line": 31,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_execute_validated",
+          "line": 44,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/activity_evidence.py",
+      "lines": 61,
+      "sha256": "48d19f6366d7e6f3753318883d1429a3987101a03256d7b7167381b660f7bc98",
+      "definitions": [
+        {
+          "name": "compatible_motion",
+          "line": 9,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "qualified_records",
+          "line": 14,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/activity_report.py",
+      "lines": 205,
+      "sha256": "d8996cfaf9592e9327ab1eebd999e27c1f566c3aa4a0ef0df27c8e968672f7d3",
+      "definitions": [
+        {
+          "name": "duration_activity",
+          "line": 14,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "is_simple_activity_recap",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "activity_report_from_tools",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "render_activity_duration",
+          "line": 65,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_merge_gaps",
+          "line": 95,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_recorded_spans",
+          "line": 108,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "render_activity_report",
+          "line": 129,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "duration",
+          "line": 72,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "stamp",
+          "line": 139,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/activity_sessions.py",
+      "lines": 398,
+      "sha256": "9d30e7332f8436c6ae5f3e172bd996a9cf16d0071781107d003902f3fc58a28d",
+      "definitions": [
+        {
+          "name": "_distance",
+          "line": 23,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_place",
+          "line": 28,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_moments",
+          "line": 61,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_attach_coverage",
+          "line": 168,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_routine_key",
+          "line": 188,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "build_activity_sessions",
+          "line": 193,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "enriched_history",
+          "line": 293,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_unique_records",
+          "line": 335,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "complete_window_records",
+          "line": 343,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "activity_totals",
+          "line": 358,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "compact_observation",
+          "line": 377,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "compact_history",
+          "line": 393,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/audit_log.py",
+      "lines": 146,
+      "sha256": "38f0c6e2817dcf76ba32c3b8028b38c51a3e5dede1db078834eda0d55a3f2361",
+      "definitions": [
+        {
+          "name": "AuditLog",
+          "line": 23,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "audit_from_state",
+          "line": 136,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 32,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "log",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "entries",
+          "line": 114,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "to_dicts",
+          "line": 118,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "summary",
+          "line": 122,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/command_execution.py",
+      "lines": 117,
+      "sha256": "f9d4c56ff2a712026a25dfb7cc2e49db8506dad4e89fd3900e1a9ff479f681a9",
+      "definitions": [
+        {
+          "name": "CommandStopped",
+          "line": 16,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "CommandExecution",
+          "line": 20,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "report_progress",
+          "line": 61,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "observed_node",
+          "line": 74,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "check",
+          "line": 32,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "model_turn",
+          "line": 42,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "tool_key",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "invoke",
+          "line": 75,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/context_automation.py",
+      "lines": 461,
+      "sha256": "18d1bc6adcb600f1e9dc3de25d11381d73122d0aa4812d776646fe2503b1b3a2",
+      "definitions": [
+        {
+          "name": "ContextAutomationService",
+          "line": 23,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "_event_time",
+          "line": 430,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_parse_time",
+          "line": 435,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_activity_entered",
+          "line": 440,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_haversine_m",
+          "line": 455,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "process_context_event",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "process_due_reminders",
+          "line": 69,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_matching_reminder_trigger",
+          "line": 113,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_activity_or_session_state_entered",
+          "line": 192,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_confirmed_car_entered",
+          "line": 246,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_fire_reminder",
+          "line": 259,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_rule_matches",
+          "line": 315,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_is_inside_geofence",
+          "line": 340,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_geofence_entered",
+          "line": 352,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_execute_rule",
+          "line": 373,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/context_history.py",
+      "lines": 115,
+      "sha256": "315d075c6c377e567d3cd0292eef98ab7082f225283cf80f5566bdcdec50554e",
+      "definitions": [
+        {
+          "name": "utc_time",
+          "line": 7,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "history_window",
+          "line": 14,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "prefetch_history_window",
+          "line": 24,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "build_timeline",
+          "line": 53,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/context_resolver.py",
+      "lines": 135,
+      "sha256": "a637a7035d65a510b20e3af8379cccdf16824aec7fcff9040eae69b10a53bb3e",
+      "definitions": [
+        {
+          "name": "ContextResolver",
+          "line": 19,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "needs_tier1",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "is_verified_vehicle",
+          "line": 30,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "detect_conflicts",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "build_tier1_request",
+          "line": 121,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/crud_store.py",
+      "lines": 89,
+      "sha256": "19e518227481ae06b1c57bf65d977c82406eecaddffa7da3390383cd4e898e80",
+      "definitions": [
+        {
+          "name": "CRUDStore",
+          "line": 23,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 30,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "read",
+          "line": 47,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update",
+          "line": 51,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete",
+          "line": 62,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_all",
+          "line": 69,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "count",
+          "line": 79,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "clear",
+          "line": 83,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/dynamic_reminders.py",
+      "lines": 107,
+      "sha256": "e477e18fa91f469396dfbfa61fa2ed4940c3cdf28bb740d82d06cb0dd2b88ea1",
+      "definitions": [
+        {
+          "name": "policy_dict",
+          "line": 11,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "DynamicReminders",
+          "line": 15,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_state",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_save",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "match",
+          "line": 34,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/logging_config.py",
+      "lines": 119,
+      "sha256": "d1d384691c85c44d9f39aef3424eecacdbb6f89794074823827939291465e3e0",
+      "definitions": [
+        {
+          "name": "ExactInfoFilter",
+          "line": 24,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "CriticalOnlyFilter",
+          "line": 31,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ISTFormatter",
+          "line": 38,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "CriticalFormatter",
+          "line": 48,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "get_log_directories",
+          "line": 65,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "configure_logging",
+          "line": 78,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "filter",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "filter",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "formatTime",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "format",
+          "line": 56,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/semantic_context.py",
+      "lines": 472,
+      "sha256": "ec0058de8edd41f8662989819630b9745b710e1fce994fe8fd0d144e06e33fee",
+      "definitions": [
+        {
+          "name": "SemanticContextState",
+          "line": 25,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SemanticPlaceKind",
+          "line": 33,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "GeoPoint",
+          "line": 45,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SemanticPlace",
+          "line": 52,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SemanticObservation",
+          "line": 69,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SemanticContext",
+          "line": 83,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ContextChange",
+          "line": 108,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "PredicateKind",
+          "line": 122,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ReminderCondition",
+          "line": 132,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ReminderPolicy",
+          "line": 185,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "PolicyEvaluation",
+          "line": 212,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "evaluate_reminder_policy",
+          "line": 217,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "SemanticContextLedger",
+          "line": 249,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "_as_utc",
+          "line": 459,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_parse_datetime",
+          "line": 463,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_haversine_m",
+          "line": 467,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "is_reliable",
+          "line": 64,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "to_dict",
+          "line": 97,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "should_evaluate_agent",
+          "line": 117,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "from_agent_plan",
+          "line": 143,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "from_agent_plan",
+          "line": 197,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 257,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "from_dicts",
+          "line": 271,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "to_dicts",
+          "line": 293,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reduce",
+          "line": 296,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_upsert_parked",
+          "line": 331,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_deactivate_parked",
+          "line": 356,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_upsert_dwell",
+          "line": 367,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_deactivate_displaced_visit_contexts",
+          "line": 392,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_upsert_shop",
+          "line": 419,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_nearest_active",
+          "line": 441,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_find_by_id",
+          "line": 450,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_is_stationary_activity",
+          "line": 454,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/backend/session_manager.py",
+      "lines": 295,
+      "sha256": "edb29e807cf06055879c45bb70c0d661fcbf6c090dd3f1c90567d2fe2cfae2ff",
+      "definitions": [
+        {
+          "name": "SessionManager",
+          "line": 33,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "_haversine_m",
+          "line": 287,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "process_event",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "force_complete",
+          "line": 97,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "apply_tier1_resolution",
+          "line": 104,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_create_session",
+          "line": 144,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_pause_session",
+          "line": 156,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_resume_session",
+          "line": 166,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_update_session",
+          "line": 177,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_record_poi_visit",
+          "line": 189,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_check_expiry",
+          "line": 203,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_should_start_session",
+          "line": 218,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_is_stopping",
+          "line": 224,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_is_returning",
+          "line": 232,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_is_verified_vehicle",
+          "line": 257,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_should_record_dwell",
+          "line": 272,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/budget_profiles.py",
+      "lines": 26,
+      "sha256": "cdfa5c326b68b15f699686ce7adfeedffe4b4cc6aea918aa3bd3b02b7a51180d",
+      "definitions": [
+        {
+          "name": "BudgetLimits",
+          "line": 8,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "budget_limits",
+          "line": 20,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/__init__.py",
+      "lines": 1,
+      "sha256": "d410d4f9117aeb0012d8af1248bb708462faf2610083d9c4dc3763043516d087",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/calendar_tools.py",
+      "lines": 63,
+      "sha256": "c1d85212c55ffce08a3d5707ae5e776a249ad7cc9f5b940ee032629b740ad456",
+      "definitions": [
+        {
+          "name": "calendar_tools",
+          "line": 7,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "dispatch",
+          "line": 8,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_google_calendars",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_calendar_events",
+          "line": 21,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_calendar_event",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_calendar_event",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_calendar_event",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_calendar_event",
+          "line": 54,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/file_memory_tools.py",
+      "lines": 58,
+      "sha256": "66e5deb6667bf70175859b99425148850d15eacf332b9bdaf36fb670001a1240",
+      "definitions": [
+        {
+          "name": "complete_file_answer",
+          "line": 8,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "file_memory_tools",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "dispatch",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_file_memories",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "analyze_saved_file",
+          "line": 49,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_file_to_drive",
+          "line": 54,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/function_registry.py",
+      "lines": 358,
+      "sha256": "52c568fe4c007e8a4a19891ea4274015b8235554af523a0ee16444e22aecf8e0",
+      "definitions": [
+        {
+          "name": "FunctionRegistry",
+          "line": 208,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 216,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "validate",
+          "line": 219,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "execute",
+          "line": 273,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_function_specs",
+          "line": 352,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "is_allowed",
+          "line": 356,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/tier1_agent_tools.py",
+      "lines": 160,
+      "sha256": "9a500c6975b46ac9542c064f749f8240fba6de97f61313cc0a80d76f443f49c1",
+      "definitions": [
+        {
+          "name": "build_tier1_tools",
+          "line": 21,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "lookup_nearby_places",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "match_vibration_signature",
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "check_saved_geofences",
+          "line": 102,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "check_user_geofences",
+          "line": 144,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/tier1_reasoner.py",
+      "lines": 268,
+      "sha256": "2487c6734edf9af3a460b5f9cd4280c38df585821a81e287b77da2708f93869a",
+      "definitions": [
+        {
+          "name": "Tier1StructuredOutput",
+          "line": 34,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier1Reasoner",
+          "line": 109,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "normalize_vehicle",
+          "line": 72,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "normalize_action",
+          "line": 86,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "clamp_score",
+          "line": 100,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 117,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "resolve",
+          "line": 134,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_system_prompt",
+          "line": 218,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_build_prompt",
+          "line": 239,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/tier2_agent_tools.py",
+      "lines": 1458,
+      "sha256": "07e685130921f49c36798282e10e69a189a08cd1e1fd7947f7f417d06c7c71d7",
+      "definitions": [
+        {
+          "name": "is_test_environment",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "normalize_due_at",
+          "line": 31,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_stem_word",
+          "line": 83,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_extract_task_tokens",
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_normalize_activity_string",
+          "line": 101,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_are_matching_errands",
+          "line": 156,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_resolve_location_and_coords",
+          "line": 195,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "build_tier2_tools",
+          "line": 345,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "move_reminder_to_trash",
+          "line": 352,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "move_note_to_trash",
+          "line": 361,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_reminder",
+          "line": 371,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_reminder",
+          "line": 601,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "consolidate_reminders",
+          "line": 697,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_reminders",
+          "line": 834,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_reminders",
+          "line": 861,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_reminder",
+          "line": 880,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_reminders",
+          "line": 902,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "restore_reminder",
+          "line": 914,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_note",
+          "line": 935,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_notes",
+          "line": 953,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_notes",
+          "line": 975,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_note",
+          "line": 994,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_notes",
+          "line": 1016,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "restore_note",
+          "line": 1028,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "create_task",
+          "line": 1048,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_tasks",
+          "line": 1069,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_task",
+          "line": 1086,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_task_status",
+          "line": 1115,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_task",
+          "line": 1124,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_place",
+          "line": 1145,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_saved_places",
+          "line": 1164,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_place",
+          "line": 1183,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_nearby_places",
+          "line": 1206,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_current_location",
+          "line": 1237,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "inspect_satellite_view",
+          "line": 1324,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "recall_context_history",
+          "line": 1384,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "respond_to_user",
+          "line": 1412,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "unique_match",
+          "line": 272,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/cloud/tier2_orchestrator.py",
+      "lines": 427,
+      "sha256": "44c0657102429dfe641559b410c949d002cd170b3fb039f23e28788ce396a399",
+      "definitions": [
+        {
+          "name": "FunctionCallItem",
+          "line": 36,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier2StructuredOutput",
+          "line": 100,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier2Orchestrator",
+          "line": 117,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "normalize_entity",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "normalize_operation",
+          "line": 72,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "normalize_arguments",
+          "line": 86,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 126,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "process_command",
+          "line": 147,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_system_prompt",
+          "line": 322,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_build_prompt",
+          "line": 384,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/delete_all_chats.py",
+      "lines": 8,
+      "sha256": "f1b20f016e3e5d367b5f67e806fed892d99c1b4bb72ddba38429017ef8e97feb",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/__init__.py",
+      "lines": 1,
+      "sha256": "e08358cf25241d915bf8f9bdb38616d4ff39b533e3bc21f69cfb417a6ab130be",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/builder.py",
+      "lines": 175,
+      "sha256": "739836085c444622935e8ef4f2a14b85e488e76ca56b88e9aa976b7f1802c923",
+      "definitions": [
+        {
+          "name": "route_request_type",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "route_intent",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "route_tier2_agent_loop",
+          "line": 50,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "route_tier1_needed",
+          "line": 66,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "route_tier1_agent_loop",
+          "line": 73,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "build_workflow",
+          "line": 89,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/__init__.py",
+      "lines": 1,
+      "sha256": "94212da22c391272138a2eb134408764f5c4d8d30977fff9f989bf9805d9b525",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/context_gate.py",
+      "lines": 101,
+      "sha256": "1891e523565dd551fd0effef99f485158778cd5377ed45e65a24d1ed2e1cd32f",
+      "definitions": [
+        {
+          "name": "hydrate_packet",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "hydrate_session",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ContextGateNode",
+          "line": 45,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 52,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/intent_router.py",
+      "lines": 74,
+      "sha256": "d5e0bff2962047bbf6918242e3e76804ff186e4eaa28acbe09b9706a8c808489",
+      "definitions": [
+        {
+          "name": "IntentRouterNode",
+          "line": 17,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 23,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/load_context.py",
+      "lines": 232,
+      "sha256": "dc981fc26dd2140fe980c03505fe5394e3eef892a3552f8c925804340ee08056",
+      "definitions": [
+        {
+          "name": "LoadContextNode",
+          "line": 20,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 23,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "read_history",
+          "line": 82,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/persist.py",
+      "lines": 168,
+      "sha256": "341bdc53005b6e74e24dc6b329da4ba9f7aed54a7d479726ad2b3848f2992395",
+      "definitions": [
+        {
+          "name": "PersistNode",
+          "line": 21,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 24,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 27,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/semantic_context.py",
+      "lines": 72,
+      "sha256": "a91eac61081ae1c7c7a79b425d33fa2712f768387f4ad56879cd733f3a35b003",
+      "definitions": [
+        {
+          "name": "SemanticContextNode",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__call__",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_trusted_place",
+          "line": 64,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/session_reducer.py",
+      "lines": 84,
+      "sha256": "00814e387ed65d5dd5474314bb46023d60d1a1bdbcb689912dd6f2881f3341d3",
+      "definitions": [
+        {
+          "name": "SessionReducerNode",
+          "line": 17,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 24,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/tier1_agent.py",
+      "lines": 191,
+      "sha256": "bade00340cbacfe55e7587bdb78a0fcf756c5e93e96530c20ec78181fd1d2b05",
+      "definitions": [
+        {
+          "name": "Tier1AgentNode",
+          "line": 61,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 64,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 77,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_parse_structured_output",
+          "line": 146,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/tier1_resolve.py",
+      "lines": 153,
+      "sha256": "177524d3ceeebc83adfb1128fe35b7614da7dff46ebaf215320e8bba1aec00ea",
+      "definitions": [
+        {
+          "name": "Tier1ResolveNode",
+          "line": 22,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 29,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/tier1_tools_node.py",
+      "lines": 74,
+      "sha256": "dcbc68ba2fd712d325d14697a122e559ba3de2ae7a17a40ab4976463d892f519",
+      "definitions": [
+        {
+          "name": "Tier1ToolsNode",
+          "line": 19,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 25,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/tier2_agent.py",
+      "lines": 698,
+      "sha256": "50878ac8b3f664f02ab0d091f5857bd04135f3cebe93e5e1dc4bb02b99391806",
+      "definitions": [
+        {
+          "name": "_provider_account_error",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reverse_geocode_location",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "continue_with_assistant",
+          "line": 275,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Tier2AgentNode",
+          "line": 280,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 283,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 296,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_invoke_complete",
+          "line": 440,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_build_user_prompt",
+          "line": 516,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/tier2_orchestrate.py",
+      "lines": 228,
+      "sha256": "9e305ff40315757a040c1c2d0f174d739e32522c2cd99beee9281f88e7997f5a",
+      "definitions": [
+        {
+          "name": "Tier2OrchestrateNode",
+          "line": 26,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 32,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/tier2_tools_node.py",
+      "lines": 184,
+      "sha256": "1881d58f6d944fd7be331a54a944c608ff7a155a01c3214d64f8b484ffbb104d",
+      "definitions": [
+        {
+          "name": "Tier2ToolsNode",
+          "line": 41,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 47,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "invoke_tool",
+          "line": 67,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "finish_call",
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "prepare",
+          "line": 121,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/validate_and_execute.py",
+      "lines": 250,
+      "sha256": "e60a57c9f706255d7087f4285651e0ec69fb170a52a588ec9122e6417113edbc",
+      "definitions": [
+        {
+          "name": "ValidateAndExecuteNode",
+          "line": 36,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 39,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 42,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_execute_crud",
+          "line": 211,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/nodes/verify.py",
+      "lines": 96,
+      "sha256": "7a66f7066af8690f365c2fc38f4e26b4ce269ac79ea59c1c7edf77cb0407767b",
+      "definitions": [
+        {
+          "name": "VerifyNode",
+          "line": 17,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__call__",
+          "line": 23,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/graph/state.py",
+      "lines": 86,
+      "sha256": "d689205c19aeee00446f6d487119d4486de01c8f4d91aaab318f2d87e22b8bb9",
+      "definitions": [
+        {
+          "name": "JarvisState",
+          "line": 13,
+          "kind": "ClassDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/models/__init__.py",
+      "lines": 4,
+      "sha256": "9419520de9dd8ddf80e348bb8f0adcea044fe917d76f915f5c23af26d5221861",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/models/enums.py",
+      "lines": 81,
+      "sha256": "99382527aa05120972504370e52a9839a5049d648f13909fcf0bcc403c399595",
+      "definitions": [
+        {
+          "name": "ActivityType",
+          "line": 8,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "TransitionType",
+          "line": 19,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SessionStatus",
+          "line": 25,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "VehicleClass",
+          "line": 35,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier1Action",
+          "line": 45,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "CRUDEntity",
+          "line": 55,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "CRUDOperation",
+          "line": 69,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "RequestType",
+          "line": 78,
+          "kind": "ClassDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/models/file_urls.py",
+      "lines": 2,
+      "sha256": "8409233e32dcbd53937f4b47d5c26fe150d0c4dd1f1d86a506d9dcb7befc65e6",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/models/schemas.py",
+      "lines": 546,
+      "sha256": "8ad181c5bf06d4b65b66a3a8247fcc9cfb173a70b3919875ced1ad882e620bfe",
+      "definitions": [
+        {
+          "name": "GPSReading",
+          "line": 30,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "FeatureSummary",
+          "line": 41,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "RadioEvidence",
+          "line": 54,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "WifiContext",
+          "line": 60,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "BluetoothContext",
+          "line": 66,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "AmbientContext",
+          "line": 74,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ContextEventRequest",
+          "line": 80,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "FileMemoryReference",
+          "line": 153,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "CommandRequest",
+          "line": 162,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "StructuredAgentResponse",
+          "line": 204,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "APIResponse",
+          "line": 232,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "NoteCreateRequest",
+          "line": 247,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "NotePatchRequest",
+          "line": 254,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ReminderCreateRequest",
+          "line": 261,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ReminderPatchRequest",
+          "line": 290,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ContextRuleCreateRequest",
+          "line": 313,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ContextRulePatchRequest",
+          "line": 345,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "POICandidate",
+          "line": 360,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "SessionState",
+          "line": 373,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ContextPacket",
+          "line": 392,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier1Request",
+          "line": 418,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier1Response",
+          "line": 428,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "FunctionCall",
+          "line": 444,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier2Request",
+          "line": 454,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Tier2Response",
+          "line": 470,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "AuditEntry",
+          "line": 483,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "UserProfile",
+          "line": 507,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "UserPreference",
+          "line": 517,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "PlaceRecord",
+          "line": 527,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ChatMessage",
+          "line": 540,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "_normalize_payload",
+          "line": 129,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "requires_a_trigger",
+          "line": 279,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delivery_mode_cannot_be_null",
+          "line": 307,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "validates_rule_shape",
+          "line": 325,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "inherit_feature_classification",
+          "line": 406,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/purge_chats.py",
+      "lines": 8,
+      "sha256": "0fe296d5e11f1fce09d8164a9a9a930e36917af55fb8292039cbd492a9dc7bcb",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/__init__.py",
+      "lines": 9,
+      "sha256": "81981587afd8ecf41d138858243feac1280d5ca6307a87ba14b93832bdf81544",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/activity_reminder_timers.py",
+      "lines": 104,
+      "sha256": "e676214740636d16919d352513ad45962f89bdcb18fe16d33f329bda5201109d",
+      "definitions": [
+        {
+          "name": "policy_key",
+          "line": 17,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ActivityReminderTimers",
+          "line": 24,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "arm",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reconcile",
+          "line": 67,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "deliver",
+          "line": 75,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reserve",
+          "line": 44,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "complete",
+          "line": 92,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/background_tasks.py",
+      "lines": 65,
+      "sha256": "d5b7c9684bdc655d609166859b6e90667c0a1efc6e2e59a7002e622121bdc121",
+      "definitions": [
+        {
+          "name": "BackgroundTasks",
+          "line": 12,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "verify_task_identity",
+          "line": 55,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "configured",
+          "line": 14,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "enqueue",
+          "line": 17,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "schedule_reminder",
+          "line": 40,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/command_run_store.py",
+      "lines": 158,
+      "sha256": "4cdeba54b33753197e3728aef979ff3f8b7d38fa7514058aa64803a70e37b2e5",
+      "definitions": [
+        {
+          "name": "CommandRunStore",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 15,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ref",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "control",
+          "line": 24,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "claim",
+          "line": 27,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "authorize",
+          "line": 55,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "calendar_action",
+          "line": 60,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "calendar_result",
+          "line": 76,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "start_execution",
+          "line": 93,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get",
+          "line": 115,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "progress",
+          "line": 121,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "cancel",
+          "line": 134,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "finish",
+          "line": 138,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "public",
+          "line": 150,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "claim",
+          "line": 33,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save",
+          "line": 79,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "start",
+          "line": 96,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update",
+          "line": 124,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "finish",
+          "line": 141,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/__init__.py",
+      "lines": 12,
+      "sha256": "10acec62df65a82a8e6ea603f54d755be227fb465b2a28847cf22d5787341df0",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/connection.py",
+      "lines": 71,
+      "sha256": "fcd81439a190df27160c84c300bd30a1315e77ff69f44f320b4489a64d09fa28",
+      "definitions": [
+        {
+          "name": "get_db_path",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "init_database",
+          "line": 36,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/__init__.py",
+      "lines": 31,
+      "sha256": "61d7414f4d7783dd0810b3c88a7ffb332db32a92999bc263a38a1bfe6eca6c8a",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/audit_repo.py",
+      "lines": 115,
+      "sha256": "c3e169f20e6a483a458751292b706ac43be7adc0de599904508e8277301c340c",
+      "definitions": [
+        {
+          "name": "AuditRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "insert_audit_entry",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_audit_entries_for_run",
+          "line": 51,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_run_summary",
+          "line": 71,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_runs",
+          "line": 97,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/automations_repo.py",
+      "lines": 75,
+      "sha256": "322234cdd2a6babff6380b2ba6ce303b4c1de9fd05522f328082fa0d5016598f",
+      "definitions": [
+        {
+          "name": "AutomationsRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_automation",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_automation",
+          "line": 37,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_automation",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_automation",
+          "line": 63,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_automations",
+          "line": 69,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/chat_repo.py",
+      "lines": 59,
+      "sha256": "b6353e7ad26eabc576fc28bfa9e71a0c6e5f11a75729360b3cf0f223010cab68",
+      "definitions": [
+        {
+          "name": "ChatRepositoryMixin",
+          "line": 13,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "append_chat_message",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_recent_messages",
+          "line": 51,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/context_rules_repo.py",
+      "lines": 114,
+      "sha256": "0c146bc20bd29f58d57d36a028166faed1c42264913451521c2396f680d954bc",
+      "definitions": [
+        {
+          "name": "ContextRulesRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_context_rule",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_context_rule",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_context_rule",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_context_rule",
+          "line": 65,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_context_rules",
+          "line": 71,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_context_rule_row_to_dict",
+          "line": 84,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_trigger_state",
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "upsert_trigger_state",
+          "line": 101,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/events_repo.py",
+      "lines": 99,
+      "sha256": "bf22978ca199f689aaa2e8027653e5fc5da9716605ce682d6544f7b6a8076c10",
+      "definitions": [
+        {
+          "name": "EventsRepositoryMixin",
+          "line": 13,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_event_idempotent",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_latest_context_event",
+          "line": 55,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_latest_gps",
+          "line": 63,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_event_row_to_dict",
+          "line": 82,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/notes_repo.py",
+      "lines": 79,
+      "sha256": "d2de99f63a286702860825779fd7710664b7e8ce2667517ace3ad436746d7b4b",
+      "definitions": [
+        {
+          "name": "NotesRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_note",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_note",
+          "line": 39,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_note",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_note",
+          "line": 58,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_notes",
+          "line": 64,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "find_note_by_title",
+          "line": 72,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/notifications_repo.py",
+      "lines": 78,
+      "sha256": "f259397887d29ffa49219535dbcdb87f342b294cb4583a0cd2280d236595cd74",
+      "definitions": [
+        {
+          "name": "NotificationsRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_notification",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_notifications",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "acknowledge_notification",
+          "line": 60,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_notification_row_to_dict",
+          "line": 75,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/places_repo.py",
+      "lines": 78,
+      "sha256": "e4c772af0cfd81709047c3fbbd8a89f0efba4429eb5dac41dc72c755c469cde8",
+      "definitions": [
+        {
+          "name": "PlacesRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_place",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_place",
+          "line": 39,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_place",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_place",
+          "line": 66,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_places",
+          "line": 72,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/preferences_repo.py",
+      "lines": 71,
+      "sha256": "5fc98e3560aa800fce693249cc2720fc881380eb4589774ae6f74d0757b1a1e9",
+      "definitions": [
+        {
+          "name": "PreferencesRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_preference",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_preference",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_preference",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_preference",
+          "line": 59,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_preferences",
+          "line": 66,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/reminders_repo.py",
+      "lines": 133,
+      "sha256": "1c71bb106aa4950b105cba7e4c3b515e63026725b1f419cc050ee89fa48e0334",
+      "definitions": [
+        {
+          "name": "RemindersRepositoryMixin",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_reminder",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_reminder",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_reminder",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "complete_reminder",
+          "line": 77,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_reminder",
+          "line": 80,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_reminders",
+          "line": 86,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "find_reminder_by_title",
+          "line": 102,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_context_reminders",
+          "line": 111,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_due_reminders",
+          "line": 119,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_reminder_row_to_dict",
+          "line": 130,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/sessions_repo.py",
+      "lines": 78,
+      "sha256": "031e1c23f57227649e2e35be6ec4a60c6647011acee3309e6bbb9684da631689",
+      "definitions": [
+        {
+          "name": "SessionsRepositoryMixin",
+          "line": 13,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "get_active_session",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "upsert_session",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_session_row_to_dict",
+          "line": 62,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/repositories/tasks_repo.py",
+      "lines": 73,
+      "sha256": "67bf95eeed0bb4cbe9f992bd7764c7458d5398c8647bc4997a7e1134834317bc",
+      "definitions": [
+        {
+          "name": "TasksRepositoryMixin",
+          "line": 13,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "create_task",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_task",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "update_task",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_task",
+          "line": 61,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "list_tasks",
+          "line": 67,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/schema.py",
+      "lines": 235,
+      "sha256": "dc0a19f8ee54ffdc934ca460075eac61a5b3fc3f1a83fb70ccda489f4808b9f2",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/database/service.py",
+      "lines": 118,
+      "sha256": "7b09696f16c9c75d76359914a90475e5351092939e0ca088381042387b5ef7fe",
+      "definitions": [
+        {
+          "name": "DatabaseService",
+          "line": 29,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_conn",
+          "line": 50,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "load_scoped_context",
+          "line": 68,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "crud_create",
+          "line": 90,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "crud_get",
+          "line": 96,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "crud_update",
+          "line": 102,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "crud_delete",
+          "line": 108,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "crud_list",
+          "line": 114,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/device_context.py",
+      "lines": 73,
+      "sha256": "cc9031327668fdf946b3645a4f92536f6c3587342c9308024ea0386afa7be9a5",
+      "definitions": [
+        {
+          "name": "dispatch_device_action",
+          "line": 10,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "DeviceContext",
+          "line": 22,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 23,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "request",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "status",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "receive",
+          "line": 42,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "request_and_wait",
+          "line": 63,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/drive_index.py",
+      "lines": 279,
+      "sha256": "2ed9d90bace4b7a51d47a2f4ccdfc70936173bae173abb6ac3722e8e9c273e09",
+      "definitions": [
+        {
+          "name": "configured",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "index",
+          "line": 30,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "embed",
+          "line": 40,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "source_stream",
+          "line": 79,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "source_digest",
+          "line": 87,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "basic_chunks",
+          "line": 99,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "chunks",
+          "line": 171,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "where_file",
+          "line": 176,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "put_file",
+          "line": 180,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "evidence",
+          "line": 242,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "format_passages",
+          "line": 249,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_contents",
+          "line": 261,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search",
+          "line": 272,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/drive_index_queue.py",
+      "lines": 213,
+      "sha256": "167207e31d34ca731afede9f3eba935837f8609e01636173950a0bcdaf2a61a2",
+      "definitions": [
+        {
+          "name": "db",
+          "line": 17,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "jobs",
+          "line": 21,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "bucket",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "identity",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "begin",
+          "line": 33,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "catalog",
+          "line": 59,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "finish",
+          "line": 77,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "kick",
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "status",
+          "line": 120,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "results",
+          "line": 133,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "drain",
+          "line": 155,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reserve",
+          "line": 99,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "heartbeat",
+          "line": 163,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "claim",
+          "line": 179,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "publish",
+          "line": 195,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/file_readers.py",
+      "lines": 516,
+      "sha256": "b9b89ed8912d08ec2fdff2b474a25ca8d4a80666f1c677a546c452d321de8a8f",
+      "definitions": [
+        {
+          "name": "Coverage",
+          "line": 32,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "text_units",
+          "line": 45,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "catalog",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "stream",
+          "line": 62,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "materialize",
+          "line": 71,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "xml_paragraphs",
+          "line": 93,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "office",
+          "line": 117,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Blocks",
+          "line": 258,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "archives",
+          "line": 271,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "decoded_text",
+          "line": 340,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "binary",
+          "line": 359,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "database",
+          "line": 405,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "read",
+          "line": 431,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "level",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__init__",
+          "line": 259,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "readable",
+          "line": 261,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "readinto",
+          "line": 262,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "shapes",
+          "line": 211,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "records",
+          "line": 149,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/firestore_service.py",
+      "lines": 715,
+      "sha256": "1e07e5b3bee7fc4ca3ce39bfaae533e06f3691a441cdfe23e130e8aa882de030",
+      "definitions": [
+        {
+          "name": "FirestoreService",
+          "line": 29,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__new__",
+          "line": 34,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_init_db",
+          "line": 40,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "is_available",
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_reminder",
+          "line": 57,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_reminders",
+          "line": 76,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_reminder",
+          "line": 92,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_note",
+          "line": 104,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_notes",
+          "line": 118,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_note",
+          "line": 134,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_place",
+          "line": 146,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_places",
+          "line": 160,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_place",
+          "line": 176,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_mobility_session",
+          "line": 191,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_mobility_sessions",
+          "line": 212,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_active_mobility_session",
+          "line": 225,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_semantic_context",
+          "line": 230,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_semantic_contexts",
+          "line": 250,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_user_collection",
+          "line": 263,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_context_memory",
+          "line": 267,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_activity_analysis",
+          "line": 280,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_activity_routines",
+          "line": 310,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_context_memory",
+          "line": 314,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "query_context_memory",
+          "line": 327,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "commit_reminder_notification",
+          "line": 353,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_notifications",
+          "line": 394,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "acknowledge_cloud_notification",
+          "line": 401,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_transactional_fresh_set",
+          "line": 410,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_chat_session",
+          "line": 470,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_chat_sessions",
+          "line": 484,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "save_chat_message",
+          "line": 500,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "get_chat_messages",
+          "line": 523,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "cleanup_orphaned_messages",
+          "line": 552,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_chat_session",
+          "line": 573,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_chat_sessions",
+          "line": 590,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_reminders",
+          "line": 613,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "delete_all_notes",
+          "line": 630,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "process_sync_push",
+          "line": 649,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "process_sync_pull",
+          "line": 707,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "commit",
+          "line": 289,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "commit",
+          "line": 360,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "should_write",
+          "line": 417,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "value",
+          "line": 368,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "write_if_fresh",
+          "line": 439,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/places_client.py",
+      "lines": 163,
+      "sha256": "8570e471bc4a3e5826d1b180ce3b012b93e74ba4186450cab88b769d2c6db9ff",
+      "definitions": [
+        {
+          "name": "PlacesClient",
+          "line": 26,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_nearby",
+          "line": 39,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_check_budget",
+          "line": 108,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_record_usage",
+          "line": 115,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reset_budgets",
+          "line": 122,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_parse_results",
+          "line": 129,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/push_notifications.py",
+      "lines": 91,
+      "sha256": "eb72798dd347b2bd781bdf00abd1a7f6e88babaf46dc1c9353293aab21b7491b",
+      "definitions": [
+        {
+          "name": "PushNotifications",
+          "line": 12,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__init__",
+          "line": 13,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "register",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "wake_context",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "queue_chat",
+          "line": 42,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "deliver",
+          "line": 62,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/services/satellite_vision_service.py",
+      "lines": 195,
+      "sha256": "be3159136a1e62281e0d869a4ee63aad5c9c176dfc99416882f193883748bd45",
+      "definitions": [
+        {
+          "name": "SatelliteVisionService",
+          "line": 23,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "__new__",
+          "line": 30,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "fetch_satellite_image",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "analyze_aerial_geometry",
+          "line": 79,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "inspect_satellite_geometry",
+          "line": 157,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    },
+    {
+      "path": "backend/src/settings.py",
+      "lines": 101,
+      "sha256": "6c69a111df9ab353d91908b9dfebdf4b2a089ef4999aad184aae7540bec337dd",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "mobile/lib/main.dart",
+      "lines": 60,
+      "sha256": "c27d6157b214a32cc8bb5152f3350e56b7da09536ff3feba8400834e7cbc7207"
+    },
+    {
+      "path": "mobile/lib/models/activity_day.dart",
+      "lines": 353,
+      "sha256": "5bd0ab16b42d128b2863c0b2318f8cae5ac10f65a288e0c266d217988e60a764"
+    },
+    {
+      "path": "mobile/lib/models/activity_map_data.dart",
+      "lines": 86,
+      "sha256": "fefb577af24ac300bd633c43c2d810d387b9cff4fcb0c1ef73b39c8c2e2eb0f9"
+    },
+    {
+      "path": "mobile/lib/models/chat_session.dart",
+      "lines": 126,
+      "sha256": "718d66bbd29c82aaf8dead5614b2bc8deeba88b7adac65f6a1045c38650f0de2"
+    },
+    {
+      "path": "mobile/lib/models/feature_vector.dart",
+      "lines": 56,
+      "sha256": "7aa0601d28beb6bbde6a8a95a5591dd71f9177d8a2ed83c34943bca0e53449cf"
+    },
+    {
+      "path": "mobile/lib/models/recording_session.dart",
+      "lines": 79,
+      "sha256": "c461f7d53dd7017ddbb2abc8b1082437478c7f9b8af62da24d62e6e3efe9416f"
+    },
+    {
+      "path": "mobile/lib/models/sensor_sample.dart",
+      "lines": 99,
+      "sha256": "b00db084f901d4b9e0fb198798ba35973861de2bd96417d527ad5f11e717681d"
+    },
+    {
+      "path": "mobile/lib/services/activity_history_service.dart",
+      "lines": 43,
+      "sha256": "ec9f1e1df545a1973510522469b74783ce69cb2d2f5c882e30efdf687ce368e5"
+    },
+    {
+      "path": "mobile/lib/services/api_service.dart",
+      "lines": 721,
+      "sha256": "fba9b34e6b010892e328a7385d5d9b5f6c2a880e2317526881f29f566df38d40"
+    },
+    {
+      "path": "mobile/lib/services/calendar_executor.dart",
+      "lines": 459,
+      "sha256": "e0797c21f037e491df86445f336e2b1524769c9909741d6f9af0b37348a79b24"
+    },
+    {
+      "path": "mobile/lib/services/chat_notification_service.dart",
+      "lines": 22,
+      "sha256": "763ae07003cf64a7a4891ef2ec120faa9f8157672cd7491dbe299d883bd08d41"
+    },
+    {
+      "path": "mobile/lib/services/chat_storage_service.dart",
+      "lines": 81,
+      "sha256": "3062b070c82c0a102e0140c0067fe3193b082979a4067073dd81e149e0739c46"
+    },
+    {
+      "path": "mobile/lib/services/command_client.dart",
+      "lines": 162,
+      "sha256": "8d9375077072a20842710bb1afdd7d14d083201859dfac3a61cd30f614172022"
+    },
+    {
+      "path": "mobile/lib/services/feature_extractor.dart",
+      "lines": 255,
+      "sha256": "0f607c72d7d475b292d5f4b36bc8cae52c3c746b9ec82631fca3fa31e70dc7c9"
+    },
+    {
+      "path": "mobile/lib/services/file_read_batch.dart",
+      "lines": 24,
+      "sha256": "02db713b845e4eb5a4761a8835d0436fabc1432a69aa8c5755788ea872bae682"
+    },
+    {
+      "path": "mobile/lib/services/google_calendar_service.dart",
+      "lines": 195,
+      "sha256": "03dbeab84325e08dd1036e4bbfd2cd66fec67660a7c46cdf2153f9b73c3aca90"
+    },
+    {
+      "path": "mobile/lib/services/google_connection_restore.dart",
+      "lines": 49,
+      "sha256": "398936e16619932aeb9667687d0f6e452023bc466229c5e5b7c18e721aafabfd"
+    },
+    {
+      "path": "mobile/lib/services/google_drive_service.dart",
+      "lines": 1505,
+      "sha256": "bf3aca90ca8781dcc80f3d104d2c3652b0f40f4fa17239f253aaae3814a0fa6d"
+    },
+    {
+      "path": "mobile/lib/services/health_service.dart",
+      "lines": 135,
+      "sha256": "2cd649c7399a4fd69a0ac00f852b76c145a701d1bf25263cdeb725ed77dcd5f9"
+    },
+    {
+      "path": "mobile/lib/services/local_db_service.dart",
+      "lines": 1151,
+      "sha256": "82ebe873e1c63e92bbd53c099f9ab47a01d3278ddb5e58bca1e0a9e7f321e3dc"
+    },
+    {
+      "path": "mobile/lib/services/location_result.dart",
+      "lines": 54,
+      "sha256": "dbc565b531803bb47e25031d6da9f444d0a5e672743c2e8a0cde010787b09809"
+    },
+    {
+      "path": "mobile/lib/services/recording_backup_service.dart",
+      "lines": 158,
+      "sha256": "a738a571c5d9dc7686e4d47470c8d674fed0322e1286ab33c9e6db669c1bb196"
+    },
+    {
+      "path": "mobile/lib/services/reminder_alert_service.dart",
+      "lines": 16,
+      "sha256": "77847987f8043431345fb2ae1105b3fdd791d7cf6d02c30752e480efc675830b"
+    },
+    {
+      "path": "mobile/lib/services/sensor_service.dart",
+      "lines": 811,
+      "sha256": "4a6f4723372c8fc8907a3476e475e36d886989169cbe0ea2a90899e305fe903a"
+    },
+    {
+      "path": "mobile/lib/services/session_preferences.dart",
+      "lines": 63,
+      "sha256": "c3fc1bee0a8839a2cd689ef8f96ad53870daded7f806e5f9d9b59f66b9372abc"
+    },
+    {
+      "path": "mobile/lib/services/session_storage_service.dart",
+      "lines": 195,
+      "sha256": "dd2d00915616572a2a4c47b5100f01c492c675bcc956ee2d0656e0f127a6bfa3"
+    },
+    {
+      "path": "mobile/lib/services/sync_service.dart",
+      "lines": 323,
+      "sha256": "b148f9459c1d7267f608d906dd5f05f88cfc0357f4fe564de9ffe444a021ce5c"
+    },
+    {
+      "path": "mobile/lib/services/usage_service.dart",
+      "lines": 118,
+      "sha256": "38664d4a4a28fef24e21d6eac232c97560b5dcf44212b577386288be5375ab95"
+    },
+    {
+      "path": "mobile/lib/ui/screens/activity_screen.dart",
+      "lines": 894,
+      "sha256": "da5736d4325a04860ac6dab0f7ff2705e4ef84840806bd7f09eca7ce840699d6"
+    },
+    {
+      "path": "mobile/lib/ui/screens/agent_screen.dart",
+      "lines": 681,
+      "sha256": "8470ea61411095809c448deaf07b3fbb985f15eaf3ca4449e6061a9b91dd05fe"
+    },
+    {
+      "path": "mobile/lib/ui/screens/chat_screen.dart",
+      "lines": 1462,
+      "sha256": "cf8f03c8387e62a211847daaa1c51ea13a68803438a3fea575a5362495ac101f"
+    },
+    {
+      "path": "mobile/lib/ui/screens/dashboard_screen.dart",
+      "lines": 736,
+      "sha256": "f0baa352e65567cb61a71d241390797424466292c6626440275696a4028a19c8"
+    },
+    {
+      "path": "mobile/lib/ui/screens/google_calendar_screen.dart",
+      "lines": 236,
+      "sha256": "4f8b7e3674d79d405ca7947d5b5039b6bc871a669b65e7165509d6867a9125e6"
+    },
+    {
+      "path": "mobile/lib/ui/screens/google_drive_screen.dart",
+      "lines": 248,
+      "sha256": "9fadd7c871b8cfed7527174811af6d17246cac830b82afcb9b8a497c445b08fe"
+    },
+    {
+      "path": "mobile/lib/ui/screens/main_navigation_screen.dart",
+      "lines": 138,
+      "sha256": "ad9e330048d9591dd0caaa200ba9547cc6a9ef8a02cc1f53a6aad594d12b4be1"
+    },
+    {
+      "path": "mobile/lib/ui/screens/notes_screen.dart",
+      "lines": 380,
+      "sha256": "c0d6ad54a7cbbbd2aa90968cc0d2bbcc4fdb430d13d0812f165a3f7e6d8d76e8"
+    },
+    {
+      "path": "mobile/lib/ui/screens/reminders_screen.dart",
+      "lines": 703,
+      "sha256": "a07288b0ac41b7075e10df8dfab70a2ba6af116422350a7deeb2edcbfd8ff5b5"
+    },
+    {
+      "path": "mobile/lib/ui/screens/sessions_screen.dart",
+      "lines": 441,
+      "sha256": "52957a3ab90277f5c1a98b88eae8b244654ef81e9454a1fb9876bd602b460830"
+    },
+    {
+      "path": "mobile/lib/ui/screens/settings_screen.dart",
+      "lines": 569,
+      "sha256": "b71d9331ef7484396b79461480ca80691fcb6a425ce63b4edb32049631ded7b6"
+    },
+    {
+      "path": "mobile/lib/ui/theme.dart",
+      "lines": 260,
+      "sha256": "cc0b10eb55f2386bf7776a3daea8f9334c20d88d79b7cad828cb288864b2887c"
+    },
+    {
+      "path": "mobile/lib/ui/widgets/action_approval_dialog.dart",
+      "lines": 211,
+      "sha256": "211722f60516bee1845cac24ba5e9b9bfa8fc3811ec830cd1fc9e2da3de821f0"
+    },
+    {
+      "path": "mobile/lib/ui/widgets/activity_map.dart",
+      "lines": 495,
+      "sha256": "5064c8945dc0d30bf8807267215c141bbb340a3fc7be6cbb67f4153045e76423"
+    },
+    {
+      "path": "mobile/lib/ui/widgets/chat_progress_bubble.dart",
+      "lines": 143,
+      "sha256": "edea32739bd974e729e4c4a07dd64314045624a48f8cf2069c4bdd14d531678a"
+    },
+    {
+      "path": "mobile/lib/ui/widgets/feature_cards.dart",
+      "lines": 219,
+      "sha256": "4974262ed8d466a8d4358f8bbff1bf2611375ca7905d7fb60400700717951284"
+    },
+    {
+      "path": "mobile/lib/ui/widgets/workspace_widgets.dart",
+      "lines": 136,
+      "sha256": "a0a72c4dbe3d7d38842aee6c551af00b857260d949aa202fea0dffa40a0452cd"
+    },
+    {
+      "path": "mobile/lib/utils/ist_time.dart",
+      "lines": 9,
+      "sha256": "e4898aadec2c1e544c2129919e5d48364c7b6b87f646ac60d07c4470e58384fe"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ActivityRecognitionRegistrar.kt",
+      "lines": 126,
+      "sha256": "1a7a7eaf437f1a1d5b42bbe651584e08195772ae7f0e2a43fd45f59ac3f89808"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ActivityTransitionReceiver.kt",
+      "lines": 161,
+      "sha256": "263dab44c9bbf3e9906d2b825b7e2d954cb62d2e09dd6e42db022bbb66983cb8"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/AmbientContextCapture.kt",
+      "lines": 173,
+      "sha256": "b976c69cf7bdc823d91e61f366b74164b24daf13d52637260c211539d788cf99"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/AmbientNetworkMonitor.kt",
+      "lines": 36,
+      "sha256": "27180d704f7ea54eba01e659a8f72cc2ff2211801ffa36a925f41795d48a84d0"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ChatAttachmentPicker.kt",
+      "lines": 85,
+      "sha256": "33a59ea9af8b9654c02d267ebe217bf93028d43b6107de7898a1c193f3ab06aa"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ContextEventQueue.kt",
+      "lines": 154,
+      "sha256": "187a86a0a9b47a8bf0884426ed303ee336aebfd358c72bc3850c36e31b2c9dc9"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ContextLocationCapture.kt",
+      "lines": 103,
+      "sha256": "c3b4cd1062b6f815c73495a9d986dc7c1148ce81d645b2e40a315c51e887bcac"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ContextLocationWorker.kt",
+      "lines": 25,
+      "sha256": "01aa270f508d878fead3465a0f07ce1f4648a060f0f5383d20c1696909c31491"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ContextUploadWorker.kt",
+      "lines": 127,
+      "sha256": "99be59aac75e4ed2676ca906bf7cc3f7ef42fe1903de124b1300296fbc6a4dcc"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/GoogleAccountAuthorization.kt",
+      "lines": 177,
+      "sha256": "4ebb8d67bb87e39b012a6dde33e61ccfa22c944e4ffc0ef8fab398efe982e745"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/JarvisMessagingService.kt",
+      "lines": 155,
+      "sha256": "f795fa8d80538f53aa7c270cb5301d027093d7b280b789d797457611abf20a13"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/MainActivity.kt",
+      "lines": 335,
+      "sha256": "c3c5f1bf5beb1eb6846ae0b02ebe9f70f980a9549b7fda7425253ffc89752a55"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/MonitoringRestartReceiver.kt",
+      "lines": 28,
+      "sha256": "5c360941d37aaafd6ddbb33ed61168d460af9a9a084a6cb6feab7f489fc4f495"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/MonitoringService.kt",
+      "lines": 51,
+      "sha256": "d51d419b9b77b90798ca5a88aa322effda9d24f6c028e7017844ff6c067562ec"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/MotionEvidence.kt",
+      "lines": 12,
+      "sha256": "f8e46e0757c3ccbf4bad56a92ac57b8cbf866f4af13eb94df7247df8886feeb2"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/PassiveLocationReceiver.kt",
+      "lines": 46,
+      "sha256": "20890f43318140f9031aca819b9ef1ac3e6c0f74d159dd0f98e8724ad054c618"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ReminderAlertPolicy.kt",
+      "lines": 13,
+      "sha256": "a9704f024cb035235e6bb92df33a803b6551052baa3d2df7ae219f718c28b616"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/ReminderAlerts.kt",
+      "lines": 251,
+      "sha256": "74eac9ae8d7d4b1dcff909e66e51e58d6b073996e9773f2ad7df55499670277d"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/SituationChangeReceiver.kt",
+      "lines": 28,
+      "sha256": "a3c7fae9ef03d8cb99ac1cc94234a24581f94aa1bab9199e7383046481925735"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/TelemetryForegroundService.kt",
+      "lines": 92,
+      "sha256": "289e7edc37859f89a29ef0e5bb01478ae178a55b604157245c263b0589ec4e5b"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/UsageAccumulator.kt",
+      "lines": 33,
+      "sha256": "9c7d0cf21161efc2d9a8458b989dd08b1bfa7a111b243d609d6f306e834682e3"
+    },
+    {
+      "path": "mobile/android/app/src/main/kotlin/com/jarvis/jarvis_collector/UsageReporting.kt",
+      "lines": 161,
+      "sha256": "c13dbdcb8c469760eae90b721706064eed92e2092b4d918d191fe7ac6311d861"
+    },
+    {
+      "path": "embedding/app.py",
+      "lines": 116,
+      "sha256": "283454aeec6bd4c5f4d04d2bbe67a50819ab7475031bee6c21b0598d0e315b5f",
+      "definitions": [
+        {
+          "name": "lifespan",
+          "line": 24,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "Item",
+          "line": 42,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "Batch",
+          "line": 48,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "health",
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "embed",
+          "line": 61,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "encode_batch",
+          "line": 75,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": [
+        {
+          "method": "GET",
+          "declared_path": "/health",
+          "handler": "health",
+          "line": 54
+        },
+        {
+          "method": "POST",
+          "declared_path": "/embed",
+          "handler": "embed",
+          "line": 61
+        }
+      ]
+    },
+    {
+      "path": "embedding/smoke.py",
+      "lines": 31,
+      "sha256": "4627352536413f8add597ac231dd26ad5db0c53e939b2beb6298fca9f072e4a1",
+      "definitions": [],
+      "routes": []
+    },
+    {
+      "path": "embedding/tests/test_app.py",
+      "lines": 57,
+      "sha256": "35736d3f9f0dc1dc49dd7ab8ec286728b35246623b60e111ab188eb8a0ed4bb3",
+      "definitions": [
+        {
+          "name": "test_query_uses_retrieval_prefix_and_model_revision",
+          "line": 19,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_bad_image_is_rejected_before_inference",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_two_requests_execute_in_parallel",
+          "line": 36,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_audio_cut_allows_sample_rounding_but_rejects_longer_clips",
+          "line": 51,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "encode",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "request",
+          "line": 43,
+          "kind": "FunctionDef"
+        }
+      ],
+      "routes": []
+    }
+  ],
+  "test_files": {
+    "backend": [
+      "backend/tests/test_activity_history.py",
+      "backend/tests/test_activity_reminder_timers.py",
+      "backend/tests/test_activity_report.py",
+      "backend/tests/test_activity_sessions.py",
+      "backend/tests/test_agent_satellite_chat.py",
+      "backend/tests/test_api_schema.py",
+      "backend/tests/test_background_delivery.py",
+      "backend/tests/test_batched_file_reads.py",
+      "backend/tests/test_calendar_guards.py",
+      "backend/tests/test_command_progress.py",
+      "backend/tests/test_complete_reply.py",
+      "backend/tests/test_content_search_flow.py",
+      "backend/tests/test_device_context.py",
+      "backend/tests/test_drive_index.py",
+      "backend/tests/test_drive_index_control_rate.py",
+      "backend/tests/test_drive_queue_refresh.py",
+      "backend/tests/test_durable_budget.py",
+      "backend/tests/test_dynamic_reminders.py",
+      "backend/tests/test_embedding_client.py",
+      "backend/tests/test_file_memories.py",
+      "backend/tests/test_file_question_routing.py",
+      "backend/tests/test_file_readers.py",
+      "backend/tests/test_graph_builder.py",
+      "backend/tests/test_local_bulk_index.py",
+      "backend/tests/test_location_awareness.py",
+      "backend/tests/test_location_context.py",
+      "backend/tests/test_motion_evidence.py",
+      "backend/tests/test_notification_fixes.py",
+      "backend/tests/test_on_demand_context.py",
+      "backend/tests/test_parallel_context.py",
+      "backend/tests/test_rate_limiter.py",
+      "backend/tests/test_react_loop_integration.py",
+      "backend/tests/test_reminder_consolidation.py",
+      "backend/tests/test_reminder_delivery_modes.py",
+      "backend/tests/test_reminder_follow_through.py",
+      "backend/tests/test_routine_write_approval.py",
+      "backend/tests/test_satellite_vision.py",
+      "backend/tests/test_semantic_context.py",
+      "backend/tests/test_session_continuity.py",
+      "backend/tests/test_session_library.py",
+      "backend/tests/test_sparse_context_events.py",
+      "backend/tests/test_streaming_drive_index.py",
+      "backend/tests/test_tier1_agent.py",
+      "backend/tests/test_tier2_agent.py",
+      "backend/tests/test_trash_roundtrip.py"
+    ],
+    "mobile": [
+      "mobile/test/action_approval_dialog_test.dart",
+      "mobile/test/activity_day_test.dart",
+      "mobile/test/activity_map_test.dart",
+      "mobile/test/activity_screen_test.dart",
+      "mobile/test/calendar_executor_test.dart",
+      "mobile/test/chat_progress_bubble_test.dart",
+      "mobile/test/chat_session_test.dart",
+      "mobile/test/command_client_test.dart",
+      "mobile/test/drive_all_formats_test.dart",
+      "mobile/test/drive_content_search_test.dart",
+      "mobile/test/drive_index_upload_test.dart",
+      "mobile/test/drive_search_test.dart",
+      "mobile/test/file_read_batch_test.dart",
+      "mobile/test/google_connection_restore_test.dart",
+      "mobile/test/google_drive_service_test.dart",
+      "mobile/test/health_question_test.dart",
+      "mobile/test/ist_time_test.dart",
+      "mobile/test/location_result_test.dart",
+      "mobile/test/ui_layout_test.dart",
+      "mobile/test/usage_service_test.dart",
+      "mobile/test/widget_test.dart"
+    ],
+    "embedding": [
+      "embedding/tests/test_app.py"
+    ],
+    "android": [
+      "mobile/android/app/src/test/kotlin/com/jarvis/jarvis_collector/MotionEvidenceTest.kt",
+      "mobile/android/app/src/test/kotlin/com/jarvis/jarvis_collector/ReminderAlertPolicyTest.kt",
+      "mobile/android/app/src/test/kotlin/com/jarvis/jarvis_collector/UsageAccumulatorTest.kt"
+    ]
+  }
+}

@@ -208,8 +208,10 @@ def _run_owned(store, request, uid, workflow):
         context.calendar_dispatch = lambda action: store.calendar_action(uid, request.request_id,
             {**action, 'default_calendar_id': request.calendar_id}, context.check)
     if request.device_approvals:
-        context.approval_dispatch = lambda action: store.calendar_action(uid, request.request_id,
-            {'operation': 'approval', **action}, context.check)
+        from ...services.device_context import dispatch_device_action
+        context.approval_dispatch = lambda action: dispatch_device_action(uid, action,
+            lambda: store.calendar_action(uid, request.request_id,
+                {'operation': 'approval', **action}, context.check), context.check)
     token = execution.set(context)
     try:
         try:
@@ -337,6 +339,20 @@ async def execute_due_reminder(payload: dict, authorization: Annotated[str | Non
 async def deliver_background_notification(payload: dict, authorization: Annotated[str | None, Header()] = None):
     await asyncio.to_thread(verify_task_identity, authorization)
     await asyncio.to_thread(PushNotifications().deliver, payload['uid'])
+    return {'status': 'ok'}
+
+
+@router.post('/internal/background/activity-reminder')
+async def deliver_activity_reminder(payload: dict, authorization: Annotated[str | None, Header()] = None):
+    await asyncio.to_thread(verify_task_identity, authorization)
+    def deliver():
+        from ...services.activity_reminder_timers import ActivityReminderTimers
+        from ...backend.context_automation import ContextAutomationService
+        fs = FirestoreService()
+        ActivityReminderTimers(fs).deliver(payload['uid'], payload['reminder_id'], payload['timer_id'],
+                                          ContextAutomationService(cloud=fs))
+        PushNotifications().deliver(payload['uid'])
+    await asyncio.to_thread(deliver)
     return {'status': 'ok'}
 
 

@@ -2,6 +2,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jarvis_collector/models/activity_day.dart';
 
 void main() {
+  test('session coverage is retained without splitting its interval', () {
+    final episode = ActivityEpisode.fromJson({
+      'start_at': '2026-10-09T12:06:06Z',
+      'end_at': '2026-10-09T12:07:12Z',
+      'activity': 'WALKING',
+      'coverage_status': 'uncertain',
+      'uncertain_seconds': 66,
+      'window_uncertain_seconds': 30,
+    })!;
+    expect(episode.end.difference(episode.start).inSeconds, 66);
+    expect(episode.hasUncertainCoverage, true);
+    expect(episode.uncertainSeconds, 30);
+  });
   test(
     'adaptive moments share a session and preserve overlapping call evidence',
     () {

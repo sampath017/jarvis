@@ -70,10 +70,18 @@ async def ingest_context_event(
     }
 
     try:
+        if request.context_request_id:
+            # A fresh phone fix is usable before slow place/session enrichment.
+            # The receipt remains durable even if enrichment subsequently fails.
+            from ...services.device_context import DeviceContext
+            await asyncio.to_thread(DeviceContext().receive, uid, request.model_dump(mode='json'))
         result = await asyncio.to_thread(workflow.invoke, initial_state)
-        if not result.get("error"):
-            # Derived sessions are cheap event-time reductions. They never add
-            # a model round or hold up durable raw-event persistence on failure.
+        if not result.get("error") and request.event_type in {
+            'ACTIVITY_ENTER', 'ACTIVITY_EXIT', 'ACTIVITY_TRANSITION',
+            'SESSION_START', 'SESSION_END', 'SESSION_STOP', 'CALL_START', 'CALL_END',
+        }:
+            # Rebuild derived history at boundaries, not on every minute's sample.
+            # History queries also rebuild from all durable samples on demand.
             try:
                 from ...services.firestore_service import FirestoreService
                 from ...backend.activity_sessions import enriched_history

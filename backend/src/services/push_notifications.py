@@ -17,6 +17,28 @@ class PushNotifications:
         key = hashlib.sha256(token.encode()).hexdigest()
         self.fs._user_collection(uid, 'devices').document(key).set({'token': token, 'updated_at': datetime.now(timezone.utc).isoformat()})
 
+    def wake_context(self, uid, request_id, expires_at):
+        devices = list(self.fs._user_collection(uid, 'devices').stream())
+        if not devices:
+            return 0
+        credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/firebase.messaging'])
+        delivered = 0
+        with AuthorizedSession(credentials) as session:
+            for device in devices:
+                token = (device.to_dict() or {}).get('token')
+                if not token:
+                    continue
+                response = session.post('https://fcm.googleapis.com/v1/projects/jarvis-agent-61947/messages:send',
+                    json={'message': {'token': token, 'data': {'kind': 'context_request', 'request_id': request_id,
+                          'expires_at': expires_at}, 'android': {'priority': 'HIGH', 'ttl': '120s'}}}, timeout=15)
+                if response.ok:
+                    delivered += 1
+                elif response.status_code == 404 and 'UNREGISTERED' in response.text:
+                    device.reference.delete()
+                else:
+                    response.raise_for_status()
+        return delivered
+
     def queue_chat(self, uid, request_id, thread_id, response):
         needs_input = response.get('needs_user_input', False)
         identifier = 'chat_' + hashlib.sha256(request_id.encode()).hexdigest()
@@ -54,6 +76,8 @@ class PushNotifications:
                     token = (device.to_dict() or {}).get('token')
                     if not token: continue
                     data = {k: str(record.get(k) or '') for k in ['id', 'title', 'body', 'kind', 'thread_id', 'request_id']}
+                    payload = record.get('payload') or {}
+                    data.update({k: str(payload.get(k) or '') for k in ['delivery_mode', 'reminder_id', 'alarm_due_at', 'occurred_at']})
                     response = session.post('https://fcm.googleapis.com/v1/projects/jarvis-agent-61947/messages:send',
                         json={'message': {'token': token, 'data': data, 'android': {'priority': 'HIGH', 'ttl': '86400s'}}}, timeout=15)
                     if response.ok:

@@ -132,7 +132,7 @@ def test_progress_context_reaches_langgraph_worker_threads(tmp_path, monkeypatch
             'raw_request': {'text': 'hello', 'request_id': 'g', 'thread_id': 'c'}})
         assert result['user_response']
         assert 'Reading your request' in messages
-        assert 'Checking your recent context' in messages
+        assert 'Reading this conversation' in messages
         assert 'Saving your response' in messages
     finally: execution.reset(token)
 

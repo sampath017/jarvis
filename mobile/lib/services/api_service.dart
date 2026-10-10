@@ -447,6 +447,13 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
         _isOnline = true;
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         _reminders = List<Map<String, dynamic>>.from(data['records'] ?? []);
+        await LocalDbService().reconcileRemoteRecords(
+          remoteReminders: _reminders,
+        );
+        await _channel.invokeMethod(
+          'syncRingingReminders',
+          jsonEncode(await LocalDbService().getReminders()),
+        );
         try {
           await _channel.invokeMethod(
             'setDynamicMonitoring',
@@ -502,6 +509,11 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
                   'body': n['body']?.toString() ?? '',
                   'thread_id': n['thread_id']?.toString() ?? '',
                   'kind': n['kind']?.toString() ?? '',
+                  'delivery_mode':
+                      n['payload']?['delivery_mode'] ?? 'notification',
+                  'reminder_id': reminderId,
+                  'alarm_due_at': n['payload']?['alarm_due_at'] ?? '',
+                  'occurred_at': n['payload']?['occurred_at'] ?? '',
                 });
             if (shown == true) {
               _dispatchedNotificationIds.add(id);

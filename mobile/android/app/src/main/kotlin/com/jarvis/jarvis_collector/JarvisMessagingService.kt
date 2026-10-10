@@ -24,9 +24,26 @@ class JarvisMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         ContextEventQueue.scheduleFlush(applicationContext)
         val data = message.data
+        if (data["kind"] == "context_request") {
+            if (!ActivityRecognitionRegistrar.isEnabled(applicationContext)) return
+            val requestId = data["request_id"] ?: return
+            val expires = runCatching { java.time.Instant.parse(data["expires_at"]).toEpochMilli() }.getOrNull() ?: return
+            if (System.currentTimeMillis() > expires) return
+            val receipt = getSharedPreferences("jarvis_context_requests", Context.MODE_PRIVATE)
+            if (receipt.getString("last_id", "") == requestId) return
+            MonitoringService.ensure(applicationContext)
+            runCatching { ActivityRecognitionRegistrar.register(applicationContext) }
+            val event = ContextEventQueue.newEvent("BACKEND_CONTEXT_REQUEST", "UNKNOWN", "ENTER")
+                .put("context_request_id", requestId)
+            ContextEventQueue.add(applicationContext, event)
+            receipt.edit().putString("last_id", requestId).commit()
+            android.util.Log.i("JarvisMonitor", "Backend context wake received request=$requestId")
+            return
+        }
         val id = data["id"] ?: return
         PushDelivery.show(applicationContext, id, data["title"] ?: "Jarvis",
-            data["body"] ?: "", data["thread_id"] ?: "", data["kind"] ?: "")
+            data["body"] ?: "", data["thread_id"] ?: "", data["kind"] ?: "",
+            data["delivery_mode"] ?: "notification", data["reminder_id"] ?: "", data["alarm_due_at"] ?: "", data["occurred_at"] ?: "")
     }
 }
 
@@ -40,7 +57,8 @@ object PushDelivery {
     }
 
     @Synchronized
-    fun show(context: Context, id: String, title: String, body: String, threadId: String = "", kind: String = ""): Boolean {
+    fun show(context: Context, id: String, title: String, body: String, threadId: String = "", kind: String = "",
+             deliveryMode: String = "notification", reminderId: String = "", dueAt: String = "", occurredAt: String = ""): Boolean {
         if (id.isBlank()) return false
         val prefs = prefs(context)
         val seen = JSONArray(prefs.getString("seen", "[]"))
@@ -49,7 +67,11 @@ object PushDelivery {
             return true
         }
         val visibleChat = threadId.isNotEmpty() && MainActivity.isVisible && MainActivity.visibleThreadId == threadId
-        if (!visibleChat) {
+        if (ReminderAlerts.ringing(deliveryMode)) {
+            val key = if (reminderId.isNotBlank() && ReminderAlerts.epoch(dueAt) > 0) ReminderAlerts.key(reminderId, dueAt) else "notification:$id"
+            if (!ReminderAlerts.show(context, key, title, body, deliveryMode,
+                    ReminderAlerts.epoch(dueAt).takeIf { it > 0 } ?: ReminderAlerts.epoch(occurredAt), reminderId)) return false
+        } else if (!visibleChat) {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (!manager.areNotificationsEnabled()) return false

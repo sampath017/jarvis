@@ -1,0 +1,69 @@
+ffmpeg version 7.1-essentials_build-www.gyan.dev Copyright (c) 2000-2024 the FFmpeg developers
+  built with gcc 14.2.0 (Rev1, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-fontconfig --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-zlib --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-sdl2 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxvid --enable-libaom --enable-libopenjpeg --enable-libvpx --enable-mediafoundation --enable-libass --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libgme --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libtheora --enable-libvo-amrwbenc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-librubberband
+  libavutil      59. 39.100 / 59. 39.100
+  libavcodec     61. 19.100 / 61. 19.100
+  libavformat    61.  7.100 / 61.  7.100
+  libavdevice    61.  3.100 / 61.  3.100
+  libavfilter    10.  4.100 / 10.  4.100
+  libswscale      8.  3.100 /  8.  3.100
+  libswresample   5.  3.100 /  5.  3.100
+  libpostproc    58.  3.100 / 58.  3.100
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'docs\architecture-analysis-2026-10-11\jarvis-architecture-explained.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    title           : Jarvis architecture explained
+    encoder         : Lavf61.7.100
+    comment         : Local source review, 11 October 2026; synthesized English narration
+  Duration: 00:07:59.23, start: 0.000000, bitrate: 123 kb/s
+  Chapters:
+    Chapter #0:0: start 0.000000, end 30.159000
+      Metadata:
+        title           : Jarvis: the whole project
+    Chapter #0:1: start 30.159000, end 68.056000
+      Metadata:
+        title           : The phone has two layers
+    Chapter #0:2: start 68.056000, end 111.037000
+      Metadata:
+        title           : Offline storage and telemetry
+    Chapter #0:3: start 111.037000, end 154.019000
+      Metadata:
+        title           : FastAPI coordinates the work
+    Chapter #0:4: start 154.019000, end 199.739000
+      Metadata:
+        title           : Two reasoning paths
+    Chapter #0:5: start 199.739000, end 246.965000
+      Metadata:
+        title           : Where each kind of data lives
+    Chapter #0:6: start 246.965000, end 292.641000
+      Metadata:
+        title           : Chat and Calendar execution
+    Chapter #0:7: start 292.641000, end 336.422000
+      Metadata:
+        title           : Context becomes a reminder
+    Chapter #0:8: start 336.422000, end 384.323000
+      Metadata:
+        title           : Drive search is a separate pipeline
+    Chapter #0:9: start 384.323000, end 431.374000
+      Metadata:
+        title           : The main architectural risks
+    Chapter #0:10: start 431.374000, end 478.875000
+      Metadata:
+        title           : Reliability, cost and next decisions
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1600x900, 36 kb/s, 11.99 fps, 12 tbr, 12288 tbn (default)
+      Metadata:
+        handler_name    : VideoHandler
+        vendor_id       : [0][0][0][0]
+        encoder         : Lavc61.19.100 libx264
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 24000 Hz, mono, fltp, 85 kb/s (default)
+      Metadata:
+        handler_name    : SoundHandler
+        vendor_id       : [0][0][0][0]
+  Stream #0:2[0x3](eng): Data: bin_data (text / 0x74786574), 0 kb/s
+      Metadata:
+        handler_name    : SubtitleHandler
+At least one output file must be specified
+
+Full decode exit: 0

@@ -1,3 +1,4 @@
+import 'reminder_alert_service.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -31,7 +32,7 @@ class LocalDbService extends ChangeNotifier {
 
     return await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onOpen: (db) async {
         await db.execute(
           'CREATE TABLE IF NOT EXISTS context_outbox '
@@ -39,6 +40,14 @@ class LocalDbService extends ChangeNotifier {
         );
       },
       onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 8) {
+          await db.execute(
+            "ALTER TABLE reminders ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'notification'",
+          );
+          await db.execute(
+            'ALTER TABLE reminders ADD COLUMN activity_delay_seconds INTEGER NOT NULL DEFAULT 0',
+          );
+        }
         if (oldVersion < 7) {
           await db.execute(
             'ALTER TABLE reminders ADD COLUMN dynamic_policy TEXT',
@@ -97,6 +106,8 @@ class LocalDbService extends ChangeNotifier {
             longitude REAL,
             radius_m REAL DEFAULT 150.0,
             dynamic_policy TEXT,
+            delivery_mode TEXT NOT NULL DEFAULT 'notification',
+            activity_delay_seconds INTEGER NOT NULL DEFAULT 0,
             activity TEXT,
             status TEXT DEFAULT 'ACTIVE',
             previous_status TEXT,
@@ -292,7 +303,7 @@ class LocalDbService extends ChangeNotifier {
     final List<Map<String, dynamic>> deduped = [];
     for (final item in raw) {
       final key =
-          '${(item['title'] ?? '').toString().trim().toLowerCase()}|${(item['due_at'] ?? '').toString().trim()}|${(item['location_name'] ?? '').toString().trim().toLowerCase()}|${(item['status'] ?? '').toString().toUpperCase()}';
+          '${(item['title'] ?? '').toString().trim().toLowerCase()}|${(item['due_at'] ?? '').toString().trim()}|${(item['location_name'] ?? '').toString().trim().toLowerCase()}|${(item['status'] ?? '').toString().toUpperCase()}|${item['delivery_mode'] ?? 'notification'}';
       if (seen.add(key)) {
         deduped.add(item);
       }
@@ -319,6 +330,7 @@ class LocalDbService extends ChangeNotifier {
       data,
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    await ReminderAlertService.sync(await getReminders());
     notifyListeners();
   }
 
@@ -339,6 +351,7 @@ class LocalDbService extends ChangeNotifier {
       where: 'id = ?',
       whereArgs: [id],
     );
+    await ReminderAlertService.sync(await getReminders());
     notifyListeners();
   }
 
@@ -364,6 +377,7 @@ class LocalDbService extends ChangeNotifier {
       where: 'id = ?',
       whereArgs: [id],
     );
+    await ReminderAlertService.sync(await getReminders());
     notifyListeners();
   }
 
@@ -388,6 +402,7 @@ class LocalDbService extends ChangeNotifier {
       where: 'id = ?',
       whereArgs: [id],
     );
+    await ReminderAlertService.sync(await getReminders());
     notifyListeners();
   }
 
@@ -404,6 +419,10 @@ class LocalDbService extends ChangeNotifier {
       final normAct = activity.toUpperCase().trim();
 
       for (final r in reminders) {
+        if (ReminderAlertService.isRinging(r) ||
+            (r['activity_delay_seconds'] as num? ?? 0) > 0) {
+          continue;
+        }
         final rAct = (r['activity'] ?? '').toString().toUpperCase();
         if (rAct.isEmpty) continue;
 
@@ -877,6 +896,8 @@ class LocalDbService extends ChangeNotifier {
               ? jsonEncode(r['dynamic_policy'])
               : r['dynamic_policy']?.toString(),
           'activity': r['activity']?.toString(),
+          'delivery_mode': r['delivery_mode'] ?? 'notification',
+          'activity_delay_seconds': r['activity_delay_seconds'] ?? 0,
           'status':
               r['status']?.toString() ?? (isActive ? 'ACTIVE' : 'INACTIVE'),
           'previous_status': r['previous_status']?.toString(),

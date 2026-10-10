@@ -60,6 +60,7 @@ class ContextGateNode:
             "ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE",
             "DWELL_CHECK", "CONTEXT_CHECKPOINT", "GEOFENCE_ENTER", "GEOFENCE_EXIT",
             "RADIO_CONTEXT", "CALL_START", "CALL_END",
+            "BACKEND_CONTEXT_REQUEST",
             "WIFI_CONNECTED", "WIFI_DISCONNECTED", "BLUETOOTH_CONNECTED", "BLUETOOTH_DISCONNECTED",
         } and packet.feature_summary is None:
             conflicts = []

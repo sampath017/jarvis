@@ -330,7 +330,7 @@ class _ActivityScreenState extends State<ActivityScreen>
                     Icons.info_outline,
                     data.truncated
                         ? 'This day has more history than one view can show. The timeline may be incomplete.'
-                        : '${data.gapCount} gaps between samples. Detected start and end changes connect the activity moments.',
+                        : '${data.gapCount} gaps between samples. Phone classifications can be wrong; gaps are unknown.',
                   ),
                 ],
                 const SizedBox(height: 24),
@@ -717,6 +717,16 @@ class _ActivityScreenState extends State<ActivityScreen>
                       fontSize: 11,
                     ),
                   ),
+                if (episode.hasUncertainCoverage)
+                  Text(
+                    episode.uncertainSeconds > 0
+                        ? '${(episode.uncertainSeconds / 60).toStringAsFixed(1)} min of uncertain coverage · Not verified continuous activity'
+                        : 'Uncertain readings recorded · End not inferred from uncertainty',
+                    style: const TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 11,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -832,6 +842,8 @@ class _ActivityScreenState extends State<ActivityScreen>
       return 'Stopped for a while';
     }
     switch (episode.activity.toUpperCase()) {
+      case 'BIKE_RIDE':
+        return 'Bike ride (reported by you)';
       case 'IN_VEHICLE':
         return 'In a vehicle';
       case 'WALKING':
