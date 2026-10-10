@@ -28,14 +28,14 @@ class RemindersRepositoryMixin:
             conn.execute(
                 """INSERT OR REPLACE INTO reminders
                    (id, uid, title, body, due_at, location_name, latitude, longitude,
-                    radius_m, dynamic_policy, activity, status, previous_status, deleted_at, one_shot, last_fired_at, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    radius_m, dynamic_policy, activity, activity_delay_seconds, delivery_mode, status, previous_status, deleted_at, one_shot, last_fired_at, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     reminder_id, uid, data["title"], data.get("body", ""),
                     due_at, data.get("location_name"), data.get("latitude"),
                     data.get("longitude"), data.get("radius_m", 100.0),
                     json.dumps(data.get("dynamic_policy")) if isinstance(data.get("dynamic_policy"), dict) else data.get("dynamic_policy"),
-                    data.get("activity"), data.get("status", "ACTIVE"),
+                    data.get("activity"), data.get('activity_delay_seconds', 0), data.get('delivery_mode', 'notification'), data.get("status", "ACTIVE"),
                     data.get("previous_status"), data.get("deleted_at"),
                     int(data.get("one_shot", True)), data.get("last_fired_at"), created_at, updated_at,
                 ),
@@ -62,13 +62,13 @@ class RemindersRepositoryMixin:
         with self._conn() as conn:
             conn.execute(
                 """UPDATE reminders SET title=?, body=?, due_at=?, location_name=?, latitude=?,
-                   longitude=?, radius_m=?, dynamic_policy=?, activity=?, status=?, previous_status=?, deleted_at=?, one_shot=?, last_fired_at=?,
+                   longitude=?, radius_m=?, dynamic_policy=?, activity=?, activity_delay_seconds=?, delivery_mode=?, status=?, previous_status=?, deleted_at=?, one_shot=?, last_fired_at=?,
                    updated_at=? WHERE id=? AND uid=?""",
                 (
                     fields["title"], fields.get("body", ""), due_at,
                     fields.get("location_name"), fields.get("latitude"), fields.get("longitude"),
                     fields.get("radius_m", 100.0), json.dumps(fields.get("dynamic_policy")) if isinstance(fields.get("dynamic_policy"), dict) else fields.get("dynamic_policy"), fields.get("activity"),
-                    fields.get("status", "ACTIVE"), fields.get("previous_status"), fields.get("deleted_at"), int(fields.get("one_shot", True)),
+                    fields.get('activity_delay_seconds', 0), fields.get('delivery_mode', 'notification'), fields.get("status", "ACTIVE"), fields.get("previous_status"), fields.get("deleted_at"), int(fields.get("one_shot", True)),
                     fields.get("last_fired_at"), now, reminder_id, uid,
                 ),
             )

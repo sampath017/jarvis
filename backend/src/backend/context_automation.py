@@ -38,6 +38,20 @@ class ContextAutomationService:
         changed_ids: list[str] = []
 
         for reminder in self.db.list_reminders(uid, status="ACTIVE"):
+            delayed = bool(reminder.get('activity_delay_seconds'))
+            if delayed:
+                if (event.get('event_type') not in {'ACTIVITY_ENTER', 'ACTIVITY_TRANSITION'}
+                        or event.get('transition') != 'ENTER' or event.get('activity') != reminder.get('activity')):
+                    continue
+                if reminder.get('due_at') and occurred_at < _parse_time(str(reminder['due_at'])):
+                    continue
+                if reminder.get('created_at') and occurred_at < _parse_time(str(reminder['created_at'])):
+                    continue
+                if reminder.get('latitude') is not None and not self._is_inside_geofence(reminder, event):
+                    continue
+                from ..services.activity_reminder_timers import ActivityReminderTimers
+                ActivityReminderTimers(self.cloud).arm(uid, reminder, event, occurred_at)
+                continue
             trigger = self._matching_reminder_trigger(uid, reminder, event, occurred_at)
             if not trigger:
                 continue
@@ -57,6 +71,8 @@ class ContextAutomationService:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         changed_ids: list[str] = []
         for reminder in self.db.list_due_reminders(current.isoformat()):
+            if reminder.get('activity_delay_seconds'):
+                continue
             # Context conditions are conjunctive, including when a timer expires.
             if reminder.get("dynamic_policy") or reminder.get("activity") or reminder.get("location_name") or reminder.get("latitude") is not None:
                 continue
@@ -70,6 +86,11 @@ class ContextAutomationService:
         # Recheck recent observations even when no new activity transition occurs.
         # Never extrapolate an old observation into continuous presence.
         for reminder in self.db.list_context_reminders():
+            if reminder.get('activity_delay_seconds'):
+                if self.cloud:
+                    from ..services.activity_reminder_timers import ActivityReminderTimers
+                    ActivityReminderTimers(self.cloud).reconcile(reminder['uid'], reminder)
+                continue  # A timer is armed only by a genuine fresh ENTER.
             event = self.db.get_latest_context_event(reminder["uid"])
             if not event:
                 continue
@@ -256,6 +277,8 @@ class ContextAutomationService:
                 "event_id": str(event.get("event_id", "")),
                 "payload": {
                     "reminder_id": reminder["id"],
+                    "delivery_mode": reminder.get("delivery_mode", "notification"),
+                    "alarm_due_at": reminder.get("due_at") if trigger == "TIME_DUE" else None,
                     "location_name": reminder.get("location_name"),
                     "occurred_at": occurred_at.isoformat(),
                 },

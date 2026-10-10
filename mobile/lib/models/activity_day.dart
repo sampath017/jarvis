@@ -88,6 +88,8 @@ class ActivityEpisode {
     this.inferredContexts = const [],
     this.eventIds = const [],
     this.isOpen = false,
+    this.hasUncertainCoverage = false,
+    this.uncertainSeconds = 0,
   });
 
   final DateTime start;
@@ -101,6 +103,8 @@ class ActivityEpisode {
   final List<String> inferredContexts;
   final List<String> eventIds;
   final bool isOpen;
+  final bool hasUncertainCoverage;
+  final double uncertainSeconds;
 
   static ActivityEpisode? fromJson(Map<String, dynamic> json) {
     final start = DateTime.tryParse(
@@ -125,6 +129,12 @@ class ActivityEpisode {
       inferredContexts: _strings(json['inferred_contexts']),
       eventIds: _strings(json['event_ids']),
       isOpen: json.containsKey('end_at') && json['end_at'] == null,
+      hasUncertainCoverage: json['coverage_status'] == 'uncertain',
+      uncertainSeconds:
+          ((json['window_uncertain_seconds'] ?? json['uncertain_seconds'])
+                  as num?)
+              ?.toDouble() ??
+          0,
     );
   }
 }

@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS reminders (
     radius_m REAL DEFAULT 100.0,
     dynamic_policy TEXT,
     activity TEXT,
+    activity_delay_seconds INTEGER NOT NULL DEFAULT 0,
+    delivery_mode TEXT NOT NULL DEFAULT 'notification',
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     previous_status TEXT,
     deleted_at TEXT,

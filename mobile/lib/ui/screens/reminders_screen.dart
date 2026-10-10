@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../services/reminder_alert_service.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../../services/api_service.dart';
@@ -31,6 +32,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
   List<Map<String, dynamic>> _places = [];
   bool _showTrash = false;
   bool _isLoading = false;
+  Map<dynamic, dynamic> _alertPermissions = {};
   Timer? _timeReminderTimer;
   DateTime? _lastContextPipelineCall;
 
@@ -72,11 +74,18 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final list = await _localDb.getReminders();
     final trashed = await _localDb.getReminders(status: 'DELETED');
     final places = await _localDb.getPlaces();
+    Map<dynamic, dynamic> alertPermissions = {};
+    try {
+      alertPermissions =
+          await ReminderAlertService.channel.invokeMapMethod('ringingStatus') ??
+          {};
+    } catch (_) {}
     if (mounted) {
       setState(() {
         _reminders = list;
         _trashedReminders = trashed;
         _places = places;
+        _alertPermissions = alertPermissions;
       });
     }
   }
@@ -141,6 +150,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
     double speedKmh = 0.0,
   }) {
     for (final r in _reminders) {
+      if (ReminderAlertService.isRinging(r) ||
+          (r['activity_delay_seconds'] as num? ?? 0) > 0) {
+        continue;
+      }
       if (r['dynamic_policy'] != null) continue;
       final status = (r['status'] ?? 'ACTIVE').toString().toUpperCase();
       if (status != 'ACTIVE') continue;
@@ -286,6 +299,10 @@ class _RemindersScreenState extends State<RemindersScreen> {
   void _evaluateTimeReminders() {
     final now = DateTime.now().toUtc();
     for (final r in _reminders) {
+      if (ReminderAlertService.isRinging(r) ||
+          (r['activity_delay_seconds'] as num? ?? 0) > 0) {
+        continue;
+      }
       if (r['dynamic_policy'] != null) continue;
       final status = (r['status'] ?? 'ACTIVE').toString().toUpperCase();
       if (status != 'ACTIVE') continue;
@@ -465,6 +482,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final syncStatus = r['sync_status'] ?? 'synced';
 
     final isActive = status == 'ACTIVE';
+    final ringing = ReminderAlertService.isRinging(r);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
@@ -540,6 +558,59 @@ class _RemindersScreenState extends State<RemindersScreen> {
                   ],
                 ),
                 const SizedBox(height: 6),
+                if (isActive &&
+                    ringing &&
+                    (_alertPermissions['notifications'] != true ||
+                        _alertPermissions['exact'] != true ||
+                        _alertPermissions['full_screen'] != true))
+                  const Text(
+                    'Check Settings: allow notifications, Alarms & reminders, and full-screen alerts.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.amber),
+                  ),
+                Text(
+                  r['delivery_mode'] == 'in_app_call'
+                      ? 'In-app call · rings and reads aloud'
+                      : r['delivery_mode'] == 'alarm'
+                      ? 'Ringing alarm'
+                      : 'Notification',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.primaryLight,
+                  ),
+                ),
+                if (isActive && !_showTrash)
+                  PopupMenuButton<String>(
+                    tooltip: 'Change alert type',
+                    onSelected: (mode) async {
+                      await _localDb.saveReminder({
+                        ...r,
+                        'delivery_mode': mode,
+                        'updated_at': DateTime.now().toUtc().toIso8601String(),
+                      });
+                      await _syncService.syncNow();
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'notification',
+                        child: Text('Notification'),
+                      ),
+                      PopupMenuItem(
+                        value: 'alarm',
+                        child: Text('Ringing alarm'),
+                      ),
+                      PopupMenuItem(
+                        value: 'in_app_call',
+                        child: Text('Free in-app call'),
+                      ),
+                    ],
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        'Change alert type',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ),
                 if (loc.isNotEmpty)
                   Row(
                     children: [

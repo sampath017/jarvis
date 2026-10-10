@@ -83,6 +83,9 @@ class PersistNode:
                             "gps": packet.get("gps"),
                             "ambient_context": state.get("raw_request", {}).get("ambient_context"),
                             "location_status": state.get("raw_request", {}).get("location_status"),
+                            **{key: state.get("raw_request", {}).get(key) for key in (
+                                "activity_evidence", "activity_confidence", "reported_activity",
+                                "activity_observed_at", "received_at", "context_request_id")},
                             "mobility_session_id": state.get("session_id"),
                             "nearby_candidates": packet.get("nearby_pois", [])[:5],
                             "context_changes": state.get("semantic_context_changes", []),

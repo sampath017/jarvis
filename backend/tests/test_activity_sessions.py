@@ -11,6 +11,8 @@ def event(minutes, activity, transition="ENTER", *, home=False, kind=None, ancho
     return {"event_id": f"{minutes}:{activity}:{transition}:{kind}", "timestamp": at.isoformat(),
             "activity": activity, "transition": transition,
             "event_type": kind or ("ACTIVITY_ENTER" if transition == "ENTER" else "ACTIVITY_EXIT"),
+            "activity_evidence": "repeated_android_samples" if kind == "ACTIVITY_SAMPLE" else "android_transition",
+            "activity_confidence": 95 if kind == "ACTIVITY_SAMPLE" else None,
             "saved_places": [{"id": "home", "user_label": "HOME"}] if home else [],
             "ambient_context": {"collected_at": at.isoformat(), "wifi": {"connected": {"id": anchor}}}}
 
@@ -23,7 +25,7 @@ def learned(duration=600, anchor="network-a"):
 
 def test_cold_start_groups_related_actions_without_a_timer_or_history():
     result = build_activity_sessions([event(0, "WALKING"), event(2, "STILL"),
-                                     event(180, "STILL", kind="CONTEXT_CHECKPOINT")])
+                                     event(180, "STILL", kind="ACTIVITY_SAMPLE")])
     assert len(result["activity_sessions"]) == 1
     assert result["activity_sessions"][0]["status"] == "PROVISIONAL"
     assert result["routine_learning"]["status"] == "LEARNING"
@@ -32,19 +34,19 @@ def test_cold_start_groups_related_actions_without_a_timer_or_history():
 
 def test_home_evidence_can_close_an_outing_without_waiting_for_training():
     result = build_activity_sessions([event(0, "WALKING"), event(2, "STILL", home=True),
-                                     event(3, "STILL", home=True, kind="CONTEXT_CHECKPOINT"), event(4, "WALKING")])
+                                     event(3, "STILL", home=True, kind="ACTIVITY_SAMPLE"), event(4, "WALKING")])
     assert len(result["activity_sessions"]) == 2
     assert result["activity_sessions"][0]["boundary_reason"] == "confirmed_home_arrival"
 
 
 def test_two_month_old_learning_survives_a_fresh_install_and_changes_boundaries():
-    current = [event(0, "WALKING"), event(2, "STILL"), event(8, "STILL", kind="CONTEXT_CHECKPOINT"), event(10, "WALKING")]
+    current = [event(0, "WALKING"), event(2, "STILL"), event(8, "STILL", kind="ACTIVITY_SAMPLE"), event(10, "WALKING")]
     assert len(build_activity_sessions(current, learned(300))["activity_sessions"]) == 2
     assert len(build_activity_sessions(current, learned(1800))["activity_sessions"]) == 1
 
 
 def test_late_events_rebuild_intervals_in_event_time_order():
-    records = [event(0, "WALKING"), event(10, "WALKING", kind="CONTEXT_CHECKPOINT"), event(5, "WALKING", "EXIT"), event(5, "STILL")]
+    records = [event(0, "WALKING"), event(10, "WALKING", kind="ACTIVITY_SAMPLE"), event(5, "WALKING", "EXIT"), event(5, "STILL")]
     result = build_activity_sessions(records)
     walk = result["micromoments"][0]
     assert walk["end_at"] == event(5, "WALKING", "EXIT")["timestamp"]
@@ -54,7 +56,7 @@ def test_late_events_rebuild_intervals_in_event_time_order():
 
 def test_call_overlays_walking_and_does_not_replace_motion_or_close_mid_call():
     records = [event(0, "WALKING"), event(1, "WALKING", kind="CALL_START"), event(2, "STILL"),
-               event(8, "STILL", kind="CONTEXT_CHECKPOINT"), event(10, "WALKING"), event(12, "WALKING", "EXIT", kind="CALL_END")]
+               event(8, "STILL", kind="ACTIVITY_SAMPLE"), event(10, "WALKING"), event(12, "WALKING", "EXIT", kind="CALL_END")]
     result = build_activity_sessions(records, learned(300))
     assert len(result["activity_sessions"]) == 1
     call = next(m for m in result["micromoments"] if m["activity"] == "PHONE_CALL")

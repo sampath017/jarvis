@@ -11,6 +11,7 @@ import kotlin.math.abs
 /** Uses fixes produced by the system or other apps, without starting GPS. */
 class PassiveLocationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (!ActivityRecognitionRegistrar.isEnabled(context)) return
         val result = LocationResult.extractResult(intent) ?: return
         val prefs = context.getSharedPreferences("jarvis_passive_location", Context.MODE_PRIVATE)
         for (location in result.locations) {
@@ -23,7 +24,7 @@ class PassiveLocationReceiver : BroadcastReceiver() {
                     latitude = Double.fromBits(prefs.getLong("latitude", 0L))
                     longitude = Double.fromBits(prefs.getLong("longitude", 0L))
                 }
-                if (previous.distanceTo(location) < 100f) continue
+                if (previous.distanceTo(location) < 20f && location.time - lastTime < 120_000L) continue
             }
             val activity = ContextEventQueue.currentActivity(context).ifEmpty { "UNKNOWN" }
             val event = ContextEventQueue.newEvent("CONTEXT_CHECKPOINT", activity, "ENTER", location.time)

@@ -367,9 +367,13 @@ class FirestoreService:
                 return {}, False, current
             def value(record, key):
                 item = record.get(key)
+                if key == 'activity_delay_seconds':
+                    return int(item or 0)
+                if key == 'delivery_mode':
+                    return item or 'notification'
                 return None if item == "" else item
             if any(value(current, key) != value(reminder, key) for key in
-                   ("activity", "due_at", "latitude", "longitude", "location_name")):
+                     ("activity", "due_at", "latitude", "longitude", "location_name", "activity_delay_seconds", "delivery_mode")):
                 return {}, False, current
             now = datetime.now(timezone.utc).isoformat()
             record = {**notification, "id": notification_id, "uid": uid, "status": "PENDING", "created_at": now}

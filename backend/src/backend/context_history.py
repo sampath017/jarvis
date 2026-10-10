@@ -52,8 +52,12 @@ def prefetch_history_window(text: str, now: datetime | None = None):
 
 def build_timeline(records: list[dict[str, Any]], start: datetime, end: datetime, *, truncated: bool = False) -> dict:
     """Group repeated samples, without filling unsampled gaps or inventing actions."""
+    from .activity_evidence import qualified_records
     points = []
+    records = qualified_records(records)
     for record in records:
+        if record.get('source') == 'user_report' or record.get('activity_evidence') == 'diagnostic_event':
+            continue  # A correction must not disguise a gap in phone coverage.
         try:
             at = utc_time(record["timestamp"])
         except (KeyError, ValueError, TypeError):
@@ -101,8 +105,11 @@ def build_timeline(records: list[dict[str, Any]], start: datetime, end: datetime
         "observations_with_gps": sum((r.get("gps") or {}).get("latitude") is not None
                                      and (r.get("gps") or {}).get("longitude") is not None for _, r in points),
         "truncated": truncated or len(episodes) > 300,
+        "records_truncated": truncated, "timeline_truncated": len(episodes) > 300,
         "unobserved_gaps_over_10_minutes": gaps[:100], "gap_count": len(gaps),
-        "interpretation": "Sampled phone observations only. Intervals are first/last samples, not proof of continuous activity. "
+        "interpretation": "Phone sensor classifications can be wrong and must not overrule the user's reported activity. "
+                          "An unpaired EXIT is not proof the user performed that activity. Cached labels are UNKNOWN, not fresh measurements. "
+                          "Sampled phone observations only. Intervals are first/last samples, not proof of continuous activity. "
                           "STILL is not proof of sitting; nearby places are not visits; shop context is inferred, not a purchase. "
                           "Missing data means unknown, not inactive. If truncated, query smaller windows before a complete recap.",
     }

@@ -5,6 +5,7 @@ import '../../services/api_service.dart';
 import '../../services/local_db_service.dart';
 import '../../services/sync_service.dart';
 import '../../services/usage_service.dart';
+import '../../services/health_service.dart';
 import '../theme.dart';
 import '../widgets/workspace_widgets.dart';
 import 'google_calendar_screen.dart';
@@ -32,6 +33,8 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _usageAllowed = false;
   bool _usageDaily = true;
   bool _exactAlarms = false;
+  bool _sleepAllowed = false;
+  bool _fullScreenAlerts = false;
   bool? _backgroundLocation;
   bool? _locationEnabled;
 
@@ -79,6 +82,14 @@ class _SettingsScreenState extends State<SettingsScreen>
       usage = await UsageService.channel.invokeMapMethod('status') ?? {};
     } catch (_) {}
     final days = await _db.activityCacheDayCount();
+    bool sleep = false;
+    Map<dynamic, dynamic> ringing = {};
+    try {
+      sleep = await HealthService.instance.hasSleepAccess();
+    } catch (_) {}
+    try {
+      ringing = await _channel.invokeMapMethod('ringingStatus') ?? {};
+    } catch (_) {}
     Map<dynamic, dynamic> location = {};
     try {
       location = await _channel.invokeMapMethod('contextLocationStatus') ?? {};
@@ -91,6 +102,8 @@ class _SettingsScreenState extends State<SettingsScreen>
       _usageAllowed = usage['allowed'] == true;
       _usageDaily = usage['enabled'] != false;
       _exactAlarms = usage['exact'] == true;
+      _sleepAllowed = sleep;
+      _fullScreenAlerts = ringing['full_screen'] == true;
       _backgroundLocation = location['background'] as bool?;
       _locationEnabled = location['enabled'] as bool?;
       _checking = false;
@@ -247,6 +260,40 @@ class _SettingsScreenState extends State<SettingsScreen>
             _card(
               children: [
                 ListTile(
+                  leading: const Icon(
+                    Icons.bedtime_outlined,
+                    color: AppTheme.primary,
+                  ),
+                  title: const Text('Sleep records'),
+                  subtitle: Text(
+                    _sleepAllowed
+                        ? 'Read access allowed · your sleep app or watch must share records with Health Connect'
+                        : 'Connect sleep data from Health Connect',
+                  ),
+                  trailing: Icon(
+                    _sleepAllowed
+                        ? Icons.check_circle_outline
+                        : Icons.chevron_right,
+                  ),
+                  onTap: () async {
+                    var allowed = false;
+                    try {
+                      allowed = await HealthService.instance.connectSleep();
+                    } catch (_) {}
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          allowed
+                              ? 'Sleep connected. Ask “How did I sleep last night?”'
+                              : 'Open Health Connect, allow Jarvis to read Sleep, and connect a sleep tracking app.',
+                        ),
+                      ),
+                    );
+                    _refresh();
+                  },
+                ),
+                ListTile(
                   leading: Icon(
                     Icons.location_on_outlined,
                     color:
@@ -324,7 +371,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                   title: const Text('Alarms & reminders'),
                   subtitle: Text(
                     _exactAlarms
-                        ? 'Precise scheduling allowed · no Clock alarm'
+                        ? 'Precise timing allowed · synced time alarms work offline'
                         : 'Allow precise timing; otherwise Android may deliver late',
                   ),
                   trailing: Icon(
@@ -334,6 +381,20 @@ class _SettingsScreenState extends State<SettingsScreen>
                   ),
                   onTap: () =>
                       UsageService.channel.invokeMethod('openExactAlarm'),
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.call_outlined,
+                    color: AppTheme.primary,
+                  ),
+                  title: const Text('Full-screen alarms & calls'),
+                  subtitle: Text(
+                    _fullScreenAlerts
+                        ? 'Allowed · in-app reminder calls are free'
+                        : 'Allow Jarvis to show ringing reminders over the lock screen',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _channel.invokeMethod('openFullScreenAlerts'),
                 ),
                 ListTile(
                   title: const Text('View today’s screen time'),

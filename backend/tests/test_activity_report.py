@@ -24,8 +24,8 @@ def tool(data=HISTORY):
 def test_explicit_recap_preserves_intervals_ist_and_unknown_periods():
     report = activity_report_from_tools('What I did today', [tool()], REQUESTED)
     assert '05 Oct 2026' in report and '00:00–13:17 IST' in report
-    assert '06:30–06:50: Walking detected' in report
-    assert '06:50–07:00: Stationary detected (last observation; no ending recorded)' in report
+    assert '06:30–06:50: Walking — phone classification' in report
+    assert '06:50–07:00: Stationary — phone classification (last observation; no ending recorded)' in report
     assert '07:00–13:17 IST' in report and 'does not prove sleeping or working' in report
 
 
@@ -74,7 +74,7 @@ def test_state_carried_from_yesterday_does_not_invent_midnight_observation():
                'last_observed_at': '2026-10-05T01:30:00Z', 'activity': 'STILL',
                'observations': [{'timestamp': '2026-10-05T01:00:00Z'}, {'timestamp': '2026-10-05T01:30:00Z'}]}
     report = activity_report_from_tools('What I did today', [tool({**HISTORY, 'micromoments': [carried]})], REQUESTED)
-    assert '06:30–07:00: Stationary detected' in report
+    assert '06:30–07:00: Stationary — phone classification' in report
     assert '00:00–07:00: Stationary' not in report
 
 

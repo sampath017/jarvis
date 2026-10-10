@@ -117,6 +117,12 @@ class ContextEventRequest(BaseModel):
     )
     ambient_context: AmbientContext | None = None
     location_status: str | None = Field(default=None, max_length=64)
+    activity_evidence: str | None = Field(default=None, max_length=64)
+    activity_confidence: int | None = Field(default=None, ge=0, le=100)
+    reported_activity: str | None = Field(default=None, max_length=32)
+    activity_observed_at: datetime | None = None
+    received_at: datetime | None = None
+    context_request_id: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="before")
     @classmethod
@@ -263,8 +269,11 @@ class ReminderCreateRequest(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     radius_m: float = Field(default=100.0, ge=1, le=100_000)
     activity: str | None = Field(default=None, max_length=64)
+    activity_delay_seconds: int = Field(default=0, ge=0, le=86400,
+        description='One-shot timer after a genuine activity start; not continuous-activity duration.')
     status: Literal["ACTIVE", "PAUSED", "COMPLETED"] = "ACTIVE"
     one_shot: bool = True
+    delivery_mode: Literal["notification", "alarm", "in_app_call"] = "notification"
 
     @model_validator(mode="after")
     def requires_a_trigger(self) -> "ReminderCreateRequest":
@@ -273,6 +282,8 @@ class ReminderCreateRequest(BaseModel):
             raise ValueError("location reminders require both latitude and longitude")
         if not (self.due_at or self.activity or (self.latitude is not None and self.longitude is not None)):
             raise ValueError("a reminder needs due_at, activity, or a location")
+        if self.activity_delay_seconds and (self.activity not in {'WALKING','RUNNING','IN_VEHICLE','ON_BICYCLE','STILL'} or not self.one_shot):
+            raise ValueError('Activity timers require one physical activity and a one-shot reminder')
         return self
 
 
@@ -287,8 +298,16 @@ class ReminderPatchRequest(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     radius_m: float | None = Field(default=None, ge=1, le=100_000)
     activity: str | None = Field(default=None, max_length=64)
+    activity_delay_seconds: int | None = Field(default=None, ge=0, le=86400)
     status: Literal["ACTIVE", "PAUSED", "COMPLETED"] | None = None
     one_shot: bool | None = None
+    delivery_mode: Literal["notification", "alarm", "in_app_call"] | None = None
+
+    @model_validator(mode="after")
+    def delivery_mode_cannot_be_null(self) -> "ReminderPatchRequest":
+        if "delivery_mode" in self.model_fields_set and self.delivery_mode is None:
+            raise ValueError("delivery_mode cannot be null; use notification to stop ringing")
+        return self
 
 
 class ContextRuleCreateRequest(BaseModel):

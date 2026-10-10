@@ -24,6 +24,23 @@ from ..auth import get_current_user
 router = APIRouter(tags=["personal-automation"])
 
 
+@router.post('/devices/request-context')
+def request_device_context(uid: Annotated[str, Depends(get_current_user)]):
+    from ...services.device_context import DeviceContext
+    from ..rate_limiter import TokenBudgetGuard
+    TokenBudgetGuard().check_request_rate(uid)
+    return DeviceContext().request(uid)
+
+
+@router.get('/devices/context-requests/{request_id}')
+def device_context_status(request_id: str, uid: Annotated[str, Depends(get_current_user)]):
+    from ...services.device_context import DeviceContext
+    result = DeviceContext().status(uid, request_id)
+    if not result:
+        raise HTTPException(404, 'Context request not found')
+    return result
+
+
 def _db() -> DatabaseService:
     return DatabaseService()
 
@@ -96,7 +113,8 @@ def activity_history(
     try:
         from ...backend.activity_sessions import enriched_history
         history, all_records = enriched_history(fs, uid, start, min(end, datetime.now(timezone.utc)), persist=True)
-        records = [r for r in all_records if start <= utc_time(r["timestamp"]) <= end]
+        records = [r for r in all_records if start <= utc_time(r["timestamp"]) <= end
+                   and r.get('activity_evidence') != 'diagnostic_event']
         sessions = fs.get_mobility_sessions(uid)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Activity history temporarily unavailable") from exc
@@ -104,10 +122,14 @@ def activity_history(
     observations = [
         {
             "event_id": record.get("event_id"),
+            "source": record.get("source"),
             "timestamp": record.get("timestamp"),
             "activity": record.get("activity"),
             "transition": record.get("transition"),
             "event_type": record.get("event_type"),
+            "activity_evidence": record.get("activity_evidence"),
+            "reported_activity": record.get("reported_activity"),
+            "activity_confidence": record.get("activity_confidence"),
             "gps": record.get("gps"),
             "session_id": next((m["session_id"] for m in history["micromoments"]
                                 if record.get("event_id") in m["event_ids"]), record.get("mobility_session_id")),
@@ -275,7 +297,11 @@ def update_reminder(
         raise HTTPException(status_code=404, detail="Reminder not found")
     patch = request.model_dump(mode="json", exclude_unset=True)
     validated = ReminderCreateRequest.model_validate({**existing, **patch})
-    return db.update_reminder(uid, reminder_id, validated.model_dump(mode="json")) or existing
+    record = db.update_reminder(uid, reminder_id, validated.model_dump(mode="json")) or existing
+    fs = _fs()
+    if fs.is_available:
+        fs.save_reminder(reminder_id, record)
+    return record
 
 
 @router.delete("/reminders/{reminder_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -35,6 +35,10 @@ object ActivityRecognitionRegistrar {
         return PendingIntent.getBroadcast(context, 2002, intent, flags)
     }
 
+    private fun samplePendingIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
+        context, 2004, Intent(context, ActivityTransitionReceiver::class.java).setAction("com.jarvis.ACTIVITY_SAMPLE"),
+        PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+
     private fun locationPendingIntent(context: Context): PendingIntent {
         val intent = Intent(context, PassiveLocationReceiver::class.java)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
@@ -49,15 +53,16 @@ object ActivityRecognitionRegistrar {
         if (isEnabled(context)) registerPassiveLocation(context)
     }
 
-    private fun registerPassiveLocation(context: Context) {
+    fun registerPassiveLocation(context: Context) {
         if (Build.VERSION.SDK_INT >= 29 &&
             context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         val dynamic = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("dynamic", false)
-        val request = LocationRequest.Builder(if (dynamic) Priority.PRIORITY_BALANCED_POWER_ACCURACY else Priority.PRIORITY_PASSIVE, if (dynamic) 30_000L else 5 * 60_000L)
-            .setMinUpdateIntervalMillis(if (dynamic) 15_000L else 2 * 60_000L)
-            .setMinUpdateDistanceMeters(100f)
+        val moving = ContextEventQueue.currentActivity(context) in setOf("IN_VEHICLE", "ON_BICYCLE", "WALKING", "RUNNING", "ON_FOOT")
+        val request = LocationRequest.Builder(if (moving) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY, if (moving || dynamic) 30_000L else 120_000L)
+            .setMinUpdateIntervalMillis(if (moving || dynamic) 15_000L else 60_000L)
+            .setMinUpdateDistanceMeters(if (moving) 20f else 50f)
             .setMaxUpdateAgeMillis(0)
             .build()
         LocationServices.getFusedLocationProviderClient(context)
@@ -88,6 +93,10 @@ object ActivityRecognitionRegistrar {
                 AmbientNetworkMonitor.start(context)
                 // Clean up the old app's two-minute activity sampler.
                 client.removeActivityUpdates(pendingIntent(context))
+                client.requestActivityUpdates(30_000L, samplePendingIntent(context))
+                    .addOnSuccessListener { Log.i("JarvisGAR", "Fresh activity samples registered (30s requested)") }
+                    .addOnFailureListener { Log.w("JarvisGAR", "Fresh activity sampling unavailable", it) }
+                MonitoringService.ensure(context)
                 ContextEventQueue.schedulePeriodic(context)
                 ContextEventQueue.scheduleFlush(context)
                 try {
@@ -106,6 +115,8 @@ object ActivityRecognitionRegistrar {
         ContextEventQueue.stopMonitoring(context)
         val client = ActivityRecognition.getClient(context)
         client.removeActivityUpdates(pendingIntent(context))
+        client.removeActivityUpdates(samplePendingIntent(context))
+        context.stopService(Intent(context, MonitoringService::class.java))
         LocationServices.getFusedLocationProviderClient(context)
             .removeLocationUpdates(locationPendingIntent(context))
         client.removeActivityTransitionUpdates(pendingIntent(context))

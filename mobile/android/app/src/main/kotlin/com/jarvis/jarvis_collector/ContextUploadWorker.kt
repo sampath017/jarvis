@@ -73,6 +73,7 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
             val reminders = request("GET", "$BASE_URL/reminders")
             if (reminders.first in 200..299) {
                 val records = JSONObject(reminders.second).optJSONArray("records")
+                if (records != null) ReminderAlerts.reconcile(applicationContext, records)
                 val dynamic = records != null && (0 until records.length()).any {
                     val r = records.getJSONObject(it)
                     r.optString("status") == "ACTIVE" && !r.isNull("dynamic_policy")
@@ -96,7 +97,10 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
             val id = record.optString("id")
             if (id.isEmpty()) continue
             PushDelivery.show(applicationContext, id, record.optString("title", "Jarvis"),
-                record.optString("body"), record.optString("thread_id"), record.optString("kind"))
+                record.optString("body"), record.optString("thread_id"), record.optString("kind"),
+                record.optJSONObject("payload")?.optString("delivery_mode") ?: "notification",
+                record.optString("reminder_id"), record.optJSONObject("payload")?.optString("alarm_due_at") ?: "",
+                record.optJSONObject("payload")?.optString("occurred_at") ?: "")
         }
     }
 

@@ -94,6 +94,7 @@ object ContextLocationCapture {
                 put("latitude", fix.latitude)
                 put("longitude", fix.longitude)
                 put("accuracy_m", fix.accuracy.toDouble())
+                if (fix.hasSpeed()) put("speed_mps", fix.speed.toDouble())
                 put("timestamp", ContextEventQueue.occurredAt(fix.time))
             })
         }

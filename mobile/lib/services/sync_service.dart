@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'api_service.dart';
 import 'local_db_service.dart';
 import 'recording_backup_service.dart';
+import 'reminder_alert_service.dart';
 
 /// Bidirectional Sync Service for Jarvis Mobile.
 ///
@@ -88,6 +89,7 @@ class SyncService with WidgetsBindingObserver {
       _syncTask ??= _performSync().whenComplete(() => _syncTask = null);
 
   Future<void> _performSync() async {
+    await ReminderAlertService.sync(await _localDb.getReminders());
     if (!_apiService.isOnline) {
       // Fast check if server is reachable
       final online = await _apiService.checkHealth();
@@ -231,6 +233,7 @@ class SyncService with WidgetsBindingObserver {
           remoteChatSessions: sessions,
           remoteChatMessages: messages,
         );
+        await ReminderAlertService.sync(await _localDb.getReminders());
         debugPrint(
           '[SyncService] Successfully reconciled from Firestore: '
           '${rems.length} rems, ${nts.length} notes, ${sessions.length} sessions, ${messages.length} messages.',
@@ -249,6 +252,10 @@ class SyncService with WidgetsBindingObserver {
       final now = DateTime.now().toUtc();
 
       for (final r in reminders) {
+        if (ReminderAlertService.isRinging(r) ||
+            (r['activity_delay_seconds'] as num? ?? 0) > 0) {
+          continue;
+        }
         final status = (r['status'] ?? '').toString().toUpperCase();
         if (status != 'ACTIVE') continue;
         // The backend evaluates combined time and context conditions together.

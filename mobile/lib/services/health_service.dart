@@ -45,7 +45,9 @@ class HealthService {
 
   static bool isHealthQuestion(String text) {
     final q = text.toLowerCase();
-    if (RegExp(r'\b(remind|reminder|note|save|record)\b').hasMatch(q)) {
+    if (RegExp(
+      r'\b(remind|reminder|note|save|record|alarm|wake|call)\b',
+    ).hasMatch(q)) {
       return false;
     }
     return RegExp(r'\b(steps?|step count|sleep|slept)\b').hasMatch(q) &&
@@ -92,8 +94,8 @@ class HealthService {
         final label = q.contains('yesterday') ? 'yesterday' : 'today';
         return 'Health Connect shows ${NumberFormat.decimalPattern().format(count)} steps $label.';
       }
-      if (!await hasSleepAccess()) {
-        return 'I need read access to sleep. Open Health Connect → App permissions → Jarvis, allow sleep, then ask me again.';
+      if (!await hasSleepAccess() && !await connectSleep()) {
+        return 'Sleep read access is not granted. In Health Connect → App permissions → Jarvis, allow Sleep (or use Settings → Sleep records in Jarvis). Your sleep app or watch also needs to share sleep sessions with Health Connect; phone inactivity alone cannot measure sleep.';
       }
       if (RegExp(r'\b(week|month|days|ago)\b').hasMatch(q)) {
         return 'I can check your most recent sleep session. Ask me about last night.';

@@ -32,6 +32,29 @@ def test_activity_transition_without_location_does_not_require_tier1():
     assert result == {"conflicts": [], "needs_tier1": False}
 
 
+def test_backend_context_wake_does_not_invoke_a_model_for_sensor_ambiguity():
+    state = _state()
+    state['raw_request']['event_type'] = 'BACKEND_CONTEXT_REQUEST'
+    state['context_packet']['activity'] = 'UNKNOWN'
+    with patch('src.graph.nodes.context_gate.audit_from_state'):
+        assert ContextGateNode()(state)['needs_tier1'] is False
+
+
+def test_frequent_samples_do_not_rebuild_full_cloud_history():
+    import asyncio
+    from unittest.mock import Mock
+    from src.api.routers.context_events import ingest_context_event
+    from src.models.schemas import ContextEventRequest
+    workflow = Mock()
+    workflow.invoke.return_value = {'changed_records': [], 'semantic_contexts': []}
+    with patch('src.api.routers.context_events.TokenBudgetGuard'), \
+         patch('src.api.routers.context_events.ContextAutomationService') as automation, \
+         patch('src.services.firestore_service.FirestoreService', side_effect=AssertionError('No history rebuild per sample')):
+        automation.return_value.process_context_event.return_value = []
+        result = asyncio.run(ingest_context_event(ContextEventRequest(event_type='ACTIVITY_SAMPLE'), 'u', workflow))
+    assert result.status == 'ok'
+
+
 def test_ambiguous_sensor_burst_still_uses_tier1():
     with patch("src.graph.nodes.context_gate.audit_from_state"):
         result = ContextGateNode()(_state({"classification_confidence": 0.2}))
