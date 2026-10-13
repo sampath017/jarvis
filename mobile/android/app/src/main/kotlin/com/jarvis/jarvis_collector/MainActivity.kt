@@ -140,6 +140,42 @@ class MainActivity : FlutterFragmentActivity() {
                         "enabled" to (manager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ||
                             manager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER))))
                 }
+                "motionDiagnostics" -> Thread {
+                    try {
+                        val data = TelemetryHistory.get(applicationContext).export(applicationContext).toString()
+                        runOnUiThread { result.success(data) }
+                    } catch (error: Exception) {
+                        runOnUiThread { result.error("motion_unavailable", "Motion history is unavailable", null) }
+                    }
+                }.start()
+                "labelMotion" -> {
+                    val label = call.argument<String>("activity") ?: "UNKNOWN"
+                    val placement = call.argument<String>("placement") ?: "other"
+                    val started = call.argument<Long>("startedAt") ?: 0L
+                    val startedElapsed = call.argument<Long>("startedElapsedMs") ?: -1L
+                    val startBoot = call.argument<Int>("bootCount") ?: -1
+                    val nowElapsed = android.os.SystemClock.elapsedRealtime()
+                    val duration = nowElapsed-startedElapsed
+                    if (label !in setOf("STILL", "WALKING", "RUNNING", "IN_VEHICLE", "ON_BICYCLE") ||
+                        placement !in setOf("pocket", "hand", "bag", "mounted", "table", "other") ||
+                        duration !in 1_000..7_200_000 || startBoot != EventTiming.boot(applicationContext) || started <= 0) {
+                        result.error("invalid_label", "Start a new label and record for at least one second", null)
+                    } else {
+                        val data = org.json.JSONObject().apply {
+                            put("id", "motion_${java.util.UUID.randomUUID()}")
+                            put("timestamp", ContextEventQueue.occurredAt(started)); put("label_end_at", ContextEventQueue.occurredAt(started+duration))
+                            put("source", "user_label"); put("candidate", label); put("placement", placement)
+                            put("provisional", true); put("model_version", "user_annotation_v1")
+                            put("boot_count", startBoot); put("observed_elapsed_ms", startedElapsed)
+                            put("received_elapsed_ms", nowElapsed); put("delivery_delay_ms", duration)
+                        }
+                        TelemetryHistory.get(applicationContext).record(applicationContext, data)
+                        ContextEventQueue.scheduleFlush(applicationContext)
+                        result.success(true)
+                    }
+                }
+                "motionClock" -> result.success(mapOf("bootCount" to EventTiming.boot(applicationContext),
+                    "elapsedMs" to android.os.SystemClock.elapsedRealtime(), "wallMs" to System.currentTimeMillis()))
                 "openLocationSettings" -> {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                     result.success(true)

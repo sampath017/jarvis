@@ -66,7 +66,8 @@ def test_budget_message_distinguishes_remaining_capacity_and_oversized_request()
         guard.check_and_reserve_tokens('partial', 2000)
     assert '1,000' in error.value.detail
     assert 'smaller request may still work' in error.value.detail
-    assert '12:00 AM IST' in error.value.detail
+    assert '12:00 AM' in error.value.detail
+    assert 'IST' not in error.value.detail
     assert 'not an OpenRouter credit error' in error.value.detail
     guard.check_and_reserve_tokens('partial', 500)
     with pytest.raises(HTTPException) as error:

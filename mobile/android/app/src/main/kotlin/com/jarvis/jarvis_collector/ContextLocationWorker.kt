@@ -11,10 +11,12 @@ class ContextLocationWorker(context: Context, params: WorkerParameters) : Worker
         return try {
             val pending = ContextEventQueue.pending(applicationContext)
                 .filter { it.optBoolean("location_pending") }
+            var retry = false
             for (event in ContextLocationCapture.capture(applicationContext, pending, 15_000)) {
-                event.remove("location_pending")
+                retry = ContextLocationCapture.finishAttempt(event) || retry
                 ContextEventQueue.update(applicationContext, event)
             }
+            if (retry) ContextEventQueue.scheduleLocationCapture(applicationContext, delaySeconds = 10)
             ContextEventQueue.scheduleFlush(applicationContext)
             Result.success()
         } catch (error: Exception) {

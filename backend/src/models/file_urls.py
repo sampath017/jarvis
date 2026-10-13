@@ -1,2 +1,3 @@
 """Shared validation for Google Drive/Workspace file references."""
-GOOGLE_FILE_URL_PATTERN = r'^https://(?:drive|docs|sites)\.google\.com/'
+# Drive can return native editor links for saved prompts and notebooks too.
+GOOGLE_FILE_URL_PATTERN = r'^https://(?:(?:drive|docs|sites|aistudio)\.google\.com|colab\.research\.google\.com)/'

@@ -10,6 +10,7 @@ import 'command_client.dart';
 import 'calendar_executor.dart';
 import 'google_calendar_service.dart';
 import 'google_drive_service.dart';
+import 'conversation_memory.dart';
 
 /// Client service that communicates with the Jarvis Cloud Run backend.
 /// Handles sending Low-Telemetry metadata, executing agentic commands,
@@ -193,13 +194,26 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
     final calendar = GoogleCalendarService.instance;
     await calendar.refresh();
     final key = await calendar.sessionKey();
+    final recentHistory = ConversationMemory.recent(history ?? []);
+    var recalledAnswers = <Map<String, dynamic>>[];
+    if (attachedFileIds.isEmpty) {
+      try {
+        recalledAnswers = await LocalDbService().recallAnswers(
+          text,
+          recentHistory: recentHistory,
+        );
+      } catch (_) {
+        // Optional recall must never prevent the actual question from running.
+      }
+    }
     final payload = <String, dynamic>{
       'request_id': requestId ?? 'cmd_${DateTime.now().millisecondsSinceEpoch}',
       'thread_id': threadId ?? 'default_thread',
       'text': text,
       'latitude': ?latitude,
       'longitude': ?longitude,
-      if (history != null && history.isNotEmpty) 'history': history,
+      if (recentHistory.isNotEmpty) 'history': recentHistory,
+      if (recalledAnswers.isNotEmpty) 'recalled_answers': recalledAnswers,
       'timestamp': DateTime.now().toUtc().toIso8601String(),
       'calendar_connected': calendar.connected && key != null,
       'calendar_id': calendar.calendarId,

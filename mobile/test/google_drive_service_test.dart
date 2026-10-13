@@ -175,6 +175,66 @@ void main() {
     },
   );
   test(
+    'unrelated cached files do not accompany activity or calendar questions',
+    () {
+      drive.memories = [
+        {
+          'id': 'prompt',
+          'name': 'What I am doing today',
+          'caption': '',
+          'mimeType': 'text/plain',
+          'url': 'https://aistudio.google.com/app/prompts',
+        },
+        {
+          'id': 'notebook',
+          'name': 'notebook.ipynb',
+          'caption': 'Research notes',
+          'mimeType': 'application/json',
+          'url': 'https://colab.research.google.com/drive/notebook',
+        },
+      ];
+      expect(
+        drive.contextFor('Where and what I am doing yesterday 12:36 pm'),
+        isEmpty,
+      );
+      expect(
+        drive.contextFor(
+          'Create a meet at 4 to 5 today, name it as lokesh meet',
+        ),
+        isEmpty,
+      );
+    },
+  );
+  test(
+    'matching files and explicit attachments are selected without irrelevant filler',
+    () {
+      drive.memories = List.generate(
+        15,
+        (i) => {
+          'id': 'file-$i',
+          'name': i == 0 ? 'receipt.pdf' : 'notebook-$i',
+          'caption': '',
+          'mimeType': 'text/plain',
+          'url': 'https://drive.google.com/file/d/file-$i/view',
+        },
+      );
+      expect(drive.contextFor('receipt').map((m) => m['id']), ['file-0']);
+      expect(
+        drive
+            .contextFor('What is this?', prioritizedIds: ['file-14'])
+            .map((m) => m['id']),
+        ['file-14'],
+      );
+      expect(
+        drive
+            .contextFor('receipt', prioritizedIds: ['file-14'])
+            .map((m) => m['id']),
+        ['file-14', 'file-0'],
+      );
+      expect(drive.contextFor('notebook').length, 12);
+    },
+  );
+  test(
     'explicit saves upload directly to My Drive without creating cache',
     () async {
       final memory = await drive.save(

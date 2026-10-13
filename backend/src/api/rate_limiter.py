@@ -38,7 +38,7 @@ except (ImportError, ValueError):
         RATE_LIMIT_PER_USER_PER_MINUTE,
     )
 
-from .spend_policy import DAILY_BUDGET_NANOS, token_cost_nanos, reported_cost_nanos, rupees
+from .spend_policy import DAILY_BUDGET_INR, DAILY_BUDGET_NANOS, token_cost_nanos, reported_cost_nanos, rupees
 from ..settings import OPENROUTER_MODEL_TIER2
 
 logger = logging.getLogger(__name__)
@@ -168,12 +168,12 @@ class TokenBudgetGuard:
         amount = max(0, int(estimated_input_tokens))
         cost = token_cost_nanos(model, max(0, amount - max_output_tokens), max_output_tokens)
         day, reservation_id = budget_day(), secrets.token_hex(16)
-        reset = f"{day + timedelta(days=1):%d %b %Y} at 12:00 AM IST"
+        reset = f"{day + timedelta(days=1):%d %b %Y} at 12:00 AM"
 
         def reserve(record):
             available = max(0, DAILY_BUDGET_NANOS - record.cost_nanos)
             if cost > available:
-                detail = (f"Jarvis has about Rs {rupees(available):.2f} left in its Rs 20 daily AI allowance, "
+                detail = (f"Jarvis has about Rs {rupees(available):.2f} left in its Rs {DAILY_BUDGET_INR} daily AI allowance, "
                           f"but this request needs an estimated reservation of Rs {rupees(cost):.2f}. "
                           "This is the app's spending allowance, not an OpenRouter credit error. ")
                 if cost > DAILY_BUDGET_NANOS:

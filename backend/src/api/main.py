@@ -83,7 +83,8 @@ async def lifespan(_app: FastAPI):
     logger.info("• LLM Tier 1: %s", OPENROUTER_MODEL_TIER1)
     logger.info("• LLM Tier 2: %s", OPENROUTER_MODEL_TIER2)
     logger.info("• Firestore Sync: %s", fs_status)
-    logger.info("• AI allowance: Rs 20/day (fixed INR/USD budget conversion) | %d req/min | no daily token ceiling", RATE_LIMIT_PER_USER_PER_MINUTE)
+    from .spend_policy import DAILY_BUDGET_INR
+    logger.info("• AI allowance: Rs %d/day (fixed INR/USD budget conversion) | %d req/min | no daily token ceiling", DAILY_BUDGET_INR, RATE_LIMIT_PER_USER_PER_MINUTE)
     from ..settings import LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS
     logger.info("• AI budget profile: %s | daily calls: %d | reset: midnight IST", LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS)
     logger.info("=" * 72)

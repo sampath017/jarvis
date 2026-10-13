@@ -44,7 +44,8 @@ class LoadContextNode:
                 raw = state.get('raw_request') or {}
                 # The conversational agent selects the relevant tool first. File
                 # questions must not trigger GPS, Places, or mobility hydration.
-                messages = raw.get('history') or (self.db.get_recent_messages(uid, thread_id, limit=8) if thread_id else [])
+                from ...backend.conversation_memory import recent_history
+                messages = recent_history(raw.get('history') or (self.db.get_recent_messages(uid, thread_id, limit=24) if thread_id else []))
                 return {'thread_id': thread_id, 'messages': messages,
                         'context_scope': 'on_demand', 'cloud_context_loaded': True,
                         'context_packet': {}, 'session': None, 'tasks': [],

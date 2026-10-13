@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 
 /** Keeps the low-power tripwire alive; independent of Flutter/IMU recording. */
 class MonitoringService : Service() {
+    private var motion: LocalMotionMonitor? = null
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val refreshLocation = object : Runnable {
         override fun run() {
@@ -38,6 +39,7 @@ class MonitoringService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_compass).setContentTitle("Jarvis monitoring is on")
             .setContentText("Listening for activity changes and context requests")
             .setContentIntent(tap).setOngoing(true).setSilent(true).build())
+        motion = LocalMotionMonitor(applicationContext).also { it.start() }
         handler.postDelayed(refreshLocation, 120_000L)
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -47,5 +49,5 @@ class MonitoringService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { handler.removeCallbacks(refreshLocation); super.onDestroy() }
+    override fun onDestroy() { motion?.stop(); handler.removeCallbacks(refreshLocation); super.onDestroy() }
 }

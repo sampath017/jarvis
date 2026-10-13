@@ -54,6 +54,22 @@ object ContextEventQueue {
 
     @Synchronized
     fun add(context: Context, event: JSONObject, deferCapture: Boolean = false) {
+        if (!event.has("telemetry_diagnostics") && event.optString("occurred_at") == event.optString("timestamp") &&
+            event.optString("event_type") !in setOf("ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE", "CONTEXT_CHECKPOINT")) {
+            EventTiming.mark(context, event)
+        }
+        val timing = event.optJSONObject("telemetry_diagnostics")
+        if (timing != null && event.optString("event_type") in setOf("ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE")) {
+            TelemetryHistory.get(context).record(context, JSONObject(timing.toString()).apply {
+                put("id", event.getString("event_id")); put("timestamp", event.getString("occurred_at"))
+                put("source", "google_activity"); put("candidate", event.optString("reported_activity", event.optString("activity")))
+                put("provisional", true); put("model_version", "google_play_services")
+                put("features", JSONObject().apply {
+                    put("accepted_activity", event.optString("activity")); put("event_type", event.optString("event_type"))
+                    if (event.has("activity_confidence")) put("confidence", event.getInt("activity_confidence"))
+                })
+            })
+        }
         val entries = JSONArray(prefs(context).getString(EVENTS, "[]"))
         if (!event.has("ambient_context")) event.put("ambient_context", AmbientContextCapture.capture(context))
         if (!event.has("location")) event.put("location_pending", true)
@@ -70,6 +86,18 @@ object ContextEventQueue {
         val entries = JSONArray(prefs(context).getString(EVENTS, "[]"))
         for (index in 0 until entries.length()) {
             if (entries.getJSONObject(index).optString("event_id") == event.optString("event_id")) {
+                val existing = entries.getJSONObject(index)
+                // Immediate capture and fallback workers may overlap. A stale
+                // failure must not erase a fix already captured for this event.
+                if (existing.has("location") && !existing.isNull("location") &&
+                    (!event.has("location") || event.isNull("location"))) {
+                    event.put("location", existing.getJSONObject("location"))
+                    event.put("location_status", existing.optString("location_status"))
+                    event.remove("location_pending")
+                }
+                if (existing.optInt("location_attempts") > event.optInt("location_attempts")) {
+                    event.put("location_attempts", existing.optInt("location_attempts"))
+                }
                 entries.put(index, event)
                 check(prefs(context).edit().putString(EVENTS, entries.toString()).commit())
                 return

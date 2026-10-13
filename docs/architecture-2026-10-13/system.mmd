@@ -1,0 +1,49 @@
+flowchart TB
+  subgraph Phone[Android phone]
+    UI[Flutter UI and app services]
+    Local[(SQLite: chats and app records)]
+    Native[Kotlin: sensors, monitoring, alarms and FCM]
+    Queue[Native event queue and WorkManager]
+    Shadow[Local motion diagnostics]
+    UI <--> Local
+    UI <-->|MethodChannels| Native
+    Native --> Queue
+    Native --> Shadow
+  end
+  subgraph GCP[Google Cloud: asia-south1]
+    API[Cloud Run: jarvis-backend / FastAPI]
+    Graph[LangGraph: routing, Tier 1 and Tier 2]
+    Domain[Tools, activity sessions and reminder policies]
+    Cache[(Instance-local backend SQLite)]
+    Tasks[Cloud Tasks: jarvis-background]
+    FS[(Firestore: durable application state)]
+    GCS[(Cloud Storage: recordings and staged files)]
+    Job[Cloud Run job: jarvis-drive-indexer]
+    Embed[Cloud Run: jarvis-embedding]
+    FCM[Firebase Cloud Messaging]
+    API --> Graph --> Domain
+    Domain <--> Cache
+    API <--> FS
+    Domain <--> FS
+    API -->|Schedule work| Tasks
+    Tasks -->|Authenticated callbacks| API
+    API <--> GCS
+    API -->|Start indexing| Job
+    GCS --> Job
+    Job --> Embed
+    API -->|Embed search query| Embed
+    Domain --> FCM
+  end
+  UI <-->|HTTPS and SSE| API
+  Queue -->|Context events| API
+  Shadow -.->|Diagnostics only| API
+  FCM --> Native
+  Google[Google Calendar and Drive APIs]
+  UI <-->|Phone OAuth and device actions| Google
+  LLM[OpenRouter / language models]
+  Domain <--> LLM
+  Places[Google Places and spatial enrichment]
+  Domain <--> Places
+  Vector[(Chroma Cloud: indexed file chunks and vectors)]
+  Job --> Vector
+  API <--> Vector

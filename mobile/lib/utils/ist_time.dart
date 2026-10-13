@@ -4,6 +4,6 @@ class IstTime {
   static DateTime display(DateTime instant) => instant.toUtc().add(offset);
   static String clock(DateTime instant) {
     final time = display(instant);
-    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')} IST';
+    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
   }
 }

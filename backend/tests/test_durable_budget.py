@@ -105,8 +105,8 @@ def test_money_cap_counts_all_tokens_without_a_token_ceiling(cloud):
     guard.record_llm_usage('u', 1_100_000, 0, reservation=receipt, cost_usd='0.165')
     assert guard._get_daily_record('u').estimated_tokens == 1_100_000
     with pytest.raises(HTTPException) as error:
-        guard.check_and_reserve_tokens('u', 300_000)
-    assert 'Rs 20 daily AI allowance' in error.value.detail
+        guard.check_and_reserve_tokens('u', 2_400_000)
+    assert 'Rs 50 daily AI allowance' in error.value.detail
     assert f'Rs {limiter.rupees(limiter.DAILY_BUDGET_NANOS - 165_000_000):.2f}' in error.value.detail
     assert 'not an OpenRouter' in error.value.detail
 
@@ -132,7 +132,7 @@ def test_all_models_share_daily_spending_allowance(cloud):
     receipt = guard.check_and_reserve_tokens('u', 1_000_000)
     guard.record_llm_usage('u', 1_000_000, 0, reservation=receipt, cost_usd='0.15')
     with pytest.raises(HTTPException):
-        fresh_guard().check_and_reserve_tokens('u', 100_000, model='google/gemini-3.8-flash')
+        fresh_guard().check_and_reserve_tokens('u', 500_000, model='google/gemini-3.8-flash')
 
 
 def test_money_holds_prevent_parallel_overspending(cloud):
@@ -142,7 +142,23 @@ def test_money_holds_prevent_parallel_overspending(cloud):
             return True
         except HTTPException: return False
     with ThreadPoolExecutor(max_workers=4) as pool:
-        assert sum(pool.map(reserve, range(4))) == 1
+        assert sum(pool.map(reserve, range(4))) == 3
+
+
+def test_fifty_rupee_allowance_keeps_existing_usage(cloud):
+    from decimal import Decimal
+    from src.api.spend_policy import DAILY_BUDGET_INR, BUDGET_INR_PER_USD
+    assert DAILY_BUDGET_INR == 50
+    guard = fresh_guard()
+    receipt = guard.check_and_reserve_tokens('existing', 1_000_000)
+    guard.record_llm_usage('existing', 1_000_000, 0, reservation=receipt, cost_usd='0.20')
+    restarted = fresh_guard()
+    assert restarted._get_daily_record('existing').cost_nanos == 200_000_000
+    assert Decimal(limiter.DAILY_BUDGET_NANOS) * Decimal(str(BUDGET_INR_PER_USD)) / 1_000_000_000 <= 50
+    restarted.check_and_reserve_tokens('existing', 1_000_000)
+    with pytest.raises(HTTPException) as error:
+        restarted.check_and_reserve_tokens('existing', 2_000_000)
+    assert 'Rs 50 daily AI allowance' in error.value.detail
 
 
 def test_invalid_or_negative_provider_cost_cannot_refund_hold(cloud):

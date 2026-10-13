@@ -900,30 +900,118 @@ class GoogleDriveService extends ChangeNotifier {
     'account': account,
     'storage': (file['appProperties'] as Map?)?['jarvisStorage'] ?? 'legacy',
   };
+  static final _contextSeparator = RegExp(
+    r'[^\p{L}\p{M}\p{N}]+',
+    unicode: true,
+  );
+  static final _contextLetter = RegExp(r'\p{L}', unicode: true);
+
   List<Map<String, dynamic>> contextFor(
     String question, {
     List<String> prioritizedIds = const [],
   }) {
+    const stopWords = {
+      'am',
+      'an',
+      'and',
+      'are',
+      'as',
+      'at',
+      'be',
+      'by',
+      'can',
+      'do',
+      'did',
+      'for',
+      'get',
+      'give',
+      'had',
+      'has',
+      'how',
+      'in',
+      'is',
+      'it',
+      'me',
+      'my',
+      'of',
+      'on',
+      'or',
+      'so',
+      'the',
+      'to',
+      'was',
+      'we',
+      'were',
+      'you',
+      'your',
+      'find',
+      'show',
+      'read',
+      'pm',
+      'what',
+      'where',
+      'when',
+      'which',
+      'that',
+      'this',
+      'these',
+      'those',
+      'with',
+      'from',
+      'have',
+      'does',
+      'doing',
+      'tell',
+      'please',
+      'about',
+      'today',
+      'yesterday',
+      'tomorrow',
+    };
     final words = question
         .toLowerCase()
-        .split(RegExp(r'\W+'))
-        .where((w) => w.length > 3)
+        .split(_contextSeparator)
+        .where(
+          (w) =>
+              w.length >= 2 &&
+              !stopWords.contains(w) &&
+              _contextLetter.hasMatch(w),
+        )
         .toSet();
-    final ranked = [...memories.reversed]
-      ..sort((a, b) {
-        final priority =
-            (prioritizedIds.contains(b['id']) ? 1 : 0) -
-            (prioritizedIds.contains(a['id']) ? 1 : 0);
-        if (priority != 0) return priority;
-        int score(Map<String, dynamic> m) => words
-            .where(
-              (w) => '${m['name']} ${m['caption']}'.toLowerCase().contains(w),
-            )
-            .length;
-        return score(b).compareTo(score(a));
-      });
+    final priorities = prioritizedIds.toSet();
+    if (words.isEmpty && priorities.isEmpty) return [];
+    final ranked =
+        <({Map<String, dynamic> memory, int score, int priority, int index})>[];
+    for (var i = 0; i < memories.length; i++) {
+      final memory = memories[i];
+      final priority = priorities.contains(memory['id']) ? 1 : 0;
+      // Tokenize each caption once, rather than on every sort comparison.
+      final terms = words.isEmpty
+          ? const <String>{}
+          : '${memory['name']} ${memory['caption']}'
+                .toLowerCase()
+                .split(_contextSeparator)
+                .toSet();
+      final score = words.where(terms.contains).length;
+      if (priority != 0 || score > 0) {
+        ranked.add((
+          memory: memory,
+          score: score,
+          priority: priority,
+          index: i,
+        ));
+      }
+    }
+    ranked.sort((a, b) {
+      final priority = b.priority.compareTo(a.priority);
+      if (priority != 0) return priority;
+      final score = b.score.compareTo(a.score);
+      // List.sort is unstable: explicitly preserve newest cache order on ties.
+      return score != 0 ? score : b.index.compareTo(a.index);
+    });
     return ranked
         .take(12)
+        .map((entry) => entry.memory)
         .map(
           (m) => {
             for (final key in ['id', 'name', 'mimeType', 'caption', 'url'])

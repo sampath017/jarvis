@@ -23,10 +23,11 @@ def tool(data=HISTORY):
 
 def test_explicit_recap_preserves_intervals_ist_and_unknown_periods():
     report = activity_report_from_tools('What I did today', [tool()], REQUESTED)
-    assert '05 Oct 2026' in report and '00:00–13:17 IST' in report
+    assert '05 Oct 2026' in report and '00:00–13:17' in report
+    assert 'IST' not in report
     assert '06:30–06:50: Walking — detected' in report
     assert '06:50–07:00: Phone stationary — detected; last recorded at 07:00' in report
-    assert '07:00–13:17 IST' in report and 'Recording gaps' in report
+    assert '07:00–13:17' in report and 'Recording gaps' in report
 
 
 @pytest.mark.parametrize('question', ['What did I do today and why?', 'Compare today and yesterday', 'What does my resume say?', 'Save a note about what I did today'])
@@ -105,7 +106,7 @@ def test_strong_activity_is_not_labelled_uncertain_because_of_a_later_gap():
                    '2026-10-05T01:55:00Z', '2026-10-05T02:00:00Z']]}
     report = activity_report_from_tools('What I did today', [tool({**HISTORY, 'micromoments': [moment], 'unobserved_gaps_over_10_minutes': [], 'gap_count': 0})], REQUESTED)
     assert '06:30–06:45, 07:25–07:30: In a vehicle — detected' in report
-    assert '06:45–07:25 IST' in report
+    assert '06:45–07:25' in report
     assert '06:30–07:30: In a vehicle' not in report
     assert 'includes uncertain' not in report
     assert 'Phone classifications can be wrong' not in report

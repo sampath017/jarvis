@@ -64,7 +64,7 @@ def activity_report_from_tools(question, messages, requested_at=None):
 
 def render_activity_duration(data, activity, start, end):
     from .activity_sessions import activity_totals
-    window = f'{start.astimezone(IST):%d %b %H:%M}–{end.astimezone(IST):%d %b %H:%M} IST'
+    window = f'{start.astimezone(IST):%d %b %H:%M}–{end.astimezone(IST):%d %b %H:%M}'
     if data.get('session_history_truncated', data.get('truncated', False)):
         return f'Activity history · {window}\nThe history is incomplete, so I cannot give a reliable total. Missing history is not zero activity.'
     totals = data.get('activity_totals') or activity_totals(data.get('micromoments', []), start, end)
@@ -129,9 +129,9 @@ def _recorded_spans(moment, first, last):
 def render_activity_report(data, start, end):
     local_start, local_end = start.astimezone(IST), end.astimezone(IST)
     title = f"Observed activity · {local_start:%d %b %Y}"
-    window = f"{local_start:%H:%M}–{local_end:%H:%M} IST"
+    window = f"{local_start:%H:%M}–{local_end:%H:%M}"
     if local_end.date() != local_start.date():
-        window = f"{local_start:%d %b, %H:%M}–{local_end:%d %b, %H:%M} IST"
+        window = f"{local_start:%d %b, %H:%M}–{local_end:%d %b, %H:%M}"
     lines = [title, window, '']
     if not data.get('observation_count') and not any(m.get('evidence_status') == 'user_reported' for m in data.get('micromoments', [])):
         return '\n'.join(lines + ['No activity observations were recorded for this window. That does not mean you were inactive.'])
@@ -195,7 +195,7 @@ def render_activity_report(data, start, end):
         long_gaps = [(a, b) for a, b in merged if (b - a).total_seconds() >= 600]
         if long_gaps:
             lines.extend(['', 'Recording gaps — activity between readings is not established:'])
-            lines.extend(f'• {stamp(a, b)} IST' for a, b in long_gaps)
+            lines.extend(f'• {stamp(a, b)}' for a, b in long_gaps)
         short_count = len(merged) - len(long_gaps)
         if short_count:
             lines.append(f'Also excluded: {short_count} brief gaps between the listed readings (each under 10 minutes).')

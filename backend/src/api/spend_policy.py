@@ -1,4 +1,4 @@
-"""Conservative USD allowance for the user's INR 20/day AI budget.
+"""Conservative USD allowance for the user's INR 50/day AI budget.
 
 Prices verified on OpenRouter 2026-10-06. Provider max_price prevents routing
 above these rates. No daily token ceiling; token counts remain telemetry.
@@ -6,7 +6,7 @@ above these rates. No daily token ceiling; token counts remain telemetry.
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from fastapi import HTTPException
 
-DAILY_BUDGET_INR = 20
+DAILY_BUDGET_INR = 50
 BUDGET_INR_PER_USD = 96.544  # Verified 2026-10-06; excludes payment fees/taxes.
 DAILY_BUDGET_NANOS = int((Decimal(DAILY_BUDGET_INR) / Decimal(str(BUDGET_INR_PER_USD)) * 1_000_000_000).to_integral_value(rounding=ROUND_FLOOR))
 PRICES = {

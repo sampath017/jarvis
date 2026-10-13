@@ -57,10 +57,23 @@ object ContextLocationCapture {
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
         ) return events.onEach { it.put("location_status", "location_permission_required") }
 
+        val history = TelemetryHistory.get(context)
+        val remaining = events.filter { event ->
+            if (event.has("location") && !event.isNull("location")) false
+            else {
+                val historical = history.nearest(context, event)
+                if (historical != null) {
+                    event.put("location", historical).put("location_status", "historical_event_fix")
+                    false
+                } else true
+            }
+        }
+        if (remaining.isEmpty()) return events
+
         val client = LocationServices.getFusedLocationProviderClient(context)
         var location: Location? = null
         val now = System.currentTimeMillis()
-        if (events.any { occurred(it)?.let { at -> abs(now - at) <= MAX_AGE_MS } == true }) {
+        if (remaining.any { occurred(it)?.let { at -> abs(now - at) <= MAX_AGE_MS } == true }) {
             val cancellation = CancellationTokenSource()
             try {
                 val request = CurrentLocationRequest.Builder()
@@ -80,16 +93,20 @@ object ContextLocationCapture {
         if (location == null || !location.hasAccuracy() || location.accuracy > 250f) {
             location = runCatching { Tasks.await(client.lastLocation, 1, TimeUnit.SECONDS) }.getOrNull()
         }
-        val fix = location ?: return events.onEach { it.put("location_status", "fix_unavailable") }
-        if (!fix.hasAccuracy() || fix.accuracy > 250f) return events.onEach { it.put("location_status", "low_accuracy") }
-        for (event in events) {
+        val fix = location ?: run { remaining.forEach { it.put("location_status", "fix_unavailable") }; return events }
+        if (!fix.hasAccuracy() || fix.accuracy > 250f) { remaining.forEach { it.put("location_status", "low_accuracy") }; return events }
+        history.remember(context, fix)
+        for (event in remaining) {
             val at = occurred(event) ?: continue
             // Never attach today's location to an older queued transition.
-            if (abs(fix.time - at) > MAX_AGE_MS) {
+            val timing = event.optJSONObject("telemetry_diagnostics")
+            val delta = LocationEvidence.delta(timing?.optInt("boot_count", -1), EventTiming.boot(context),
+                timing?.optLong("observed_elapsed_ms", -1), fix.elapsedRealtimeNanos/1_000_000, at, fix.time)
+            if (delta > MAX_AGE_MS) {
                 event.put("location_status", "fix_outside_event_window")
                 continue
             }
-            event.put("location_status", if (abs(fix.time - at) <= 30_000L) "available" else "near_event_time")
+            event.put("location_status", if (delta <= 30_000L) "available" else "near_event_time")
             event.put("location", JSONObject().apply {
                 put("latitude", fix.latitude)
                 put("longitude", fix.longitude)
@@ -99,5 +116,16 @@ object ContextLocationCapture {
             })
         }
         return events
+    }
+
+    /** Retry only while another fix could still describe the event. */
+    fun finishAttempt(event: JSONObject): Boolean {
+        if (event.has("location") && !event.isNull("location")) { event.remove("location_pending"); return false }
+        val attempts = event.optInt("location_attempts") + 1
+        event.put("location_attempts", attempts)
+        val age = occurred(event)?.let { System.currentTimeMillis()-it } ?: Long.MAX_VALUE
+        val retry = LocationEvidence.retry(attempts, age, event.optString("location_status"))
+        if (!retry) event.remove("location_pending")
+        return retry
     }
 }

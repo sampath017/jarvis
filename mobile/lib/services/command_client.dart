@@ -61,6 +61,7 @@ class CommandClient {
     var failures = 0;
     var latest = const CommandProgress(message: 'Connecting to Jarvis');
     final body = jsonEncode(payload); // Immutable across every reconnect.
+    final requestId = payload['request_id'].toString();
     while (watch.elapsed < const Duration(minutes: 15)) {
       final client = _clientFactory();
       try {
@@ -81,7 +82,22 @@ class CommandClient {
           String detail =
               'Jarvis could not accept the request (${response.statusCode}).';
           try {
-            detail = '${(jsonDecode(raw) as Map)['detail'] ?? detail}';
+            final serverDetail = (jsonDecode(raw) as Map)['detail'];
+            if (response.statusCode == 422) {
+              final fileError =
+                  serverDetail is List &&
+                  serverDetail.any(
+                    (error) =>
+                        error is Map &&
+                        error['loc'] is List &&
+                        (error['loc'] as List).contains('file_memories'),
+                  );
+              detail = fileError
+                  ? 'Jarvis could not read the attached file references. Update the app and try again.'
+                  : 'Jarvis could not accept this message. Check the text and attachments, then try again.';
+            } else if (serverDetail is String && serverDetail.isNotEmpty) {
+              detail = serverDetail;
+            }
           } catch (_) {}
           return {'status': 'error', 'error': detail};
         }
@@ -120,7 +136,7 @@ class CommandClient {
         final response = await recovery
             .get(
               Uri.parse(
-                '$baseUrl/commands/requests/${Uri.encodeComponent(payload['request_id'].toString())}',
+                '$baseUrl/commands/requests/${Uri.encodeComponent(requestId)}',
               ),
               headers: headers,
             )

@@ -111,6 +111,49 @@ void main() {
     expect(find.text('How can I help today?'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
+    // Keystrokes and IME composition should update the composer, not rebuild
+    // the conversation (whose cost grows with its history).
+    final composer = find.byType(TextField).last;
+    await tester.showKeyboard(composer);
+    await tester.pumpAndSettle();
+    final appBarBeforeTyping = tester.widget<AppBar>(find.byType(AppBar).first);
+    final send = find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded);
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.enterText(
+      composer,
+      'A draft typed without rebuilding history',
+    );
+    await tester.pump();
+    expect(tester.widget<IconButton>(send).onPressed, isNotNull);
+    expect(
+      identical(
+        appBarBeforeTyping,
+        tester.widget<AppBar>(find.byType(AppBar).first),
+      ),
+      isTrue,
+    );
+    tester
+        .widget<TextField>(composer)
+        .controller!
+        .value = const TextEditingValue(
+      text: 'A draft',
+      selection: TextSelection.collapsed(offset: 7),
+      composing: TextRange(start: 2, end: 7),
+    );
+    await tester.pump();
+    expect(
+      identical(
+        appBarBeforeTyping,
+        tester.widget<AppBar>(find.byType(AppBar).first),
+      ),
+      isTrue,
+    );
+    await tester.enterText(composer, '   ');
+    await tester.pump();
+    expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.enterText(composer, '');
+    await tester.pump();
+
     Future<void> capture(String name) async {
       if (!const bool.fromEnvironment('CAPTURE_UI')) return;
       await tester.runAsync(() async {

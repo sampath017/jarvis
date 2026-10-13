@@ -9,16 +9,55 @@ from src.backend.command_execution import CommandExecution, execution
 from src.services import drive_index
 
 
-@pytest.mark.parametrize('url', ['https://drive.google.com/file/d/f', 'https://docs.google.com/document/d/f/edit', 'https://sites.google.com/view/f'])
+@pytest.mark.parametrize('url', [
+    'https://drive.google.com/file/d/f',
+    'https://docs.google.com/document/d/f/edit',
+    'https://sites.google.com/view/f',
+    'https://aistudio.google.com/app/prompts?state=%7B%22ids%22:%5B%22f%22%5D%7D',
+    'https://colab.research.google.com/drive/f',
+])
 def test_chat_and_indexing_accept_same_google_file_links(url):
     ref = {'id': 'f', 'name': 'Document', 'mimeType': 'application/pdf', 'url': url}
     assert CommandRequest(text='Search the contents too', file_memories=[ref]).file_memories[0].url == url
     assert FileMemory(**ref, size=0, account='a', created_at='').url == url
 
 
-def test_lookalike_google_domain_is_rejected():
+@pytest.mark.parametrize('url', [
+    'https://docs.google.com.evil.invalid/file',
+    'https://aistudio.google.com.evil.invalid/file',
+    'https://colab.research.google.com.evil.invalid/file',
+    'https://aistudio.google.com@evil.invalid/file',
+    'http://colab.research.google.com/drive/f',
+    'https://evil.invalid/file',
+])
+def test_lookalike_google_domain_is_rejected(url):
+    ref = {'id': 'f', 'name': 'n', 'mimeType': 'text/plain', 'url': url}
     with pytest.raises(ValidationError):
-        CommandRequest(text='read', file_memories=[{'id':'f','name':'n','mimeType':'text/plain','url':'https://docs.google.com.evil.invalid/file'}])
+        CommandRequest(text='read', file_memories=[ref])
+    with pytest.raises(ValidationError):
+        FileMemory(**ref, size=0, account='a', created_at='')
+
+
+def test_mixed_native_file_references_fit_the_command_context_limit():
+    urls = ['https://drive.google.com/file/d/f/view?usp=sharing#page=2',
+            'https://aistudio.google.com/app/prompts?state=%7B%7D',
+            'https://colab.research.google.com/drive/f?authuser=0']
+    refs = [{'id': str(i), 'name': 'ఆధార్.pdf', 'mimeType': 'application/pdf',
+             'url': urls[i % len(urls)]} for i in range(12)]
+    request = CommandRequest(text='Where was I yesterday at 12:36?', file_memories=refs)
+    assert len(request.file_memories) == 12
+    with pytest.raises(ValidationError) as error:
+        CommandRequest(text='test', file_memories=refs + [refs[0]])
+    assert error.value.errors()[0]['loc'] == ('file_memories',)
+
+
+def test_one_bad_reference_reports_its_exact_location():
+    refs = [{'id': str(i), 'name': 'Notebook', 'mimeType': 'text/plain', 'url': url}
+            for i, url in enumerate(['https://colab.research.google.com/drive/f',
+                                     'https://colab.research.google.com@evil.invalid/f'])]
+    with pytest.raises(ValidationError) as error:
+        CommandRequest(text='test', file_memories=refs)
+    assert [item['loc'] for item in error.value.errors()] == [('file_memories', 1, 'url')]
 
 
 def test_search_tool_defaults_to_reading_contents_and_preserves_full_information_need():

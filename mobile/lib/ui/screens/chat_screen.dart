@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../models/chat_session.dart';
@@ -41,6 +42,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final TextEditingController _inputController = TextEditingController();
   final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
+  bool _scrollScheduled = false;
+  late bool _lastOnline;
 
   bool _isSending = false;
   bool _uploading = false;
@@ -49,8 +52,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String? _activeSessionId;
   String? _activeRequestId;
   String _historyQuery = '';
-  CommandProgress _progress = const CommandProgress(
-    message: 'Preparing your request',
+  final _progress = ValueNotifier<CommandProgress>(
+    const CommandProgress(message: 'Preparing your request'),
   );
   bool _isLoadingSessions = true;
 
@@ -61,6 +64,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _lastOnline = _apiService.isOnline;
     _apiService.addListener(_onServiceUpdate);
     LocalDbService().addListener(_onLocalHistoryChanged);
     ChatNotificationService.openThread.addListener(_openNotification);
@@ -210,7 +214,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _onServiceUpdate() {
-    if (mounted) setState(() {});
+    if (mounted && _lastOnline != _apiService.isOnline) {
+      setState(() => _lastOnline = _apiService.isOnline);
+    }
   }
 
   void _onLocalHistoryChanged() {
@@ -284,6 +290,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _inputController.dispose();
     _inputFocus.dispose();
     _scrollController.dispose();
+    _progress.dispose();
     super.dispose();
   }
 
@@ -539,11 +546,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _scrollToBottom() {
+    if (_scrollScheduled) return;
+    _scrollScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
+      _scrollScheduled = false;
+      if (mounted && _scrollController.hasClients) {
+        if (_scrollController.position.extentAfter < 1) return;
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          duration: const Duration(milliseconds: 160),
           curve: Curves.easeOut,
         );
       }
@@ -552,11 +563,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _setProgress(CommandProgress progress) {
     if (!mounted) return;
+    final previous = _progress.value;
+    final contentChanged =
+        previous.message != progress.message ||
+        !listEquals(previous.steps, progress.steps);
+    if (!contentChanged &&
+        previous.elapsedSeconds == progress.elapsedSeconds &&
+        previous.canStop == progress.canStop) {
+      return;
+    }
     final followBottom =
         !_scrollController.hasClients ||
         _scrollController.position.extentAfter < 140;
-    setState(() => _progress = progress);
-    if (followBottom) _scrollToBottom();
+    _progress.value = progress;
+    if (contentChanged && followBottom) _scrollToBottom();
   }
 
   Future<void> _stopRequest() async {
@@ -573,8 +593,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _setProgress(
         CommandProgress(
           message: 'Stopping after the current operation',
-          steps: _progress.steps,
-          elapsedSeconds: _progress.elapsedSeconds,
+          steps: _progress.value.steps,
+          elapsedSeconds: _progress.value.elapsedSeconds,
         ),
       );
     } else {
@@ -599,7 +619,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         .where((m) => !m.id.startsWith('err_') && !m.isInternalAttachmentNotice)
         .toList()
         .reversed
-        .take(8)
+        .take(24)
         .toList()
         .reversed
         .map(
@@ -629,7 +649,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _isSending = true;
       _activeSessionId = session.id;
       _activeRequestId = userMsgId;
-      _progress = const CommandProgress(message: 'Preparing your request');
+      _progress.value = const CommandProgress(
+        message: 'Preparing your request',
+      );
     });
     _scrollToBottom();
     final watch = Stopwatch()..start();
@@ -852,12 +874,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                 (showingProgress ? 1 : 0),
                             itemBuilder: (ctx, i) {
                               if (i == visibleMessages.length) {
-                                return ChatProgressBubble(
-                                  key: ValueKey(_activeRequestId),
-                                  progress: _progress,
-                                  onStop: _progress.canStop
-                                      ? _stopRequest
-                                      : null,
+                                return ValueListenableBuilder<CommandProgress>(
+                                  valueListenable: _progress,
+                                  builder: (context, progress, child) =>
+                                      ChatProgressBubble(
+                                        key: ValueKey(_activeRequestId),
+                                        progress: progress,
+                                        onStop: progress.canStop
+                                            ? _stopRequest
+                                            : null,
+                                      ),
                                 );
                               }
                               final msg = visibleMessages[i];
@@ -1315,7 +1341,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 textCapitalization: TextCapitalization.sentences,
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
-                onChanged: (_) => setState(() {}),
                 style: const TextStyle(
                   color: AppTheme.textPrimary,
                   fontSize: 15,
@@ -1351,15 +1376,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton.filled(
-                    tooltip: 'Send message',
-                    onPressed:
-                        _isSending ||
-                            (_inputController.text.trim().isEmpty &&
-                                _pendingAttachments.isEmpty)
-                        ? null
-                        : () => _handleSendMessage(_inputController.text),
-                    icon: const Icon(Icons.arrow_upward_rounded, size: 21),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _inputController,
+                    builder: (context, value, child) => IconButton.filled(
+                      tooltip: 'Send message',
+                      onPressed:
+                          _isSending ||
+                              (value.text.trim().isEmpty &&
+                                  _pendingAttachments.isEmpty)
+                          ? null
+                          : () => _handleSendMessage(_inputController.text),
+                      icon: child!,
+                    ),
+                    child: const Icon(Icons.arrow_upward_rounded, size: 21),
                   ),
                 ],
               ),

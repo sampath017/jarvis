@@ -20,9 +20,11 @@ from ...backend.context_automation import ContextAutomationService
 from ..auth import get_current_user
 from ..dependencies import get_workflow
 from ..rate_limiter import TokenBudgetGuard
+from .motion_diagnostics import router as motion_diagnostics_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["context-events"])
+router.include_router(motion_diagnostics_router)
 
 
 @router.post(

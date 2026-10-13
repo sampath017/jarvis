@@ -71,7 +71,7 @@ object UsageReporting {
         val total = (0 until apps.length()).sumOf { apps.getJSONObject(it).getLong("milliseconds") }
         val text = buildString {
             val from = if (start == dayStart) "Midnight" else Instant.ofEpochMilli(start).atZone(zone).toLocalTime().withSecond(0).withNano(0).toString()
-            append("App usage · $day\n$from to ${Instant.ofEpochMilli(end).atZone(zone).toLocalTime().withSecond(0).withNano(0)} IST\n")
+            append("App usage · $day\n$from to ${Instant.ofEpochMilli(end).atZone(zone).toLocalTime().withSecond(0).withNano(0)}\n")
             append("Day total screen time: ${if (total == 0L) "0 min" else duration(total)}\n\n")
             for (i in 0 until apps.length()) {
                 val app = apps.getJSONObject(i)

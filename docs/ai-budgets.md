@@ -1,8 +1,8 @@
 # AI spending allowance
 
-Production uses one **Rs 20/day AI allowance**, reset at midnight IST. There is no daily token or model-call ceiling. The per-minute guard remains 15 requests/minute. Local testing retains finite token/call guardrails but uses the same spending allowance.
+Production uses one **Rs 50/day AI allowance** (raised from Rs 20 on 2026-10-11), reset at midnight IST. There is no daily token or model-call ceiling. The per-minute guard remains 15 requests/minute. Local testing retains finite token/call guardrails but uses the same spending allowance.
 
-OpenRouter bills USD. Jarvis currently budgets at Rs 96.544/USD (verified 2026-10-06), so its daily provider-usage allowance is **approximately USD 0.20716**. This conversion is explicit in health metadata; payment fees, taxes, Cloud Run, Firebase, and Maps are outside this AI allowance.
+OpenRouter bills USD. Jarvis currently budgets at Rs 96.544/USD (verified 2026-10-06), so its daily provider-usage allowance is **approximately USD 0.51790**. This conversion is explicit in health metadata; payment fees, taxes, Cloud Run, Firebase, and Maps are outside this AI allowance.
 
 Cloud Run uses transactional Firestore ledgers at `users/{uid}/ai_usage/{IST-date}`, shared across instances and deployments. It reserves estimated input and maximum output cost before each model call, then settles using OpenRouter's reported `usage.cost`. Cached and reasoning usage is included in provider-reported cost. Settlement is idempotent and uses the call's starting day even if completion crosses midnight. Storage errors return 503; they never silently reset usage.
 

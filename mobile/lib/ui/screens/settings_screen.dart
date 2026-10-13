@@ -12,6 +12,7 @@ import 'google_calendar_screen.dart';
 import '../../services/google_calendar_service.dart';
 import '../../services/google_drive_service.dart';
 import 'google_drive_screen.dart';
+import 'motion_monitoring_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -260,6 +261,19 @@ class _SettingsScreenState extends State<SettingsScreen>
             _card(
               children: [
                 ListTile(
+                  leading: const Icon(Icons.sensors, color: AppTheme.primary),
+                  title: const Text('Motion monitoring'),
+                  subtitle: const Text(
+                    'Compare detection timing and label activities',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const MotionMonitoringScreen(),
+                    ),
+                  ),
+                ),
+                ListTile(
                   leading: const Icon(
                     Icons.bedtime_outlined,
                     color: AppTheme.primary,
@@ -355,7 +369,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 SwitchListTile(
                   title: const Text('Daily report at 11 PM'),
                   subtitle: const Text(
-                    'Midnight–11 PM IST · notification with an app breakdown',
+                    'Midnight–11 PM · notification with an app breakdown',
                   ),
                   value: _usageDaily,
                   onChanged: (enabled) async {

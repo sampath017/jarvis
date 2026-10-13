@@ -16,6 +16,8 @@ class PassiveLocationReceiver : BroadcastReceiver() {
         val prefs = context.getSharedPreferences("jarvis_passive_location", Context.MODE_PRIVATE)
         for (location in result.locations) {
             if (location.time < ContextEventQueue.historyResetAt(context)) continue
+            // Preserve event-time fixes even when a checkpoint is deduplicated.
+            TelemetryHistory.get(context).remember(context, location)
             if (location.accuracy > 150f || abs(System.currentTimeMillis() - location.time) > 300_000) continue
             val lastTime = prefs.getLong("time", 0L)
             if (location.time <= lastTime) continue
@@ -28,6 +30,7 @@ class PassiveLocationReceiver : BroadcastReceiver() {
             }
             val activity = ContextEventQueue.currentActivity(context).ifEmpty { "UNKNOWN" }
             val event = ContextEventQueue.newEvent("CONTEXT_CHECKPOINT", activity, "ENTER", location.time)
+            EventTiming.mark(context, event, location.elapsedRealtimeNanos / 1_000_000)
             event.put("location", JSONObject().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)

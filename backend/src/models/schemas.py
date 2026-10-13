@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 from .file_urls import GOOGLE_FILE_URL_PATTERN
+from .telemetry import TelemetryTiming
 
 from .enums import (
     CRUDEntity,
@@ -123,6 +124,7 @@ class ContextEventRequest(BaseModel):
     activity_observed_at: datetime | None = None
     received_at: datetime | None = None
     context_request_id: str | None = Field(default=None, max_length=128)
+    telemetry_diagnostics: TelemetryTiming | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -159,6 +161,15 @@ class FileMemoryReference(BaseModel):
     url: str = Field(max_length=4096, pattern=GOOGLE_FILE_URL_PATTERN)
 
 
+class RecalledAnswer(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=6000)
+    thread_id: str = Field(max_length=256)
+    question_id: str = Field(max_length=256)
+    answer_id: str = Field(max_length=256)
+    answered_at: str = Field(max_length=80)
+
+
 class CommandRequest(BaseModel):
     """POST /commands request body."""
     calendar_connected: bool = False
@@ -166,6 +177,7 @@ class CommandRequest(BaseModel):
     calendar_id: str = Field(default="primary", max_length=256)
     file_memories: list[FileMemoryReference] = Field(default_factory=list, max_length=12)
     attached_file_ids: list[str] = Field(default_factory=list, max_length=5)
+    recalled_answers: list[RecalledAnswer] = Field(default_factory=list, max_length=5)
     request_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
         description="Client-generated UUID for idempotency",

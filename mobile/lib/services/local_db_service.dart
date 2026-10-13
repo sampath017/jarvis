@@ -8,6 +8,7 @@ import 'package:sqflite/sqflite.dart';
 import '../models/chat_session.dart';
 import 'api_service.dart';
 import 'sync_service.dart';
+import 'conversation_memory.dart';
 
 /// Offline-first Local SQLite Database Service for Jarvis Mobile.
 ///
@@ -34,6 +35,9 @@ class LocalDbService extends ChangeNotifier {
       path,
       version: 8,
       onOpen: (db) async {
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_messages_thread_julian ON chat_messages(thread_id, julianday(timestamp))',
+        );
         await db.execute(
           'CREATE TABLE IF NOT EXISTS context_outbox '
           '(event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, occurred_at TEXT NOT NULL)',
@@ -605,6 +609,41 @@ class LocalDbService extends ChangeNotifier {
   // ═══════════════════════════════════════════════════════════════════════════
   // CHAT SESSIONS & MESSAGES
   // ═══════════════════════════════════════════════════════════════════════════
+
+  Future<List<Map<String, dynamic>>> recallAnswers(
+    String question, {
+    List<Map<String, dynamic>> recentHistory = const [],
+  }) async {
+    final terms = ConversationMemory.searchTerms(question);
+    if (terms.isEmpty) return [];
+    final db = await database;
+    final matches = terms.map((_) => 'lower(q.content) LIKE ?').join(' OR ');
+    // Match questions first; then pair each with its immediate next message.
+    // This cannot attach an answer from a different chat or skip over a correction.
+    final rows = await db.rawQuery('''
+      SELECT q.id AS question_id, q.content AS question, q.thread_id,
+             a.id AS answer_id, a.content AS answer, a.timestamp AS answered_at,
+             a.executed_records,
+             (SELECT n.content FROM chat_messages n WHERE n.thread_id = a.thread_id
+              AND n.role = 'user' AND (julianday(n.timestamp) > julianday(a.timestamp)
+                   OR (julianday(n.timestamp) = julianday(a.timestamp) AND n.rowid > a.rowid))
+              ORDER BY julianday(n.timestamp), n.rowid LIMIT 1) AS next_user_text
+      FROM (SELECT q.rowid AS question_rowid, q.* FROM chat_messages q WHERE q.role = 'user'
+            AND ($matches) AND EXISTS (SELECT 1 FROM chat_sessions s WHERE s.id = q.thread_id)
+            ORDER BY julianday(q.timestamp) DESC LIMIT 80) q
+      JOIN chat_messages a ON a.id = (
+        SELECT n.id FROM chat_messages n WHERE n.thread_id = q.thread_id
+        AND (julianday(n.timestamp) > julianday(q.timestamp)
+             OR (julianday(n.timestamp) = julianday(q.timestamp) AND n.rowid > q.question_rowid))
+        ORDER BY julianday(n.timestamp), n.rowid LIMIT 1)
+      WHERE a.role = 'assistant' AND substr(a.id, 1, 4) != 'err_'
+    ''', terms.map((term) => '%$term%').toList());
+    return ConversationMemory.select(
+      question,
+      rows,
+      recentHistory: recentHistory,
+    );
+  }
 
   Future<List<ChatSession>> loadChatSessions() async {
     final db = await database;

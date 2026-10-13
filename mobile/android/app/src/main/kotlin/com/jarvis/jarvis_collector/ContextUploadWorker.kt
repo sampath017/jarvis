@@ -48,11 +48,17 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
 
             val awaitingLocation = ContextEventQueue.pending(applicationContext).filter { it.optBoolean("location_pending") }
             for (ready in ContextLocationCapture.capture(applicationContext, awaitingLocation, 15_000)) {
-                ready.remove("location_pending")
+                ContextLocationCapture.finishAttempt(ready)
                 ContextEventQueue.update(applicationContext, ready)
             }
             for (queued in ContextEventQueue.pending(applicationContext)) {
                 val event = JSONObject(queued.toString())
+                val timing = event.optJSONObject("telemetry_diagnostics")
+                if (timing != null && timing.optInt("boot_count", -1) == EventTiming.boot(applicationContext)) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    timing.put("upload_elapsed_ms", now)
+                    if (now >= timing.optLong("received_elapsed_ms", now)) timing.put("upload_delay_ms", now - timing.getLong("received_elapsed_ms"))
+                }
                 if (event.optBoolean("location_pending")) {
                     ContextEventQueue.scheduleLocationCapture(applicationContext)
                     return Result.success()
@@ -64,6 +70,7 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
                 }
                 ContextEventQueue.acknowledge(applicationContext, event.getString("event_id"))
             }
+            uploadMotionDiagnostics()
             if (inputData.getBoolean("context_checkpoint", false)) {
                 val activity = ContextEventQueue.currentActivity(applicationContext).ifEmpty { "UNKNOWN" }
                 ContextEventQueue.add(applicationContext,
@@ -85,6 +92,29 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
             Log.w(TAG, "Context upload retained for retry", error)
             return Result.retry()
         }
+    }
+
+    private fun uploadMotionDiagnostics() {
+        // An older backend may not yet implement this endpoint; retain local data.
+        runCatching {
+            val history = TelemetryHistory.get(applicationContext)
+            val records = history.pending()
+            if (records.isEmpty()) return
+            records.forEach { record ->
+                if (record.optInt("boot_count", -1) == EventTiming.boot(applicationContext)) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    record.put("upload_elapsed_ms", now)
+                    if (now >= record.getLong("received_elapsed_ms")) record.put("upload_delay_ms", now-record.getLong("received_elapsed_ms"))
+                }
+            }
+            val response = request("POST", "$BASE_URL/motion-diagnostics", JSONObject().apply {
+                put("records", org.json.JSONArray(records))
+            }.toString(), timeoutMs = 10_000)
+            if (response.first in 200..299) {
+                val accepted = JSONObject(response.second).optJSONArray("accepted_ids") ?: return
+                history.acknowledge((0 until accepted.length()).map { accepted.getString(it) })
+            }
+        }.onFailure { Log.d(TAG, "Motion diagnostics retained locally: ${it.javaClass.simpleName}") }
     }
 
     private fun deliverNotifications() {

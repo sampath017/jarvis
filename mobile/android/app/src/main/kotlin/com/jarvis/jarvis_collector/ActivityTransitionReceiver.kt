@@ -29,7 +29,8 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (!ActivityRecognitionRegistrar.isEnabled(context)) return
         if (ActivityRecognitionResult.hasResult(intent)) {
-            recordSample(context, ActivityRecognitionResult.extractResult(intent) ?: return)
+            val event = recordSample(context, ActivityRecognitionResult.extractResult(intent) ?: return) ?: return
+            captureImmediately(context, listOf(event))
             return
         }
         if (!ActivityTransitionResult.hasResult(intent)) {
@@ -76,6 +77,7 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
             queued.put("activity_evidence", "android_transition")
             queued.put("activity_observed_at", ContextEventQueue.occurredAt(occurredAtMillis))
             queued.put("received_at", ContextEventQueue.occurredAt())
+            EventTiming.mark(context, queued, event.elapsedRealTimeNanos / 1_000_000)
             ContextEventQueue.add(context, queued, deferCapture = true)
             locationEvents.add(queued)
             val lastStateTime = deliveryPrefs.getLong("state_time", 0L)
@@ -97,6 +99,10 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
 
         }
         if (locationEvents.isEmpty()) return
+        captureImmediately(context, locationEvents)
+    }
+
+    private fun captureImmediately(context: Context, locationEvents: List<JSONObject>) {
         MonitoringService.ensure(context)
         val appContext = context.applicationContext
         // Persist a fallback before starting the immediate fix, in case Android
@@ -124,11 +130,11 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
         }.start()
     }
 
-    private fun recordSample(context: Context, result: ActivityRecognitionResult) {
+    private fun recordSample(context: Context, result: ActivityRecognitionResult): JSONObject? {
         val at = result.time
-        if (at < ContextEventQueue.historyResetAt(context)) return
+        if (at < ContextEventQueue.historyResetAt(context)) return null
         val prefs = context.getSharedPreferences("jarvis_motion_samples", Context.MODE_PRIVATE)
-        if (at <= prefs.getLong("at", 0L)) return
+        if (at <= prefs.getLong("at", 0L)) return null
         fun name(type: Int) = when (type) {
             DetectedActivity.IN_VEHICLE -> "IN_VEHICLE"
             DetectedActivity.ON_BICYCLE -> "ON_BICYCLE"
@@ -147,15 +153,17 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
         prefs.edit().putString("candidate", candidate).putInt("confidence", best.confidence).putLong("at", at).commit()
         ContextEventQueue.setCurrentActivity(context, accepted, at)
         Log.i(TAG, "Sample candidate=$candidate confidence=${best.confidence} accepted=$accepted delayMs=${System.currentTimeMillis()-at}")
-        if (!shouldEmit) return
+        if (!shouldEmit) return null
         val event = ContextEventQueue.newEvent("ACTIVITY_SAMPLE", accepted, "ENTER", at)
             .put("activity_evidence", if (accepted == "UNKNOWN") "uncertain_sample" else "repeated_android_samples")
             .put("activity_confidence", best.confidence)
             .put("reported_activity", candidate)
             .put("activity_observed_at", ContextEventQueue.occurredAt(at))
             .put("received_at", ContextEventQueue.occurredAt())
-        ContextEventQueue.add(context, event)
+        EventTiming.mark(context, event, result.elapsedRealtimeMillis)
+        ContextEventQueue.add(context, event, deferCapture = true)
         prefs.edit().putString("emitted_activity", accepted).putLong("emitted_at", at).commit()
         sampleListener?.invoke(accepted, best.confidence)
+        return event
     }
 }
