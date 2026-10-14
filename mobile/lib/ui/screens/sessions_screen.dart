@@ -5,7 +5,6 @@ import 'package:intl/intl.dart';
 import '../../models/recording_session.dart';
 import '../../services/session_storage_service.dart';
 import '../../services/session_preferences.dart';
-import '../../services/recording_backup_service.dart';
 import '../theme.dart';
 import '../widgets/workspace_widgets.dart';
 
@@ -16,11 +15,9 @@ class SessionsScreen extends StatefulWidget {
 }
 
 class _SessionsScreenState extends State<SessionsScreen> {
-  final _backup = RecordingBackupService();
   final _store = SessionPreferences();
   Map<String, Map<String, Object?>> _prefs = {};
   List<RecordingSession> _sessions = [];
-  Set<String> _cloud = {};
   bool _loading = true, _archived = false, _oldest = false;
   String _query = '';
   String? _error, _busy;
@@ -43,23 +40,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
     try {
       final local = await SessionStorageService.listSessions();
       final prefs = await _store.load();
-      List<RecordingSession> remote = [];
-      String? error;
-      try {
-        remote = await _backup.list();
-      } catch (_) {
-        error = 'Cloud library unavailable. Showing downloaded recordings.';
-      }
       if (!mounted) return;
-      final merged = {
-        for (final s in remote) s.id: s,
-        for (final s in local) s.id: s,
-      };
       setState(() {
-        _sessions = merged.values.toList();
+        _sessions = local;
         _prefs = prefs;
-        _cloud = remote.map((s) => s.id).toSet();
-        _error = error;
         _loading = false;
       });
     } catch (_) {
@@ -109,7 +93,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
         );
         await _load();
       } catch (_) {
-        _notice('Could not save to Firebase. Please retry.');
+        _notice('Could not save on this phone. Please retry.');
       } finally {
         if (mounted) setState(() => _busy = null);
       }
@@ -123,17 +107,15 @@ class _SessionsScreenState extends State<SessionsScreen> {
           _prefs[_key(session)]?['name'] as String?,
           !_hidden(session),
         );
-      } else if (action == 'backup') {
-        await _backup.backup(session);
       } else {
         var local = session;
         if (local.csvFilePath.isEmpty ||
             local.jsonFilePath.isEmpty ||
             !await File(local.csvFilePath).exists() ||
             !await File(local.jsonFilePath).exists()) {
-          local = await _backup.restore(session);
+          throw StateError('Recording files are missing from this phone.');
         }
-        if (action == 'share') await SessionStorageService.shareSession(local);
+
         if (action == 'preview') {
           final lines = await File(local.csvFilePath)
               .openRead()
@@ -162,7 +144,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                           ),
                         ),
                         const Text(
-                          'First 15 samples. Share to export the full files.',
+                          'First 15 samples.',
                         ),
                         const SizedBox(height: 16),
                         Expanded(
@@ -265,12 +247,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
                       ),
                     ),
                     const SizedBox(height: 6),
-                    Text(
-                      '${_cloud.length} backed up · ${_sessions.where((s) => !_cloud.contains(s.id)).length} awaiting backup',
-                    ),
+                    Text('${_sessions.length} recordings saved on this phone'),
                     const SizedBox(height: 8),
                     const Text(
-                      'Backed-up files, names and archives survive a reinstall. Pending files retry while Jarvis is open. Files up to 128 MB are supported.',
+                      'Recordings and their names stay on this phone.',
                       style: TextStyle(color: AppTheme.textSecondary),
                     ),
                   ],
@@ -358,10 +338,6 @@ class _SessionsScreenState extends State<SessionsScreen> {
                                     value: 'preview',
                                     child: Text('Preview data'),
                                   ),
-                                  const PopupMenuItem(
-                                    value: 'share',
-                                    child: Text('Share files'),
-                                  ),
                                 ],
                               ),
                             ],
@@ -390,40 +366,17 @@ class _SessionsScreenState extends State<SessionsScreen> {
                           else
                             Row(
                               children: [
-                                Icon(
-                                  _cloud.contains(s.id)
-                                      ? Icons.cloud_done_outlined
-                                      : Icons.cloud_upload_outlined,
+                                const Icon(
+                                  Icons.phone_android_outlined,
                                   size: 18,
-                                  color: _cloud.contains(s.id)
-                                      ? AppTheme.green
-                                      : AppTheme.amber,
+                                  color: AppTheme.green,
                                 ),
                                 const SizedBox(width: 8),
-                                Expanded(
+                                const Expanded(
                                   child: Text(
-                                    _cloud.contains(s.id)
-                                        ? 'Backed up'
-                                        : s.csvSizeBytes > 128 * 1024 * 1024
-                                        ? 'Too large for backup · Share to export'
-                                        : 'On this phone only',
+                                    'Saved on this phone',
                                   ),
                                 ),
-                                if (!_cloud.contains(s.id) &&
-                                    s.csvSizeBytes <= 128 * 1024 * 1024)
-                                  TextButton(
-                                    onPressed: _busy == null
-                                        ? () => _action(s, 'backup')
-                                        : null,
-                                    child: const Text('Back up'),
-                                  )
-                                else if (s.csvFilePath.isEmpty)
-                                  TextButton(
-                                    onPressed: _busy == null
-                                        ? () => _action(s, 'download')
-                                        : null,
-                                    child: const Text('Download'),
-                                  ),
                               ],
                             ),
                         ],

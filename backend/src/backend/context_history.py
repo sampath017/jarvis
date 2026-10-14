@@ -53,9 +53,13 @@ def prefetch_history_window(text: str, now: datetime | None = None):
 def build_timeline(records: list[dict[str, Any]], start: datetime, end: datetime, *, truncated: bool = False) -> dict:
     """Group repeated samples, without filling unsampled gaps or inventing actions."""
     from .activity_evidence import qualified_records
+    from .power_history import off_periods, unexplained_gaps
+    powered_off = off_periods(records, start, end)
     points = []
     records = qualified_records(records)
     for record in records:
+        if record.get('event_type') == 'JARVIS_OFF_INTERVAL':
+            continue
         if record.get('source') == 'user_report' or record.get('activity_evidence') == 'diagnostic_event':
             continue  # A correction must not disguise a gap in phone coverage.
         try:
@@ -99,6 +103,7 @@ def build_timeline(records: list[dict[str, Any]], start: datetime, end: datetime
         gaps.append({"from": previous.isoformat(), "to": end.isoformat()})
     for episode in episodes:
         episode.pop("_key")
+    gaps = unexplained_gaps(gaps, powered_off)
     return {
         "window_start": start.isoformat(), "window_end": end.isoformat(), "timezone": "UTC",
         "observation_count": len(points), "timeline": episodes[:300],
@@ -107,9 +112,13 @@ def build_timeline(records: list[dict[str, Any]], start: datetime, end: datetime
         "truncated": truncated or len(episodes) > 300,
         "records_truncated": truncated, "timeline_truncated": len(episodes) > 300,
         "unobserved_gaps_over_10_minutes": gaps[:100], "gap_count": len(gaps),
+        "powered_off_periods": powered_off,
         "interpretation": "Phone sensor classifications can be wrong and must not overrule the user's reported activity. "
                           "An unpaired EXIT is not proof the user performed that activity. Cached labels are UNKNOWN, not fresh measurements. "
                           "Sampled phone observations only. Intervals are first/last samples, not proof of continuous activity. "
                           "STILL is not proof of sitting; nearby places are not visits; shop context is inferred, not a purchase. "
+                          "powered_off_periods explain intervals when the user switched Jarvis off; report their times and duration, "
+                          "not an unexplained blank or sensor failure. User activity during power-off remains unknown. "
+                          "Other missing data remains unexplained; never assume Jarvis was off without switch evidence. "
                           "Missing data means unknown, not inactive. If truncated, query smaller windows before a complete recap.",
     }

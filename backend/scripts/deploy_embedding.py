@@ -130,15 +130,8 @@ def main() -> None:
 
     # 5. Update jarvis-backend on Cloud Run
     env_vars = [f"EMBEDDING_URL={embedding_url}"]
-    local_env = dotenv_values(env_path) if env_path.exists() else {}
     secrets = []
-    for key in ("CHROMA_HOST", "CHROMA_API_KEY", "CHROMA_TENANT", "CHROMA_DATABASE"):
-        if local_env.get(key):
-            # Credentials remain in Secret Manager, never command arguments or logs.
-            secret = "jarvis-" + key.lower().replace("_", "-")
-            secrets.append(f"{key}={secret}:latest")
-
-    print(f"\n=== Updating {BACKEND_SERVICE} with EMBEDDING_URL & Chroma config ===")
+    print(f"Updating {BACKEND_SERVICE} with EMBEDDING_URL")
     update_cmd = [
         gcloud,
         "run",

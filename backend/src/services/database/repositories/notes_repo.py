@@ -77,3 +77,13 @@ class NotesRepositoryMixin:
                 (uid, f"%{title_match}%"),
             ).fetchone()
         return dict(row) if row else None
+
+    def search_notes(self, uid: str, query: str, *, exact_title: bool = False, limit: int = 50) -> list[dict[str, Any]]:
+        """Search before limiting, so older subject logs remain discoverable."""
+        match = "lower(trim(title)) = lower(?)" if exact_title else "instr(lower(title || ' ' || content), lower(?)) > 0"
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM notes WHERE uid = ? AND deleted_at IS NULL AND {match} ORDER BY updated_at DESC LIMIT ?",
+                (uid, query.strip(), limit),
+            ).fetchall()
+        return [dict(row) for row in rows]

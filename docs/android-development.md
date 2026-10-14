@@ -1,0 +1,7 @@
+# Android development builds
+
+Use **debug builds** for development, device diagnosis and verification. Build or install a release APK only when the user explicitly asks for a release. Successful tests alone do not authorize a release build.
+
+`flutter build apk --debug --no-pub` creates the debug APK. Install with `adb install -r` to preserve the existing application data. Set `--dart-define=JARVIS_API_BASE_URL=https://full-history-debug---jarvis-backend-pi6ef2rq5q-el.a.run.app` to use the approved full-history debug backend independently of a USB connection. For local development, use `--dart-define=JARVIS_API_BASE_URL=http://127.0.0.1:8765` with `adb reverse tcp:8765 tcp:8765`; keep the phone connected and the local backend running. Debug HTTP access is permitted only for loopback hosts. Release builds use the production URL. Candidate testing must leave production traffic unchanged until a release is requested; use synthetic fixtures for cloud probes and keep inspected private chat databases local unless the user explicitly authorizes another destination. The user explicitly approved replay of the saved conversation to the above debug endpoint on 27 October 2026.
+
+Debug builds allow authorized local database inspection through `adb shell run-as com.jarvis.jarvis_collector`. Stop the app before copying its SQLite database and WAL for a consistent snapshot. Keep diagnostics in ignored `tests/coding_agent_artifacts/` folders, inspect only the requested records, and retain the user's phone data.

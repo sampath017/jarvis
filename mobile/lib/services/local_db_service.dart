@@ -1,4 +1,5 @@
 import 'reminder_alert_service.dart';
+import 'mobile_sql_storage.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -15,16 +16,22 @@ import 'conversation_memory.dart';
 /// Stores reminders, notes, saved places, and chat sessions directly on device,
 /// enabling instant zero-latency UI access and offline geofence/sensor evaluation.
 class LocalDbService extends ChangeNotifier {
+  void notifyLocalChanges() => notifyListeners();
   static final LocalDbService _instance = LocalDbService._internal();
   factory LocalDbService() => _instance;
   LocalDbService._internal();
 
   Database? _db;
+  Future<Database>? _opening;
 
   Future<Database> get database async {
     if (_db != null) return _db!;
-    _db = await _initDatabase();
-    return _db!;
+    final opening = _opening ??= _initDatabase();
+    try {
+      return _db = await opening;
+    } finally {
+      if (identical(_opening, opening)) _opening = null;
+    }
   }
 
   Future<Database> _initDatabase() async {
@@ -33,8 +40,33 @@ class LocalDbService extends ChangeNotifier {
 
     return await openDatabase(
       path,
-      version: 8,
+      version: 10,
+      onConfigure: (db) async {
+        await db.rawQuery('PRAGMA journal_mode=WAL');
+        await db.execute('PRAGMA synchronous=NORMAL');
+        // Android treats this PRAGMA as a row-returning query, even on assignment.
+        await db.rawQuery('PRAGMA busy_timeout=5000');
+      },
       onOpen: (db) async {
+        await MobileSqlStorage.prepare(db);
+        await db.execute(
+          'CREATE TABLE IF NOT EXISTS chat_archive_refs '
+          '(thread_id TEXT PRIMARY KEY, file_id TEXT, digest TEXT, cached_digest TEXT, message_count INTEGER, '
+          'archived INTEGER NOT NULL DEFAULT 1, archived_at TEXT)',
+        );
+        final archiveColumns = (await db.rawQuery(
+          'PRAGMA table_info(chat_archive_refs)',
+        )).map((row) => row['name']).toSet();
+        if (!archiveColumns.contains('archived')) {
+          await db.execute(
+            'ALTER TABLE chat_archive_refs ADD COLUMN archived INTEGER NOT NULL DEFAULT 1',
+          );
+        }
+        if (!archiveColumns.contains('archived_at')) {
+          await db.execute(
+            'ALTER TABLE chat_archive_refs ADD COLUMN archived_at TEXT',
+          );
+        }
         await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_messages_thread_julian ON chat_messages(thread_id, julianday(timestamp))',
         );
@@ -44,6 +76,9 @@ class LocalDbService extends ChangeNotifier {
         );
       },
       onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 10) {
+          await db.execute('ALTER TABLE places ADD COLUMN boundary_json TEXT');
+        }
         if (oldVersion < 8) {
           await db.execute(
             "ALTER TABLE reminders ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'notification'",
@@ -62,17 +97,6 @@ class LocalDbService extends ChangeNotifier {
             await db.execute(
               "ALTER TABLE chat_sessions ADD COLUMN sync_status TEXT DEFAULT 'pending'",
             );
-          } catch (_) {}
-        }
-        if (oldVersion < 3) {
-          try {
-            await db.execute('''
-              CREATE TABLE IF NOT EXISTS pending_deletions (
-                id TEXT PRIMARY KEY,
-                record_type TEXT NOT NULL,
-                created_at TEXT NOT NULL
-              )
-            ''');
           } catch (_) {}
         }
         if (oldVersion < 4) {
@@ -141,6 +165,7 @@ class LocalDbService extends ChangeNotifier {
         await db.execute('''
           CREATE TABLE places (
             id TEXT PRIMARY KEY,
+            boundary_json TEXT,
             name TEXT NOT NULL,
             address TEXT,
             latitude REAL,
@@ -184,15 +209,6 @@ class LocalDbService extends ChangeNotifier {
             day_key TEXT PRIMARY KEY,
             payload TEXT NOT NULL,
             fetched_at TEXT NOT NULL
-          )
-        ''');
-
-        // Pending Deletions table for reliable offline-first deletion sync
-        await db.execute('''
-          CREATE TABLE IF NOT EXISTS pending_deletions (
-            id TEXT PRIMARY KEY,
-            record_type TEXT NOT NULL,
-            created_at TEXT NOT NULL
           )
         ''');
 
@@ -511,19 +527,9 @@ class LocalDbService extends ChangeNotifier {
       where: deleted ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL',
       orderBy: 'updated_at DESC',
     );
-    if (deleted) return raw;
-    final seen = <String>{};
-    final List<Map<String, dynamic>> deduped = [];
-    for (final item in raw) {
-      final key = (item['content'] ?? item['text'] ?? '')
-          .toString()
-          .trim()
-          .toLowerCase();
-      if (seen.add(key)) {
-        deduped.add(item);
-      }
-    }
-    return deduped;
+    // Distinct IDs are distinct notes, including title-only notes and merge
+    // sources. Never hide originals just because their text is identical.
+    return raw;
   }
 
   Future<void> saveNote(
@@ -645,46 +651,33 @@ class LocalDbService extends ChangeNotifier {
     );
   }
 
-  Future<List<ChatSession>> loadChatSessions() async {
+  Future<List<ChatSession>> loadChatSessions({
+    bool summariesOnly = false,
+    String? loadThreadId,
+    String? onlyThreadId,
+    int? messageLimit,
+  }) async {
     final db = await database;
-    final sessionRows = await db.query(
-      'chat_sessions',
-      orderBy: 'updated_at DESC',
+    final sessionRows = await db.rawQuery(
+      'SELECT s.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id=s.id) AS message_count, '
+      '(SELECT timestamp FROM chat_messages m WHERE m.thread_id=s.id '
+      'ORDER BY julianday(timestamp) DESC LIMIT 1) AS last_message_at '
+      ',(SELECT message_count FROM chat_archive_refs a WHERE a.thread_id=s.id) AS archived_count '
+      ',(SELECT digest FROM chat_archive_refs a WHERE a.thread_id=s.id) AS archive_digest '
+      ',(SELECT archived FROM chat_archive_refs a WHERE a.thread_id=s.id) AS is_archived '
+      ',(SELECT archived_at FROM chat_archive_refs a WHERE a.thread_id=s.id) AS archived_at '
+      ",(SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id=s.id AND m.sync_status='pending') AS pending_count "
+      'FROM chat_sessions s ${onlyThreadId == null ? '' : 'WHERE s.id=?'} '
+      'ORDER BY julianday(s.updated_at) DESC',
+      onlyThreadId == null ? [] : [onlyThreadId],
     );
     final List<ChatSession> sessions = [];
 
     for (final sRow in sessionRows) {
       final threadId = sRow['id'] as String;
-      final msgRows = await db.query(
-        'chat_messages',
-        where: 'thread_id = ?',
-        whereArgs: [threadId],
-        orderBy: 'timestamp ASC',
-      );
-
-      final messages = msgRows.map((m) {
-        List<String> executed = [];
-        if (m['executed_records'] != null) {
-          try {
-            executed = List<String>.from(
-              jsonDecode(m['executed_records'] as String),
-            );
-          } catch (_) {}
-        }
-
-        return ChatMessage(
-          id: m['id'] as String?,
-          text: m['content'] as String? ?? '',
-          isUser: (m['role'] as String?) == 'user',
-          timestamp:
-              DateTime.tryParse(m['timestamp'] as String? ?? '') ??
-              DateTime.now(),
-          runId: m['run_id'] as String?,
-          executedRecords: executed,
-          durationMs: (m['duration_ms'] as num?)?.toInt(),
-        );
-      }).toList();
-
+      final messages = !summariesOnly || threadId == loadThreadId
+          ? await loadChatMessages(threadId, limit: messageLimit)
+          : <ChatMessage>[];
       sessions.add(
         ChatSession(
           id: threadId,
@@ -696,13 +689,97 @@ class LocalDbService extends ChangeNotifier {
               DateTime.tryParse(sRow['updated_at'] as String? ?? '') ??
               DateTime.now(),
           messages: messages,
+          storedMessageCount: max(
+            (sRow['message_count'] as num?)?.toInt() ?? 0,
+            (sRow['archived_count'] as num?)?.toInt() ?? 0,
+          ),
+          summaryLastActivityAt: DateTime.tryParse(
+            sRow['last_message_at'] as String? ?? '',
+          ),
+          hasArchive: sRow['archive_digest'] != null,
+          isArchived:
+              sRow['archive_digest'] != null &&
+              sRow['is_archived'] == 1 &&
+              (sRow['pending_count'] as num? ?? 0) == 0 &&
+              ((sRow['archived_count'] as num?) == null ||
+                  (sRow['message_count'] as num? ?? 0) <=
+                      (sRow['archived_count'] as num)),
+          archivedAt: DateTime.tryParse(sRow['archived_at'] as String? ?? ''),
         ),
       );
     }
-
-    // SQLite text ordering cannot compare timestamps with mixed UTC offsets.
     sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
     return sessions;
+  }
+
+  Future<List<ChatMessage>> loadChatMessages(
+    String threadId, {
+    int? limit,
+    ChatMessage? before,
+  }) async {
+    final db = await database;
+    final args = <Object?>[threadId];
+    var boundary = '';
+    if (before != null) {
+      const rank = "CASE WHEN role='user' THEN 0 ELSE 1 END";
+      boundary =
+          ' AND (julianday(timestamp) < julianday(?) OR '
+          '(julianday(timestamp) = julianday(?) AND '
+          '($rank < ? OR ($rank = ? AND id < ?))))';
+      args.addAll([
+        before.timestamp.toUtc().toIso8601String(),
+        before.timestamp.toUtc().toIso8601String(),
+        before.isUser ? 0 : 1,
+        before.isUser ? 0 : 1,
+        before.id,
+      ]);
+    }
+    if (limit != null) args.add(limit);
+    final msgRows = await db.rawQuery(
+      'SELECT * FROM chat_messages WHERE thread_id=?$boundary '
+      "ORDER BY julianday(timestamp) DESC, CASE WHEN role='user' THEN 0 ELSE 1 END DESC, id DESC "
+      '${limit == null ? '' : 'LIMIT ?'}',
+      args,
+    );
+    final messages = msgRows.map((m) {
+      List<String> executed = [];
+      if (m['executed_records'] != null) {
+        try {
+          executed = List<String>.from(
+            jsonDecode(m['executed_records'] as String),
+          );
+        } catch (_) {}
+      }
+
+      return ChatMessage(
+        id: m['id'] as String?,
+        text: m['content'] as String? ?? '',
+        isUser: (m['role'] as String?) == 'user',
+        timestamp:
+            DateTime.tryParse(m['timestamp'] as String? ?? '') ??
+            DateTime.now(),
+        runId: m['run_id'] as String?,
+        executedRecords: executed,
+        durationMs: (m['duration_ms'] as num?)?.toInt(),
+      );
+    }).toList();
+    return ChatSession(
+      title: '',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+      messages: messages,
+    ).messages;
+  }
+
+  Future<Set<String>> searchChatIds(String query) async {
+    final db = await database;
+    final pattern = '%${query.toLowerCase()}%';
+    final rows = await db.rawQuery(
+      'SELECT s.id FROM chat_sessions s WHERE lower(s.title) LIKE ? OR '
+      'EXISTS (SELECT 1 FROM chat_messages m WHERE m.thread_id=s.id AND lower(m.content) LIKE ?)',
+      [pattern, pattern],
+    );
+    return rows.map((r) => r['id'] as String).toSet();
   }
 
   Future<void> saveChatSession(
@@ -710,6 +787,16 @@ class LocalDbService extends ChangeNotifier {
     bool markPending = true,
   }) async {
     final db = await database;
+    final existingMessages = markPending
+        ? {
+            for (final row in await db.query(
+              'chat_messages',
+              where: 'thread_id = ?',
+              whereArgs: [session.id],
+            ))
+              row['id']: row,
+          }
+        : <Object?, Map<String, Object?>>{};
     final batch = db.batch();
 
     batch.insert('chat_sessions', {
@@ -721,7 +808,7 @@ class LocalDbService extends ChangeNotifier {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     for (final m in session.messages) {
-      batch.insert('chat_messages', {
+      final data = <String, Object?>{
         'id': m.id,
         'thread_id': session.id,
         'role': m.isUser ? 'user' : 'assistant',
@@ -730,18 +817,36 @@ class LocalDbService extends ChangeNotifier {
         'run_id': m.runId,
         'executed_records': jsonEncode(m.executedRecords),
         'duration_ms': m.durationMs,
-        if (markPending) 'sync_status': 'pending',
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      };
+      final existing = existingMessages[m.id];
+      if (markPending &&
+          existing != null &&
+          data.entries.every((entry) => existing[entry.key] == entry.value)) {
+        // Preserve both synced and still-pending rows. Saving a new message
+        // must not queue every unchanged historical message for another write.
+        continue;
+      }
+      if (markPending) data['sync_status'] = 'pending';
+      if (markPending) {
+        batch.update(
+          'chat_archive_refs',
+          {'archived': 0},
+          where: 'thread_id = ?',
+          whereArgs: [session.id],
+        );
+      }
+      batch.insert(
+        'chat_messages',
+        data,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     }
 
     await batch.commit(noResult: true);
     notifyListeners();
   }
 
-  Future<void> deleteChatSession(
-    String sessionId, {
-    bool queueDeletion = true,
-  }) async {
+  Future<void> deleteChatSession(String sessionId) async {
     final db = await database;
     await db.delete(
       'chat_messages',
@@ -749,427 +854,85 @@ class LocalDbService extends ChangeNotifier {
       whereArgs: [sessionId],
     );
     await db.delete('chat_sessions', where: 'id = ?', whereArgs: [sessionId]);
-    if (queueDeletion) {
-      await db.insert('pending_deletions', {
-        'id': sessionId,
-        'record_type': 'chat_session',
-        'created_at': DateTime.now().toIso8601String(),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
     notifyListeners();
   }
 
-  Future<void> deleteAllChatSessionsLocal({bool queueDeletion = false}) async {
+  Future<void> deleteAllChatSessionsLocal() async {
     final db = await database;
     await db.delete('chat_messages');
     await db.delete('chat_sessions');
-    if (queueDeletion) {
-      await db.insert('pending_deletions', {
-        'id': 'ALL_CHAT_SESSIONS',
-        'record_type': 'all_chat_sessions',
-        'created_at': DateTime.now().toIso8601String(),
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
     notifyListeners();
   }
 
-  Future<List<Map<String, dynamic>>> getPendingDeletions() async {
-    final db = await database;
-    try {
-      return await db.query('pending_deletions');
-    } catch (_) {
-      return [];
-    }
+  // Local chat archive metadata and cached messages.
+  Future<Map<String, Object?>?> chatArchiveReference(String threadId) async {
+    final rows = await (await database).query(
+      'chat_archive_refs',
+      where: 'thread_id = ?',
+      whereArgs: [threadId],
+    );
+    return rows.isEmpty ? null : rows.single;
   }
 
-  Future<void> removePendingDeletion(String id) async {
+  Future<void> cacheArchivedChat(
+    Map<String, dynamic> archive,
+    String digest, {
+    bool retirePending = false,
+  }) async {
     final db = await database;
-    try {
-      await db.delete('pending_deletions', where: 'id = ?', whereArgs: [id]);
-    } catch (_) {}
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // SYNC RECONCILIATION HELPERS
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Retrieve all locally modified records waiting to be pushed to Firestore
-  Future<Map<String, List<Map<String, dynamic>>>>
-  getPendingSyncRecords() async {
-    final db = await database;
-    final reminders = await db.query(
-      'reminders',
-      where: "sync_status = 'pending'",
-    );
-    final notes = await db.query('notes', where: "sync_status = 'pending'");
-    final places = await db.query('places', where: "sync_status = 'pending'");
-    final sessions = await db.query(
-      'chat_sessions',
-      where: "sync_status = 'pending'",
-    );
-    final messages = await db.query(
-      'chat_messages',
-      where: "sync_status = 'pending'",
-    );
-
-    return {
-      'reminders': reminders,
-      'notes': notes,
-      'places': places,
-      'chat_sessions': sessions,
-      'chat_messages': messages,
+    final threadId = archive['id'] as String;
+    final existing = {
+      for (final row in await db.query(
+        'chat_messages',
+        where: 'thread_id = ?',
+        whereArgs: [threadId],
+      ))
+        row['id']: row,
     };
-  }
-
-  /// Mark records as synced after successful upload to cloud
-  Future<void> markRecordsSynced({
-    List<String>? reminderIds,
-    List<String>? noteIds,
-    List<String>? placeIds,
-    List<String>? sessionIds,
-    List<String>? messageIds,
-  }) async {
-    final db = await database;
     final batch = db.batch();
-
-    if (reminderIds != null && reminderIds.isNotEmpty) {
-      final placeholders = List.filled(reminderIds.length, '?').join(',');
-      batch.rawUpdate(
-        'UPDATE reminders SET sync_status = ? WHERE id IN ($placeholders)',
-        ['synced', ...reminderIds],
-      );
-    }
-
-    if (noteIds != null && noteIds.isNotEmpty) {
-      final placeholders = List.filled(noteIds.length, '?').join(',');
-      batch.rawUpdate(
-        'UPDATE notes SET sync_status = ? WHERE id IN ($placeholders)',
-        ['synced', ...noteIds],
-      );
-    }
-
-    if (placeIds != null && placeIds.isNotEmpty) {
-      final placeholders = List.filled(placeIds.length, '?').join(',');
-      batch.rawUpdate(
-        'UPDATE places SET sync_status = ? WHERE id IN ($placeholders)',
-        ['synced', ...placeIds],
-      );
-    }
-
-    if (sessionIds != null && sessionIds.isNotEmpty) {
-      final placeholders = List.filled(sessionIds.length, '?').join(',');
-      batch.rawUpdate(
-        'UPDATE chat_sessions SET sync_status = ? WHERE id IN ($placeholders)',
-        ['synced', ...sessionIds],
-      );
-    }
-
-    if (messageIds != null && messageIds.isNotEmpty) {
-      final placeholders = List.filled(messageIds.length, '?').join(',');
-      batch.rawUpdate(
-        'UPDATE chat_messages SET sync_status = ? WHERE id IN ($placeholders)',
-        ['synced', ...messageIds],
-      );
-    }
-
-    await batch.commit(noResult: true);
-  }
-
-  /// Reconcile remote records pulled down from Firestore into local SQLite
-  Future<void> reconcileRemoteRecords({
-    List<Map<String, dynamic>>? remoteReminders,
-    List<Map<String, dynamic>>? remoteNotes,
-    List<Map<String, dynamic>>? remotePlaces,
-    List<Map<String, dynamic>>? remoteChatSessions,
-    List<Map<String, dynamic>>? remoteChatMessages,
-  }) async {
-    final db = await database;
-    final batch = db.batch();
-
-    if (remoteReminders != null) {
-      final pendingIds = (await db.query(
-        'reminders',
-        columns: ['id'],
-        where: "sync_status = 'pending'",
-      )).map((row) => row['id'] as String).toSet();
-      final remoteIds = remoteReminders
-          .map((r) => r['id']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
-          .toSet();
-
-      // Delete any local items that were deleted from Firestore in the cloud
-      final localSynced = await db.query(
-        'reminders',
-        columns: ['id'],
-        where: "sync_status = 'synced'",
-      );
-      for (final row in localSynced) {
-        final localId = row['id'] as String;
-        if (!remoteIds.contains(localId)) {
-          batch.delete('reminders', where: 'id = ?', whereArgs: [localId]);
-        }
-      }
-
-      for (final r in remoteReminders) {
-        final id = r['id']?.toString() ?? '';
-        if (id.isEmpty || pendingIds.contains(id)) continue;
-        final isActive = r['active'] == null
-            ? (r['status'] == 'ACTIVE' || r['status'] == null)
-            : (r['active'] == true);
-        final sanitized = {
-          'id': id,
-          'title': r['title']?.toString() ?? 'Reminder',
-          'body': r['body']?.toString() ?? r['title']?.toString() ?? '',
-          'due_at': r['due_at']?.toString(),
-          'location_name': r['location_name']?.toString(),
-          'latitude': (r['latitude'] is num)
-              ? (r['latitude'] as num).toDouble()
-              : null,
-          'longitude': (r['longitude'] is num)
-              ? (r['longitude'] as num).toDouble()
-              : null,
-          'radius_m': (r['radius_m'] is num)
-              ? (r['radius_m'] as num).toDouble()
-              : 150.0,
-          'dynamic_policy': r['dynamic_policy'] is Map
-              ? jsonEncode(r['dynamic_policy'])
-              : r['dynamic_policy']?.toString(),
-          'activity': r['activity']?.toString(),
-          'delivery_mode': r['delivery_mode'] ?? 'notification',
-          'activity_delay_seconds': r['activity_delay_seconds'] ?? 0,
-          'status':
-              r['status']?.toString() ?? (isActive ? 'ACTIVE' : 'INACTIVE'),
-          'previous_status': r['previous_status']?.toString(),
-          'deleted_at': r['deleted_at']?.toString(),
-          'sync_status': 'synced',
-          'created_at':
-              r['created_at']?.toString() ?? DateTime.now().toIso8601String(),
-          'updated_at':
-              r['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
-        };
-        batch.insert(
-          'reminders',
-          sanitized,
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    }
-
-    if (remoteNotes != null) {
-      final pendingIds = (await db.query(
-        'notes',
-        columns: ['id'],
-        where: "sync_status = 'pending'",
-      )).map((row) => row['id'] as String).toSet();
-      final remoteIds = remoteNotes
-          .map((n) => n['id']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
-          .toSet();
-
-      // Delete any local notes that were deleted from Firestore in the cloud
-      final localSynced = await db.query(
-        'notes',
-        columns: ['id'],
-        where: "sync_status = 'synced'",
-      );
-      for (final row in localSynced) {
-        final localId = row['id'] as String;
-        if (!remoteIds.contains(localId)) {
-          batch.delete('notes', where: 'id = ?', whereArgs: [localId]);
-        }
-      }
-
-      for (final n in remoteNotes) {
-        final id = n['id']?.toString() ?? '';
-        if (id.isEmpty || pendingIds.contains(id)) continue;
-        final sanitized = {
-          'id': id,
-          'title': n['title']?.toString() ?? 'Note',
-          'content': n['content']?.toString() ?? n['text']?.toString() ?? '',
-          'place': n['place']?.toString(),
-          'category': n['category']?.toString(),
-          'deleted_at': n['deleted_at']?.toString(),
-          'sync_status': 'synced',
-          'created_at':
-              n['created_at']?.toString() ?? DateTime.now().toIso8601String(),
-          'updated_at':
-              n['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
-        };
-        batch.insert(
-          'notes',
-          sanitized,
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    }
-
-    if (remotePlaces != null) {
-      final remoteIds = remotePlaces
-          .map((p) => p['id']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
-          .toSet();
-
-      final localSynced = await db.query(
-        'places',
-        columns: ['id'],
-        where: "sync_status = 'synced'",
-      );
-      for (final row in localSynced) {
-        final localId = row['id'] as String;
-        if (!remoteIds.contains(localId)) {
-          batch.delete('places', where: 'id = ?', whereArgs: [localId]);
-        }
-      }
-
-      for (final p in remotePlaces) {
-        final id = p['id']?.toString() ?? '';
-        if (id.isEmpty) continue;
-        final sanitized = {
-          'id': id,
-          'name': p['name']?.toString() ?? '',
-          'address': p['address']?.toString(),
-          'latitude': (p['latitude'] is num)
-              ? (p['latitude'] as num).toDouble()
-              : null,
-          'longitude': (p['longitude'] is num)
-              ? (p['longitude'] as num).toDouble()
-              : null,
-          'radius_m': (p['radius_m'] is num)
-              ? (p['radius_m'] as num).toDouble()
-              : 150.0,
-          'category': p['category']?.toString(),
-          'sync_status': 'synced',
-          'created_at':
-              p['created_at']?.toString() ?? DateTime.now().toIso8601String(),
-          'updated_at':
-              p['updated_at']?.toString() ?? DateTime.now().toIso8601String(),
-        };
-        batch.insert(
-          'places',
-          sanitized,
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    }
-
-    if (remoteChatSessions != null) {
-      final pendingDeletions = await getPendingDeletions();
-      final deletedSessionIds = pendingDeletions
-          .where((d) => d['record_type'] == 'chat_session')
-          .map((d) => d['id'] as String)
-          .toSet();
-      final allSessionsDeleted = pendingDeletions.any(
-        (d) => d['record_type'] == 'all_chat_sessions',
-      );
-
-      final remoteIds = remoteChatSessions
-          .map((s) => s['id']?.toString() ?? '')
-          .where(
-            (id) =>
-                id.isNotEmpty &&
-                !deletedSessionIds.contains(id) &&
-                !allSessionsDeleted,
-          )
-          .toSet();
-
-      final localSynced = await db.query(
-        'chat_sessions',
-        columns: ['id'],
-        where: "sync_status = 'synced'",
-      );
-      for (final row in localSynced) {
-        final localId = row['id'] as String;
-        if (!remoteIds.contains(localId)) {
-          batch.delete('chat_sessions', where: 'id = ?', whereArgs: [localId]);
-          batch.delete(
+    for (final item in archive['messages'] as List) {
+      final m = Map<String, dynamic>.from(item);
+      final previous = existing[m['id']];
+      if (previous != null) {
+        // A newer local edit wins over an older archived answer.
+        if (previous['content'] == m['text'] &&
+            (previous['sync_status'] != 'pending' || retirePending)) {
+          batch.update(
             'chat_messages',
-            where: 'thread_id = ?',
-            whereArgs: [localId],
+            {'sync_status': 'archived'},
+            where: 'id = ? AND thread_id = ?',
+            whereArgs: [m['id'], threadId],
           );
         }
+        continue;
       }
-
-      if (!allSessionsDeleted) {
-        for (final s in remoteChatSessions) {
-          final data = Map<String, dynamic>.from(s);
-          final sId = data['id']?.toString() ?? '';
-          if (deletedSessionIds.contains(sId)) continue;
-
-          batch.insert('chat_sessions', {
-            'id': data['id'],
-            'title': data['title'] ?? 'New Chat',
-            'created_at':
-                data['created_at'] ?? DateTime.now().toIso8601String(),
-            'updated_at':
-                data['updated_at'] ?? DateTime.now().toIso8601String(),
-            'sync_status': 'synced',
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-      }
+      batch.insert('chat_messages', {
+        'id': m['id'],
+        'thread_id': threadId,
+        'content': m['text'],
+        'role': m['is_user'] == true ? 'user' : 'assistant',
+        'timestamp': m['timestamp'],
+        'run_id': m['run_id'],
+        'executed_records': jsonEncode(m['executed_records'] ?? []),
+        'duration_ms': m['duration_ms'],
+        'sync_status': 'archived',
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
     }
-
-    if (remoteChatMessages != null) {
-      final pendingDeletions = await getPendingDeletions();
-      final deletedSessionIds = pendingDeletions
-          .where((d) => d['record_type'] == 'chat_session')
-          .map((d) => d['id'] as String)
-          .toSet();
-      final allSessionsDeleted = pendingDeletions.any(
-        (d) => d['record_type'] == 'all_chat_sessions',
-      );
-
-      final remoteMsgIds = remoteChatMessages
-          .map((m) => m['id']?.toString() ?? '')
-          .where((id) => id.isNotEmpty)
-          .toSet();
-
-      final localSyncedMsgs = await db.query(
-        'chat_messages',
-        columns: ['id', 'duration_ms'],
-        where: "sync_status = 'synced'",
-      );
-      final localDurationRows = await db.query(
-        'chat_messages',
-        columns: ['id', 'duration_ms'],
-      );
-      final localDurations = {
-        for (final row in localDurationRows)
-          row['id'] as String: row['duration_ms'],
-      };
-      for (final row in localSyncedMsgs) {
-        final localId = row['id'] as String;
-        if (!remoteMsgIds.contains(localId)) {
-          batch.delete('chat_messages', where: 'id = ?', whereArgs: [localId]);
-        }
-      }
-
-      if (!allSessionsDeleted) {
-        for (final m in remoteChatMessages) {
-          final data = Map<String, dynamic>.from(m);
-          final threadId = data['thread_id']?.toString() ?? 'default';
-          final mId = data['id']?.toString() ?? '';
-          if (deletedSessionIds.contains(threadId) ||
-              deletedSessionIds.contains(mId)) {
-            continue;
-          }
-
-          batch.insert('chat_messages', {
-            'id': data['id'],
-            'thread_id': threadId,
-            'role': data['role'] ?? 'user',
-            'content': data['content'] ?? '',
-            'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
-            'run_id': data['run_id'],
-            'executed_records': data['executed_records'] is String
-                ? data['executed_records']
-                : jsonEncode(data['executed_records'] ?? []),
-            'duration_ms': data['duration_ms'] ?? localDurations[mId],
-            'sync_status': 'synced',
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-      }
-    }
-
+    batch.rawInsert(
+      'INSERT INTO chat_archive_refs(thread_id,digest,cached_digest,message_count,archived,archived_at) VALUES(?,?,?,?,1,?) '
+      'ON CONFLICT(thread_id) DO UPDATE SET digest=excluded.digest,cached_digest=excluded.cached_digest,'
+      'message_count=excluded.message_count,archived=CASE WHEN ? THEN 1 ELSE chat_archive_refs.archived END,'
+      'archived_at=CASE WHEN ? THEN excluded.archived_at ELSE COALESCE(chat_archive_refs.archived_at,excluded.archived_at) END',
+      [
+        threadId,
+        digest,
+        digest,
+        (archive['messages'] as List).length,
+        DateTime.now().toUtc().toIso8601String(),
+        retirePending ? 1 : 0,
+        retirePending ? 1 : 0,
+      ],
+    );
     await batch.commit(noResult: true);
     notifyListeners();
   }

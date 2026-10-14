@@ -1,66 +1,44 @@
 # Google Calendar in Jarvis
 
-Open **Settings → Google Calendar → Connect Google account**, choose your account,
-and accept Google's Calendar consent. Choose the default calendar. Google is the
-only provider supported. Keep Jarvis open while running calendar commands.
+Connect Google in Settings, choose the account/default calendar, and accept
+Google's Calendar consent. Keep Jarvis open while a conversational command needs
+phone execution. Supported operations list/read events and create, update or
+delete a selected event; ambiguous targets require clarification. Entire-calendar
+deletion and sharing ACL changes are outside the tool set.
 
-Ask to list events, read an event, create a meeting, reschedule it, edit its title,
-location, description, guests or recurrence, or delete it. Jarvis searches before
-targeting an existing event and asks which one when the request is ambiguous.
-Calendar account settings, sharing ACLs and deleting entire calendars are outside
-the allowed operations.
+Every Calendar write shows destination calendar, before/after event details,
+guests, changed fields and recurrence scope. Approval covers that proposal only.
+Writes can notify attendees using `sendUpdates=all`. Read operations do not need a
+write approval. Routine local note/reminder actions have their own action policy;
+Calendar approval rules do not imply every local write opens a dialog.
 
-Every calendar write shows the exact event, destination calendar, before/after
-details, guests and notification impact. Decline or dismiss to leave it unchanged.
-An approval covers one proposal. Entire recurring series require explicit scope
-and a series warning; otherwise use an occurrence. All-day end dates are exclusive.
-Google notifications use `sendUpdates=all`, disclosed in the approval preview.
-Other saved-data writes through the current Jarvis chat client also require an
-approval preview; reads remain automatic.
+Google Play services authorizes the chosen account and renews access tokens in
+Android memory. Tokens are not sent to the language model. Relevant event content
+returns through the private command action channel for answering and can appear
+in local chat history. The personal backend's fixed local UID is not a multi-user
+login mechanism; request/action capabilities enforce the device handoff boundary.
 
-Google access tokens remain in Android process memory. Google Play services renews
-authorization for the selected account. Tokens are not sent to Jarvis's backend,
-LLM, logs or Firestore. Relevant calendar event content is sent to the existing
-Jarvis backend/LLM to answer requests and may appear in normal chat/history.
-The existing backend uses a single local user rather than account-based Firebase
-authentication. The new command/action endpoints are protected by a device secret;
-this does not upgrade the existing chat/sync endpoints to per-user authentication.
-Do not treat this personal deployment as a multi-user service.
+Calendar edits/deletes require the existing event ETag (`If-Match`). A changed
+account, expired request or backgrounded app stops execution. Android saves a
+fingerprinted operation receipt before sending a mutation; an uncertain result
+is not automatically repeated. Check Google Calendar before requesting a new
+write after an interrupted operation. Creates use deterministic event IDs.
 
-Calendar event changes use Google's event ETag with `If-Match`. If another app
-changed the event, Jarvis stops and requires a new proposal. The device records an
-operation before dispatch; after a lost response or crash it refuses to repeat
-an uncertain write. Check Google Calendar before issuing a new request in that
-case. Approval expires if its request stops or the device connection changes.
-
-Disconnect removes the local connection and device session secret. Google's
-account settings can additionally revoke Jarvis's OAuth grant.
-
-## Google project setup
-
-Project: `jarvis-agent-61947`. API: `calendar-json.googleapis.com`.
-Android package: `com.jarvis.jarvis_collector`.
-The current sideloaded release uses the existing debug signing certificate:
-`F3:66:EB:41:B3:22:80:D3:79:3E:BE:DD:4C:1D:BF:AA:1D:F4:EA:7F`.
-Register the corresponding Android OAuth client for every signing certificate used.
-The Firebase Android app registration and current SHA-1 were restored/registered
-through `backend/scripts/configure_calendar_android.py`; the local
-`google-services.json` was refreshed from Firebase.
-
-Required scopes:
+Disconnect removes the local connection; Google account settings can separately
+revoke its grant. Android OAuth configuration must match the app package
+`com.jarvis.jarvis_collector` and the signing certificate actually used. Enable the
+Google Calendar API and configure consent/audience in Google Auth Platform.
+Required scopes are:
 
 - `https://www.googleapis.com/auth/calendar.events`
 - `https://www.googleapis.com/auth/calendar.calendarlist.readonly`
 
-Configure Google Auth Platform branding/audience and, when in Testing, add the
-Google account as a test user. Google's consent/audience settings can require an
-account-owner step. The app never completes Google consent on the user's behalf.
+No cloud-held renewable Google grant or scheduled server Google action is needed
+for this current interactive phone flow. Weekly database backup uses the separate
+Drive connection; see [backup](weekly-database-backup.md).
 
-## Validation
-
-Flutter calendar tests use mocked Google HTTP responses. They exercise declined
-approvals, all write types, cancellation during approval, background refusal,
-crash receipts, changed proposals, pagination, invalid payloads and ETag conflicts.
-Backend tests exercise absent device authorization, private request capabilities,
-proposal privacy and approvals for existing saved-data tools. No test changes a
-real Google Calendar event.
+Tests use mocked Google responses for approvals, cancellation, receipts, changed
+proposals, pagination, invalid inputs and ETag conflicts. They do not establish
+that a live Calendar write succeeded. Main sources are
+`GoogleAccountAuthorization.kt`, `google_calendar_service.dart`,
+`calendar_executor.dart` and `tests/android/ui/calendar_executor_test.dart`.

@@ -1,12 +1,12 @@
 import 'package:health/health.dart';
-import 'package:intl/intl.dart';
+import 'phone_data_window.dart';
 
 /// Reads Health Connect only when the user asks; no background health polling.
 class HealthService {
-  HealthService._();
-  static final HealthService instance = HealthService._();
+  HealthService({Health? client}) : _health = client ?? Health();
+  static final HealthService instance = HealthService();
 
-  final Health _health = Health();
+  final Health _health;
   bool _configured = false;
 
   Future<void> _configure() async {
@@ -43,93 +43,151 @@ class HealthService {
     return hasSleepAccess();
   }
 
-  static bool isHealthQuestion(String text) {
-    final q = text.toLowerCase();
-    if (RegExp(
-      r'\b(remind|reminder|note|save|record|alarm|wake|call)\b',
-    ).hasMatch(q)) {
-      return false;
+  Future<Map<String, dynamic>> readToolRecords(
+    Map<String, dynamic> arguments, {
+    DateTime? now,
+  }) async {
+    final metric = arguments['metric'];
+    if (metric != 'steps' && metric != 'sleep') {
+      throw const FormatException('metric must be steps or sleep.');
     }
-    return RegExp(r'\b(steps?|step count|sleep|slept)\b').hasMatch(q) &&
-        RegExp(
-          r'\b(how|many|much|did|do|today|yesterday|last night|show|tell|count|total)\b',
-        ).hasMatch(q);
-  }
-
-  Future<String> answer(String question) async {
-    try {
-      final q = question.toLowerCase();
-      if (!await available) {
-        return 'Health Connect is unavailable on this phone. Open Health Connect to finish its setup, then try again.';
-      }
-      if (RegExp(r'\b(steps?|step count)\b').hasMatch(q)) {
-        if (RegExp(
-          r'\b(week|month|days|ago|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
-        ).hasMatch(q)) {
-          return 'I can check steps for today or yesterday. Which day do you mean?';
-        }
-        if (!await hasStepsAccess()) {
-          return 'I need read access to steps. Open Health Connect → App permissions → Jarvis, allow steps, then ask me again.';
-        }
-        final now = DateTime.now();
-        final day = q.contains('yesterday')
-            ? now.subtract(const Duration(days: 1))
-            : now;
-        final start = DateTime(day.year, day.month, day.day);
-        final end = q.contains('yesterday')
-            ? start.add(const Duration(days: 1))
-            : now;
-        final records = await _health.getHealthDataFromTypes(
-          types: [HealthDataType.STEPS],
-          startTime: start,
-          endTime: end,
-        );
-        if (records.isEmpty) {
-          return 'Health Connect has no step records for ${q.contains('yesterday') ? 'yesterday' : 'today'}. Check that Google Fit or your tracking app is sharing steps with Health Connect.';
-        }
-        final count = await _health.getTotalStepsInInterval(start, end);
-        if (count == null) {
-          return 'Health Connect could not read your steps right now. Please try again.';
-        }
-        final label = q.contains('yesterday') ? 'yesterday' : 'today';
-        return 'Health Connect shows ${NumberFormat.decimalPattern().format(count)} steps $label.';
-      }
-      if (!await hasSleepAccess() && !await connectSleep()) {
-        return 'Sleep read access is not granted. In Health Connect → App permissions → Jarvis, allow Sleep (or use Settings → Sleep records in Jarvis). Your sleep app or watch also needs to share sleep sessions with Health Connect; phone inactivity alone cannot measure sleep.';
-      }
-      if (RegExp(r'\b(week|month|days|ago)\b').hasMatch(q)) {
-        return 'I can check your most recent sleep session. Ask me about last night.';
-      }
-      final now = DateTime.now();
-      final yesterday = now.subtract(const Duration(days: 1));
-      final start = DateTime(
-        yesterday.year,
-        yesterday.month,
-        yesterday.day,
-        18,
+    final window = PhoneDataWindow.parse(
+      arguments['start_date']?.toString() ?? '',
+      arguments['end_date']?.toString() ?? '',
+      now: now,
+    );
+    if (!await available) {
+      return {
+        'status': 'unavailable',
+        'source': 'health_connect',
+        'reason': 'not_available',
+        'message':
+            'Health Connect is unavailable on this phone. Finish Health Connect setup, then retry.',
+      };
+    }
+    final type = metric == 'steps'
+        ? HealthDataType.STEPS
+        : HealthDataType.SLEEP_SESSION;
+    if (await _health.hasPermissions([type]) != true) {
+      return {
+        'status': 'permission_required',
+        'source': 'health_connect',
+        'metric': metric,
+        'message':
+            'Allow ${metric == 'steps' ? 'Steps' : 'Sleep'} in Health Connect → App permissions → Jarvis, then retry. Reading cannot grant permission.',
+      };
+    }
+    final days = <Map<String, dynamic>>[];
+    for (final day in window.days) {
+      final start = metric == 'steps'
+          ? window.midnight(day)
+          : window.midnight(day).subtract(const Duration(hours: 6));
+      final end = window.capAtNow(
+        window.midnight(day).add(Duration(hours: metric == 'steps' ? 24 : 18)),
       );
-      final end = now;
-      final sessions = await _health.getHealthDataFromTypes(
-        types: [HealthDataType.SLEEP_SESSION],
+      final records = await _health.getHealthDataFromTypes(
+        types: [type],
         startTime: start,
         endTime: end,
       );
-      if (sessions.isEmpty) {
-        return 'Health Connect has no sleep session for last night. Check that your sleep app or watch is sharing sleep data there.';
+      final row = <String, dynamic>{
+        'day': PhoneDataWindow.dayKey(day),
+        'start_at': start.toIso8601String(),
+        'end_at': end.toIso8601String(),
+        'record_count': records.length,
+      };
+      if (records.isEmpty) {
+        days.add({
+          ...row,
+          'status': 'no_records',
+          'message':
+              'No shared Health Connect records for this window. This is unknown, not zero.',
+        });
+        continue;
       }
-      sessions.sort(
-        (a, b) => b.dateTo
-            .difference(b.dateFrom)
-            .compareTo(a.dateTo.difference(a.dateFrom)),
-      );
-      final session = sessions.first;
-      final duration = session.dateTo.difference(session.dateFrom);
-      final hours = duration.inHours;
-      final minutes = duration.inMinutes.remainder(60);
-      final time = DateFormat.jm();
-      return 'Health Connect recorded a sleep session of ${hours}h ${minutes}m, from ${time.format(session.dateFrom)} to ${time.format(session.dateTo)}. This is session time, not a medical measure of time asleep.';
-    } catch (_) {
-      return 'I could not read Health Connect right now. Check Jarvis access in Health Connect, then try again.';
+      if (metric == 'steps') {
+        final count = await _health.getTotalStepsInInterval(start, end);
+        days.add({
+          ...row,
+          'status': count == null ? 'unavailable' : 'ok',
+          'steps': ?count,
+          'sources': records
+              .map((record) => record.sourceName)
+              .toSet()
+              .take(10)
+              .toList(),
+        });
+      } else {
+        final sessions = <Map<String, dynamic>>[];
+        final seen = <String>{};
+        for (final record in records) {
+          final from = record.dateFrom.toUtc().isBefore(start)
+              ? start
+              : record.dateFrom.toUtc();
+          final to = record.dateTo.toUtc().isAfter(end)
+              ? end
+              : record.dateTo.toUtc();
+          if (!to.isAfter(from)) continue;
+          final key =
+              '${from.toIso8601String()}|${to.toIso8601String()}|${record.sourceName}';
+          if (!seen.add(key)) continue;
+          sessions.add({
+            'start_at': from.toIso8601String(),
+            'end_at': to.toIso8601String(),
+            'duration_ms': to.difference(from).inMilliseconds,
+            'source': record.sourceName,
+          });
+        }
+        sessions.sort(
+          (a, b) =>
+              (a['start_at'] as String).compareTo(b['start_at'] as String),
+        );
+        var union = 0;
+        DateTime? from, to;
+        for (final session in sessions) {
+          final nextFrom = DateTime.parse(session['start_at']);
+          final nextTo = DateTime.parse(session['end_at']);
+          if (from == null || to == null) {
+            from = nextFrom;
+            to = nextTo;
+          } else if (!nextFrom.isAfter(to)) {
+            if (nextTo.isAfter(to)) to = nextTo;
+          } else {
+            union += to.difference(from).inMilliseconds;
+            from = nextFrom;
+            to = nextTo;
+          }
+        }
+        if (from != null && to != null) {
+          union += to.difference(from).inMilliseconds;
+        }
+        final limit = (300 ~/ window.days.length).clamp(1, 100);
+        days.add({
+          ...row,
+          'status': sessions.isEmpty ? 'no_records' : 'ok',
+          if (sessions.isNotEmpty) 'recorded_session_ms': union,
+          'sessions': sessions.take(limit).toList(),
+          'session_count': sessions.length,
+          'truncated_sessions': sessions.length > limit,
+        });
+      }
     }
+    final good = days.where((day) => day['status'] == 'ok').length;
+    return {
+      'status': good == days.length
+          ? 'ok'
+          : good > 0
+          ? 'partial'
+          : 'unavailable',
+      'source': 'health_connect',
+      'metric': metric,
+      'timezone': 'Asia/Kolkata',
+      'start_date': arguments['start_date'],
+      'end_date': PhoneDataWindow.dayKey(window.end),
+      'days': days,
+      'notes': metric == 'steps'
+          ? 'Health Connect aggregated step counts. Do not infer steps from movement duration.'
+          : 'Dates label the night ending that day (18:00 previous day to 18:00, capped at now). Overlapping session intervals are counted once. Session duration is not a medical measure of actual sleep.',
+    };
   }
 }

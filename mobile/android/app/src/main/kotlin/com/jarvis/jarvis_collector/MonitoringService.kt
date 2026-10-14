@@ -31,6 +31,7 @@ class MonitoringService : Service() {
     }
     override fun onCreate() {
         super.onCreate()
+        if (!JarvisPower.enabled(this)) { stopSelf(); return }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("jarvis_monitoring", "Activity monitoring", NotificationManager.IMPORTANCE_LOW))
         val tap = PendingIntent.getActivity(this, 1002, Intent(this, MainActivity::class.java),

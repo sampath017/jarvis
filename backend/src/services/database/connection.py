@@ -49,6 +49,7 @@ def init_database(db_path: Path | str | None = None, force: bool = False) -> Non
 
         # Safe non-breaking column migrations for existing sqlite databases
         for alter_stmt in [
+            "ALTER TABLE places ADD COLUMN boundary_json TEXT",
             "ALTER TABLE reminders ADD COLUMN dynamic_policy TEXT",
             "ALTER TABLE reminders ADD COLUMN activity_delay_seconds INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE reminders ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'notification'",

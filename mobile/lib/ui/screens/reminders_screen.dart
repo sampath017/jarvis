@@ -6,13 +6,15 @@ import '../../services/api_service.dart';
 import '../../services/local_db_service.dart';
 import '../../services/sensor_service.dart';
 import '../../services/sync_service.dart';
+import '../../services/satellite_map.dart';
 import '../theme.dart';
 import '../widgets/workspace_widgets.dart';
+import '../widgets/satellite_map_card.dart';
 
 /// Dedicated Reminders Screen:
 /// Displays all active and fired reminders directly from offline-first Local Mobile SQLite.
 /// Automatically evaluates and triggers reminders using local GPS/sensors even when offline,
-/// and synchronizes with Google Cloud Firestore in the background.
+/// and synchronizes with the API working cache in the background.
 class RemindersScreen extends StatefulWidget {
   final SensorService sensorService;
 
@@ -483,6 +485,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
     final isActive = status == 'ACTIVE';
     final ringing = ReminderAlertService.isRinging(r);
+    final satellite = SatelliteMapData.fromReminder(r, _places);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
@@ -611,6 +614,16 @@ class _RemindersScreenState extends State<RemindersScreen> {
                       ),
                     ),
                   ),
+                if (satellite != null && !_showTrash)
+                  TextButton.icon(
+                    onPressed: () => _showSatelliteView(satellite),
+                    icon: const Icon(Icons.satellite_alt, size: 16),
+                    label: const Text('Satellite view'),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
                 if (loc.isNotEmpty)
                   Row(
                     children: [
@@ -693,6 +706,31 @@ class _RemindersScreenState extends State<RemindersScreen> {
       ),
     );
   }
+
+  Future<void> _showSatelliteView(SatelliteMapData data) => showDialog<void>(
+    context: context,
+    builder: (context) => Dialog.fullscreen(
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Satellite view'),
+          leading: IconButton(
+            tooltip: 'Close satellite view',
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close),
+          ),
+        ),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 640),
+              child: SatelliteMapCard(data: data),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 
   Widget _buildEmptyState() => const WorkspaceEmptyState(
     icon: Icons.alarm_outlined,

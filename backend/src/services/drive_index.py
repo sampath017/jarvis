@@ -38,6 +38,8 @@ def index():
 
 
 def embed(items, task='document'):
+    from .runtime_power import RuntimePower
+    RuntimePower().require_enabled()
     from google.auth.transport.requests import Request
     from google.oauth2.id_token import fetch_id_token
     url = os.environ['EMBEDDING_URL'].rstrip('/')

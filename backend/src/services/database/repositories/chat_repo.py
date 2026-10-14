@@ -48,11 +48,13 @@ class ChatRepositoryMixin:
             )
         return {"id": msg_id, "uid": uid, "thread_id": thread_id, **message}
 
-    def get_recent_messages(self, uid: str, thread_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    def get_recent_messages(self, uid: str, thread_id: str, limit: int | None = 10) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM chat_messages WHERE uid = ? AND thread_id = ? ORDER BY timestamp DESC LIMIT ?",
-                (uid, thread_id, limit),
+                "SELECT * FROM chat_messages WHERE uid = ? AND thread_id = ? "
+                "ORDER BY julianday(timestamp) DESC, CASE WHEN role='user' THEN 0 ELSE 1 END DESC, rowid DESC"
+                + (" LIMIT ?" if limit is not None else ""),
+                (uid, thread_id, limit) if limit is not None else (uid, thread_id),
             ).fetchall()
         messages = [dict(r) for r in rows]
         messages.reverse()

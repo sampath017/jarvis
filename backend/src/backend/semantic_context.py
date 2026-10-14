@@ -9,7 +9,7 @@ and cheap enough to run on transition events rather than a continuous GPS/LLM
 polling loop.
 
 The objects are serialisable dictionaries so an application can store them in
-SQLite/Firestore alongside mobility sessions without coupling the reducer to a
+SQLite/RecordStore alongside mobility sessions without coupling the reducer to a
 particular persistence implementation.
 """
 

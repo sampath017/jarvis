@@ -74,8 +74,7 @@ class WorkspaceEmptyState extends StatelessWidget {
     width: double.infinity,
     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
     decoration: BoxDecoration(
-      color: AppTheme.surface,
-      border: Border.all(color: AppTheme.border),
+      color: Colors.transparent,
       borderRadius: BorderRadius.circular(AppTheme.radius),
     ),
     child: Column(
@@ -83,8 +82,8 @@ class WorkspaceEmptyState extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: AppTheme.surfaceBright,
-            borderRadius: BorderRadius.circular(12),
+            color: AppTheme.primarySurface,
+            borderRadius: BorderRadius.circular(18),
           ),
           child: Icon(icon, color: AppTheme.primaryLight, size: 26),
         ),
@@ -114,23 +113,11 @@ class JarvisMark extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => Image.asset(
+    'assets/icon/app_logo.png',
     width: size,
     height: size,
-    alignment: Alignment.center,
-    decoration: BoxDecoration(
-      color: AppTheme.primarySurface,
-      borderRadius: BorderRadius.circular(size * 0.28),
-      border: Border.all(color: AppTheme.primaryLight.withValues(alpha: 0.2)),
-    ),
-    child: Text(
-      'J',
-      style: TextStyle(
-        color: AppTheme.primaryLight,
-        fontSize: size * 0.52,
-        fontWeight: FontWeight.w600,
-        height: 1,
-      ),
-    ),
+    semanticLabel: 'Jarvis',
+    filterQuality: FilterQuality.high,
   );
 }

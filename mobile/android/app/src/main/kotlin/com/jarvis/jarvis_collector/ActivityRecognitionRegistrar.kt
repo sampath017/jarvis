@@ -19,7 +19,7 @@ object ActivityRecognitionRegistrar {
     private const val PREFS = "jarvis_monitoring"
 
     fun isEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
+        JarvisPower.enabled(context) && context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
 
     fun setEnabled(context: Context, enabled: Boolean) {
         check(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -54,6 +54,7 @@ object ActivityRecognitionRegistrar {
     }
 
     fun registerPassiveLocation(context: Context) {
+        if (!JarvisPower.enabled(context)) return
         if (Build.VERSION.SDK_INT >= 29 &&
             context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
@@ -67,11 +68,15 @@ object ActivityRecognitionRegistrar {
             .build()
         LocationServices.getFusedLocationProviderClient(context)
             .requestLocationUpdates(request, locationPendingIntent(context))
-            .addOnSuccessListener { Log.i("JarvisPassive", "Passive location registered") }
+            .addOnSuccessListener {
+                if (!JarvisPower.enabled(context)) LocationServices.getFusedLocationProviderClient(context).removeLocationUpdates(locationPendingIntent(context))
+                else Log.i("JarvisPassive", "Passive location registered")
+            }
             .addOnFailureListener { Log.w("JarvisPassive", "Passive location unavailable", it) }
     }
 
     fun register(context: Context, onSuccess: () -> Unit = {}, onFailure: (Exception) -> Unit = {}) {
+        if (!JarvisPower.enabled(context)) { onFailure(IllegalStateException("Jarvis is powered off")); return }
         val transitions = listOf(
             DetectedActivity.IN_VEHICLE,
             DetectedActivity.WALKING,
@@ -89,6 +94,7 @@ object ActivityRecognitionRegistrar {
         val client = ActivityRecognition.getClient(context)
         client.requestActivityTransitionUpdates(ActivityTransitionRequest(transitions), pendingIntent(context))
             .addOnSuccessListener {
+                if (!JarvisPower.enabled(context)) { unregister(context, {}, {}); onFailure(IllegalStateException("Jarvis is powered off")); return@addOnSuccessListener }
                 setEnabled(context, true)
                 AmbientNetworkMonitor.start(context)
                 // Clean up the old app's two-minute activity sampler.

@@ -65,13 +65,42 @@ async def ingest_context_event(
     # Internal telemetry events are excluded from ordinary activity automation.
     # A confidently classified car burst is evaluated separately for CAR rules.
     _AUTOMATION_ELIGIBLE_EVENTS = {
-        "ACTIVITY_ENTER", "ACTIVITY_EXIT",
+        "ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_TRANSITION",
         "SESSION_START", "SESSION_END", "SESSION_STOP",
         "GEOFENCE_ENTER", "GEOFENCE_EXIT",
         "CONTEXT_CHECKPOINT", "DWELL_CHECK", "ACTIVITY_SAMPLE",
     }
 
     try:
+        observed = request.occurred_at
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - observed).total_seconds() > 300:
+            # Offline observations remain history. Replaying them must not ask
+            # models/Places about the present or reduce today's journey using
+            # an older event. Keep the ordinary storage/change-delivery path,
+            # without loading a session, semantic context, rules or device wake.
+            from ...graph.nodes.verify import VerifyNode
+            from ...graph.nodes.persist import PersistNode
+            from ...services.database import DatabaseService
+
+            def preserve_history():
+                db = DatabaseService()
+                state = {**initial_state, **VerifyNode(db=db)(initial_state)}
+                return {**state, **PersistNode(db=db)(state)}
+
+            result = await asyncio.to_thread(preserve_history)
+            error = result.get("error")
+            logger.info("Historical context event preserved | ID: %s | Status: %s",
+                        request.event_id, "error" if error else "ok")
+            return APIResponse(
+                run_id=result.get("run_id", ""),
+                status="error" if error else "ok",
+                message="Processing failed" if error else "Historical event preserved",
+                changed_records=[],
+                error=error,
+            )
+
         if request.context_request_id:
             # A fresh phone fix is usable before slow place/session enrichment.
             # The receipt remains durable even if enrichment subsequently fails.
@@ -85,10 +114,10 @@ async def ingest_context_event(
             # Rebuild derived history at boundaries, not on every minute's sample.
             # History queries also rebuild from all durable samples on demand.
             try:
-                from ...services.firestore_service import FirestoreService
+                from ...services.record_store import RecordStore
                 from ...backend.activity_sessions import enriched_history
                 from datetime import timedelta
-                fs = FirestoreService()
+                fs = RecordStore()
                 if fs.is_available:
                     now = datetime.now(timezone.utc)
                     await asyncio.to_thread(enriched_history, fs, uid, now - timedelta(days=1), now, persist=True)

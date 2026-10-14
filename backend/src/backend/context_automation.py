@@ -9,15 +9,26 @@ without giving an LLM direct access to device notification APIs.
 from __future__ import annotations
 
 import logging
-import math
 import re
 from datetime import UTC, datetime
 from typing import Any
 
 from ..services.database import DatabaseService
+from ..services.context_evidence import geofence_result, haversine_m
 from ..settings import MIN_DWELL_SEC
 
 logger = logging.getLogger(__name__)
+
+
+class _PreviewDatabase:
+    """Only the read operations used by the ordinary reminder matcher."""
+
+    def __init__(self, db) -> None:
+        self.get_trigger_state = db.get_trigger_state
+        self.get_active_session = db.get_active_session
+
+    def upsert_trigger_state(self, *args, **kwargs) -> None:
+        pass  # Preview must not consume a future real transition.
 
 
 class ContextAutomationService:
@@ -26,10 +37,10 @@ class ContextAutomationService:
     def __init__(self, db: DatabaseService | None = None, cloud=None) -> None:
         self.db = db or DatabaseService()
         import sys
-        from ..services.firestore_service import FirestoreService
+        from ..services.record_store import RecordStore
         self.cloud = cloud
         if self.cloud is None and "pytest" not in sys.modules:
-            service = FirestoreService()
+            service = RecordStore()
             self.cloud = service if service.is_available else None
 
     def process_context_event(self, uid: str, event: dict[str, Any]) -> list[str]:
@@ -40,14 +51,7 @@ class ContextAutomationService:
         for reminder in self.db.list_reminders(uid, status="ACTIVE"):
             delayed = bool(reminder.get('activity_delay_seconds'))
             if delayed:
-                if (event.get('event_type') not in {'ACTIVITY_ENTER', 'ACTIVITY_TRANSITION'}
-                        or event.get('transition') != 'ENTER' or event.get('activity') != reminder.get('activity')):
-                    continue
-                if reminder.get('due_at') and occurred_at < _parse_time(str(reminder['due_at'])):
-                    continue
-                if reminder.get('created_at') and occurred_at < _parse_time(str(reminder['created_at'])):
-                    continue
-                if reminder.get('latitude') is not None and not self._is_inside_geofence(reminder, event):
+                if not self._activity_timer_matches(reminder, event, occurred_at):
                     continue
                 from ..services.activity_reminder_timers import ActivityReminderTimers
                 ActivityReminderTimers(self.cloud).arm(uid, reminder, event, occurred_at)
@@ -65,6 +69,45 @@ class ContextAutomationService:
             changed_ids.extend(self._execute_rule(uid, rule, event, occurred_at))
 
         return changed_ids
+
+    def _activity_timer_matches(self, reminder, event, occurred_at) -> bool:
+        if (event.get('event_type') not in {'ACTIVITY_ENTER', 'ACTIVITY_TRANSITION'}
+                or event.get('transition') != 'ENTER' or event.get('activity') != reminder.get('activity')):
+            return False
+        if reminder.get('due_at') and occurred_at < _parse_time(str(reminder['due_at'])):
+            return False
+        if reminder.get('created_at') and occurred_at < _parse_time(str(reminder['created_at'])):
+            return False
+        return reminder.get('latitude') is None or self._is_inside_geofence(reminder, event)
+
+    def preview_reminder_match(self, uid: str, reminder: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        """Run the ordinary matcher without consuming transitions or delivering.
+
+        Dynamic place policies require their journey state and provider evidence;
+        a read-only preview reports that limitation instead of changing that state.
+        """
+        result = {"reminder_id": reminder.get("id"), "event_id": event.get("event_id") or event.get("id"),
+                  "matches": False, "side_effects": False}
+        if reminder.get("status", "ACTIVE") != "ACTIVE":
+            return {**result, "status": "ok", "reason": "Reminder is not active."}
+        if reminder.get("dynamic_policy"):
+            return {**result, "status": "uncertain", "reason": "Dynamic place policy requires verified journey and nearby-place evidence; preview does not advance journey state."}
+        if not (event.get("timestamp") or event.get("occurred_at")):
+            return {**result, "status": "uncertain", "reason": "No timestamped observation is available."}
+        preview = object.__new__(type(self))
+        preview.db, preview.cloud = _PreviewDatabase(self.db), None
+        normalized = {**event, "event_id": result["event_id"] or "preview"}
+        try:
+            occurred_at = _event_time(normalized)
+            if reminder.get("activity_delay_seconds"):
+                matched = preview._activity_timer_matches(reminder, normalized, occurred_at)
+                return {**result, "status": "ok", "matches": matched, "trigger": "ARM_ACTIVITY_TIMER" if matched else None,
+                        "reason": "A matching event would arm a timer; preview does not arm or deliver."}
+            trigger = preview._matching_reminder_trigger(uid, dict(reminder), normalized, occurred_at)
+        except (TypeError, ValueError) as exc:
+            return {**result, "status": "uncertain", "reason": f"Invalid observation or reminder: {exc}"}
+        return {**result, "status": "ok", "matches": bool(trigger), "trigger": trigger,
+                "reason": "Deterministic conditions match." if trigger else "Conditions, cooldown, or transition/idempotency requirements are not met."}
 
     def process_due_reminders(self, now: datetime | None = None) -> list[str]:
         """Queue overdue time reminders; call this from a scheduler or poll endpoint."""
@@ -87,10 +130,7 @@ class ContextAutomationService:
         # Never extrapolate an old observation into continuous presence.
         for reminder in self.db.list_context_reminders():
             if reminder.get('activity_delay_seconds'):
-                if self.cloud:
-                    from ..services.activity_reminder_timers import ActivityReminderTimers
-                    ActivityReminderTimers(self.cloud).reconcile(reminder['uid'], reminder)
-                continue  # A timer is armed only by a genuine fresh ENTER.
+                continue  # Android arms a countdown only after a genuine fresh ENTER.
             event = self.db.get_latest_context_event(reminder["uid"])
             if not event:
                 continue
@@ -124,6 +164,11 @@ class ContextAutomationService:
                 return None
             place = DynamicReminders(self.db, self.cloud).match(uid, reminder, event, occurred_at)
             if not place: return None
+            if place.get('trigger') == 'exit':
+                if reminder.get('activity') and not self._activity_or_session_state_entered(uid, event, str(reminder['activity']), occurred_at):
+                    return None
+                reminder['body'] = f"You left {place['name']}. {reminder['title']}"
+                return 'GEOFENCE_EXIT'
             reminder['body'] = f"{place['name']} is nearby. {reminder['title']}"
             return 'DYNAMIC_PLACE_NEARBY'
 
@@ -339,30 +384,17 @@ class ContextAutomationService:
 
     def _is_inside_geofence(self, trigger: dict[str, Any], event: dict[str, Any]) -> bool:
         location = event.get("location") or event.get("gps") or event.get("journey_gps", {}).get("end_location") or {}
-        latitude = location.get("latitude")
-        longitude = location.get("longitude")
-        target_latitude = trigger.get("latitude")
-        target_longitude = trigger.get("longitude")
-        if None in (latitude, longitude, target_latitude, target_longitude):
-            return False
-
-        radius_m = float(trigger.get("radius_m", 150.0))
-        return _haversine_m(float(latitude), float(longitude), float(target_latitude), float(target_longitude)) <= radius_m
+        return geofence_result(location, trigger)["inside"]
 
     def _geofence_entered(
         self, uid: str, source_type: str, source_id: str, trigger: dict[str, Any], event: dict[str, Any],
         occurred_at: datetime,
     ) -> bool:
         location = event.get("location") or event.get("gps") or {}
-        latitude = location.get("latitude")
-        longitude = location.get("longitude")
-        target_latitude = trigger.get("latitude")
-        target_longitude = trigger.get("longitude")
-        if None in (latitude, longitude, target_latitude, target_longitude):
+        result = geofence_result(location, trigger, default_radius_m=100.0)
+        if result["status"] != "ok":
             return False
-
-        radius_m = float(trigger.get("radius_m", 100.0))
-        inside = _haversine_m(float(latitude), float(longitude), float(target_latitude), float(target_longitude)) <= radius_m
+        inside = result["inside"]
         state = self.db.get_trigger_state(uid, source_type, source_id)
         previously_inside = bool(state and state.get("is_inside"))
         self.db.upsert_trigger_state(
@@ -453,9 +485,4 @@ def _activity_entered(event: dict[str, Any], expected: str) -> bool:
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius = 6_371_000.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    value = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+    return haversine_m(lat1, lon1, lat2, lon2)

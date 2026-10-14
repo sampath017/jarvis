@@ -57,9 +57,22 @@ class ChatSession {
   final DateTime createdAt;
   DateTime updatedAt;
   final List<ChatMessage> messages;
+  final int? storedMessageCount;
+  final DateTime? summaryLastActivityAt;
+  bool isArchived;
+  final bool hasArchive;
+  final DateTime? archivedAt;
+
+  int get messageCount => (storedMessageCount ?? 0) > messages.length
+      ? storedMessageCount!
+      : messages.length;
+  bool get hasMessages => messageCount > 0;
 
   DateTime get lastActivityAt {
     var latest = updatedAt;
+    if (summaryLastActivityAt?.isAfter(latest) == true) {
+      latest = summaryLastActivityAt!;
+    }
     for (final message in messages) {
       if (message.timestamp.isAfter(latest)) latest = message.timestamp;
     }
@@ -72,6 +85,11 @@ class ChatSession {
     required this.createdAt,
     required this.updatedAt,
     required List<ChatMessage> messages,
+    this.storedMessageCount,
+    this.summaryLastActivityAt,
+    this.isArchived = false,
+    this.hasArchive = false,
+    this.archivedAt,
   }) : id = id ?? 'chat_${DateTime.now().millisecondsSinceEpoch}',
        messages = List<ChatMessage>.from(messages)
          ..sort((a, b) {
@@ -121,6 +139,11 @@ class ChatSession {
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       messages: messages ?? List<ChatMessage>.from(this.messages),
+      storedMessageCount: storedMessageCount,
+      summaryLastActivityAt: summaryLastActivityAt,
+      isArchived: isArchived,
+      hasArchive: hasArchive,
+      archivedAt: archivedAt,
     );
   }
 }

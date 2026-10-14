@@ -1,0 +1,1576 @@
+"""
+LLM LangChain Agent Tools.
+
+Provides callable LangChain @tool wrappers around Jarvis database CRUD operations,
+allowing the LLM ReAct agent to autonomously create, read, update, delete, and search
+reminders, notes, tasks, and places with local SQLite persistence and Android synchronization.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import sys
+from uuid import uuid4
+from datetime import date, datetime, timezone, timedelta
+from typing import Annotated, Any
+from langchain_core.tools import InjectedToolArg, tool
+
+from ..services.database import DatabaseService
+from ..services.record_store import RecordStore
+from ..backend.reminder_tool_contract import reminder_input_error
+
+logger = logging.getLogger(__name__)
+
+
+def is_test_environment() -> bool:
+    """Return True if executing inside automated unit/integration tests."""
+    from ..services.mobile_scope import current
+    return current.get() is None and ("pytest" in sys.modules or os.getenv("ENVIRONMENT") == "testing")
+
+
+def normalize_due_at(due_at: str) -> str:
+    """Normalize relative expressions (e.g. 'in 29 seconds') into ISO 8601 UTC timestamp."""
+    val = (due_at or "").strip()
+    if not val:
+        return ""
+    try:
+        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+        if not dt.tzinfo:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except Exception:
+        pass
+
+    now = datetime.now(timezone.utc)
+    lower = val.lower()
+
+    match = re.search(
+        r'(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours|d|day|days)',
+        lower,
+    )
+    if match:
+        count = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith('s'):
+            return (now + timedelta(seconds=count)).isoformat()
+        elif unit.startswith('m'):
+            return (now + timedelta(minutes=count)).isoformat()
+        elif unit.startswith('h'):
+            return (now + timedelta(hours=count)).isoformat()
+        elif unit.startswith('d'):
+            return (now + timedelta(days=count)).isoformat()
+
+    return val
+
+
+_STOP_WORDS = {
+    "to", "the", "a", "an", "and", "or", "in", "at", "for", "of", "my", "me",
+    "when", "i", "go", "out", "on", "remind", "about", "is", "am", "it", "this",
+    "that", "please", "also", "with", "from", "while", "during", "as", "by", "if",
+    "there", "here", "be", "do", "up", "down", "weekly", "daily",
+}
+
+_GENERIC_ACTION_WORDS = {
+    "buy", "get", "purchase", "pick", "take", "bring", "fetch", "need", "do", "call", "check",
+}
+
+_TRAVEL_ACTIVITY_WORDS = {
+    "walk", "walking", "bike", "biking", "ride", "riding", "drive", "driving",
+    "motorcycle", "car", "vehicle", "run", "running", "bicycle", "foot",
+}
+
+
+def _stem_word(w: str) -> str:
+    """Basic stemmer for common activity/task words (walking -> walk, bikes -> bike)."""
+    w = w.lower()
+    for suffix in ("ing", "ed", "es", "s"):
+        if w.endswith(suffix) and len(w) > len(suffix) + 2:
+            return w[:-len(suffix)]
+    return w
+
+
+def _extract_task_tokens(text: str) -> tuple[set[str], set[str]]:
+    """Extract (core_tokens, task_specific_tokens) for a reminder title."""
+    words = re.findall(r"[a-zA-Z0-9]+", (text or "").lower())
+    stemmed = [_stem_word(w) for w in words]
+    core = {w for w in stemmed if w not in _STOP_WORDS}
+    task = {w for w in core if w not in _GENERIC_ACTION_WORDS and w not in _TRAVEL_ACTIVITY_WORDS}
+    return core, task
+
+
+def _normalize_activity_string(act: str | None) -> str:
+    """Validate canonical motion/session-state labels used by reminder policies.
+
+    Normal conversation is interpreted by LLM.  This function deliberately
+    does not decide *which* condition the user meant; it only keeps the policy
+    emitted by the agent in a compact, evaluator-friendly representation.
+    """
+    if not act:
+        return ""
+    mapping = {
+        "bike": "IN_VEHICLE",
+        "biking": "IN_VEHICLE",
+        "bicycle": "ON_BICYCLE",
+        "bicycling": "ON_BICYCLE",
+        "riding": "IN_VEHICLE",
+        "ride": "IN_VEHICLE",
+        "motorcycle": "IN_VEHICLE",
+        "scooter": "IN_VEHICLE",
+        "driving": "CAR",
+        "drive": "CAR",
+        "car": "CAR",
+        "vehicle": "IN_VEHICLE",
+        "in_vehicle": "IN_VEHICLE",
+        "walking": "WALKING",
+        "walk": "WALKING",
+        "foot": "ON_FOOT",
+        "on_foot": "ON_FOOT",
+        "running": "RUNNING",
+        "run": "RUNNING",
+        "still": "STILL",
+        "stationary": "STILL",
+        # Session states are emitted by the context agent, rather than raw
+        # Android activity recognition.  They let a reminder wait for a
+        # meaningful point in a journey such as parking or a shop dwell.
+        "parked": "PARKED",
+        "parking": "PARKED",
+        "dwell": "DWELLING",
+        "dwelling": "DWELLING",
+        "shop": "IN_SHOP",
+        "shopping": "IN_SHOP",
+        "in_shop": "IN_SHOP",
+    }
+    found = set()
+    words = re.findall(r"[a-zA-Z_]+", str(act).lower())
+    for w in words:
+        if w in mapping:
+            found.add(mapping[w])
+        elif w.upper() in {
+            "IN_VEHICLE", "ON_BICYCLE", "ON_FOOT", "RUNNING", "WALKING", "STILL",
+            "PARKED", "DWELLING", "IN_SHOP", "CAR",
+        }:
+            found.add(w.upper())
+    return ", ".join(sorted(found))
+
+
+def _are_matching_errands(
+    title1: str, loc1: str | None,
+    title2: str, loc2: str | None,
+) -> bool:
+    """Check if two reminders represent the same underlying task, errand, or intention."""
+    t1 = (title1 or "").strip().lower()
+    t2 = (title2 or "").strip().lower()
+    if not t1 or not t2:
+        return False
+    if t1 == t2 or t1 in t2 or t2 in t1:
+        return True
+
+    core1, task1 = _extract_task_tokens(t1)
+    core2, task2 = _extract_task_tokens(t2)
+
+    # 1. Direct task noun/intent matching (e.g. "milk" in both, "refuel" in both, "flat" in both)
+    task_common = task1.intersection(task2)
+    if task_common:
+        if task_common.issubset(task1) and (task_common == task1 or task_common == task2 or len(task1) <= 1 or len(task2) <= 1):
+            return True
+        if len(task_common) >= 2:
+            return True
+
+    # 2. Core tokens overlap (>= 2 words or single core overlap if one is very short)
+    core_common = core1.intersection(core2)
+    if len(core_common) >= 2:
+        return True
+    if len(core_common) >= 1 and (len(core1) <= 1 or len(core2) <= 1):
+        return True
+
+    # 3. Location matches and at least 1 core or task word matches
+    l1 = (loc1 or "").strip().lower()
+    l2 = (loc2 or "").strip().lower()
+    if l1 and l2 and (l1 == l2 or l1 in l2 or l2 in l1) and (task_common or core_common):
+        return True
+
+    return False
+
+
+def _resolve_location_and_coords(
+    db: DatabaseService, uid: str, location_name: str | None,
+    lat: float | None = None, lon: float | None = None,
+) -> tuple[str | None, float | None, float | None]:
+    """Resolve location name ambiguity against user's saved places and fill GPS coordinates."""
+    if not location_name or not location_name.strip():
+        return None, lat, lon
+    loc_clean = location_name.strip()
+    loc_lower = loc_clean.lower()
+    resolved_lat = lat
+    resolved_lon = lon
+    resolved_name = loc_clean
+
+    # If coordinates missing, check if latest GPS is available
+    current_lat, current_lon = resolved_lat, resolved_lon
+    if current_lat is None or current_lon is None:
+        try:
+            latest_gps = db.get_latest_gps(uid)
+            if latest_gps and latest_gps.get("latitude"):
+                current_lat = latest_gps["latitude"]
+                current_lon = latest_gps["longitude"]
+        except Exception:
+            pass
+
+    # Check relative current-location phrases.  LLM normally supplies the
+    # resolved place directly; this is a compatibility fallback for direct API
+    # callers and older saved conversation turns.
+    relative_keywords = (
+        "here",
+        "this gate",
+        "the gate",
+        "out of this gate",
+        "out of the gate",
+        "gate",
+        "current location",
+        "this place",
+        "current spot",
+        "my flat",
+        "leave here",
+        "leaving here",
+        "when i leave",
+        "when leaving",
+        "outside gate",
+        "from here",
+        "this area",
+        "current area",
+        "around here",
+        "near me",
+        "nearby",
+    )
+    is_relative_here = any(kw in loc_lower for kw in relative_keywords) or loc_lower in ("gate", "home", "flat")
+
+    try:
+        places = db.list_places(uid)
+        if not places and not is_test_environment():
+            try:
+                from ..services.record_store import RecordStore
+                fs = RecordStore()
+                if fs.is_available:
+                    for p in fs.get_places(uid):
+                        db.create_place(uid, p)
+                    places = db.list_places(uid)
+            except Exception:
+                pass
+
+        # If user refers to "here" or "this gate", match against current GPS proximity to saved places
+        if is_relative_here and current_lat is not None and current_lon is not None:
+            from ..backend.session_manager import _haversine_m
+            for p in places:
+                plat = p.get("latitude")
+                plon = p.get("longitude")
+                if plat and plon and (plat != 0.0 or plon != 0.0):
+                    d = _haversine_m(current_lat, current_lon, plat, plon)
+                    if d <= (p.get("radius_m") or 150.0):
+                        return p.get("name") or loc_clean, plat, plon
+            return "Current Location", current_lat, current_lon
+
+        def unique_match(candidates: list[dict[str, Any]]) -> tuple[str | None, float | None, float | None] | None:
+            if not candidates:
+                return None
+            # A generic name such as "gym" may refer to more than one saved
+            # place. Do not silently choose the first RecordStore result.
+            coordinates = {(p.get("latitude"), p.get("longitude")) for p in candidates}
+            if len(coordinates) > 1:
+                return loc_clean, None, None
+            p = candidates[0]
+            return (
+                p.get("name") or loc_clean,
+                p.get("latitude") if resolved_lat is None else resolved_lat,
+                p.get("longitude") if resolved_lon is None else resolved_lon,
+            )
+
+        # 1. Exact match on name, user_label/alias, or category
+        exact_matches = []
+        for p in places:
+            p_name = (p.get("name") or "").lower().strip()
+            p_alias = (p.get("user_label") or p.get("alias") or "").lower().strip()
+            p_cat = (p.get("category") or "").lower().strip()
+            if loc_lower in (p_name, p_alias, p_cat):
+                exact_matches.append(p)
+        match = unique_match(exact_matches)
+        if match is not None:
+            return match
+
+        # 2. Semantic synonym match (work/office, home/flat/house)
+        WORK_SYNONYMS = {"work", "office", "workplace", "job"}
+        HOME_SYNONYMS = {"home", "flat", "house", "apartment", "residence"}
+        synonym_matches = []
+        for p in places:
+            p_name = (p.get("name") or "").lower().strip()
+            p_alias = (p.get("user_label") or p.get("alias") or "").lower().strip()
+            p_cat = (p.get("category") or "").lower().strip()
+            p_combined = f"{p_name} {p_alias} {p_cat}"
+            if loc_lower in WORK_SYNONYMS and any(w in p_combined for w in WORK_SYNONYMS):
+                synonym_matches.append(p)
+            if loc_lower in HOME_SYNONYMS and any(h in p_combined for h in HOME_SYNONYMS):
+                synonym_matches.append(p)
+        match = unique_match(synonym_matches)
+        if match is not None:
+            return match
+
+        # 3. Substring or token match (e.g. "flat" matches "My Flat Valencia" or "Home")
+        partial_matches = []
+        for p in places:
+            p_name = (p.get("name") or "").lower().strip()
+            p_alias = (p.get("user_label") or p.get("alias") or "").lower().strip()
+            p_cat = (p.get("category") or "").lower().strip()
+            if (loc_lower and loc_lower in p_name) or (p_name and p_name in loc_lower) or (p_alias and (loc_lower in p_alias or p_alias in loc_lower)):
+                partial_matches.append(p)
+                continue
+            # Token match excluding stop words
+            loc_core, _ = _extract_task_tokens(loc_clean)
+            p_core, _ = _extract_task_tokens(f"{p_name} {p_alias} {p_cat}")
+            if loc_core and loc_core.issubset(p_core):
+                partial_matches.append(p)
+        match = unique_match(partial_matches)
+        if match is not None:
+            return match
+
+        # If user specified a location name but has no coords, and current GPS is available, attach current GPS
+        if resolved_lat is None and current_lat is not None and is_relative_here:
+            resolved_lat = current_lat
+            resolved_lon = current_lon
+
+    except Exception as e:
+        logger.debug("Location resolution note: %s", e)
+
+    return resolved_name, resolved_lat, resolved_lon
+
+
+def build_agent_tools(db: DatabaseService, uid: str) -> list[Any]:
+    """Build a list of LangChain tools bound to the authenticated user's database scope."""
+    fs = RecordStore()
+
+    def move_reminder_to_trash(record: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        data = {**record, "uid": uid, "status": "DELETED",
+                "previous_status": record.get("status") or "ACTIVE",
+                "deleted_at": now, "updated_at": now}
+        db.create_reminder(uid, data)
+        if fs.is_available and not is_test_environment():
+            fs.save_reminder(record["id"], data)
+
+    def move_note_to_trash(record: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        data = {**record, "uid": uid, "deleted_at": now, "updated_at": now}
+        if fs.is_available and not is_test_environment():
+            if not fs.save_note(record["id"], data):
+                raise RuntimeError('Cloud storage is unavailable; the note was not deleted. Please retry.')
+        db.create_note(uid, data)
+
+    # ── Reminders ────────────────────────────────────────────────────────────
+
+    @tool
+    def create_reminder(
+        title: str,
+        location_name: str = "",
+        activity: str = "",
+        context_states: str = "",
+        due_at: str = "",
+        latitude: float | None = None,
+        longitude: float | None = None,
+        confirmed: Annotated[bool, InjectedToolArg] = False,
+        place_category: str = "",
+        journey_origin: str = "",
+        journey_destination: str = "",
+        nearby_radius_m: float = 350,
+        activity_delay_seconds: int = 0,
+        delivery_mode: str = "notification",
+    ) -> str:
+        """Create a requested reminder without asking for additional approval.
+        Args:
+            title: The reminder text (e.g. 'Refuel at Indian Oil', 'Check tire pressure').
+            delivery_mode: notification (default), alarm (ringing alarm), or in_app_call (free ringing screen; Answer reads the reminder). Use alarm or in_app_call only when explicitly requested. These are Android alerts, not telephone calls. Exact timing and full-screen display require phone permissions; context alerts require connectivity. Only one-shot alarms are supported.
+            location_name: Optional location trigger (e.g. 'Indian Oil', 'Home', 'Office').
+            activity: Canonical trigger emitted by the context agent (e.g. 'WALKING', 'IN_VEHICLE', or car-specific 'CAR'). Multiple values are ORed. Use CAR for a car-only request; IN_VEHICLE includes other vehicles.
+            context_states: Canonical session-state trigger emitted by the context agent: 'PARKED', 'DWELLING', and/or 'IN_SHOP'. Multiple values are ORed with activity values. Use only when the conversation explicitly calls for that journey state.
+            due_at: Optional ISO timestamp or relative duration (e.g. 'in 29 seconds'). Leave empty if not time-based.
+            activity_delay_seconds: 0 for immediate, or 1–86400 to start a durable one-shot timer at the next detected physical activity ENTER. For '10 minutes after I start walking', use activity=WALKING and 600. Place conditions apply at the start. The timer still fires if the activity ends; do not describe this as verified continuous walking for 10 minutes.
+            latitude: Optional GPS latitude coordinate.
+            longitude: Optional GPS longitude coordinate.
+            place_category: Dynamic Google Places primary type, e.g. gas_station, pharmacy, supermarket, restaurant, hospital. Use for ANY matching place as the user travels, not a fixed coordinate.
+            journey_origin: Saved place to leave, e.g. Gym. Without place_category or journey_destination, fires on leaving this place alone. No nearby shop is required.
+            journey_destination: Optional saved/resolvable destination that ends the journey, e.g. Home. Without an origin, requires movement toward this destination.
+            nearby_radius_m: Dynamic alert distance, 100 to 500 metres. Default 350.
+        """
+        try:
+            if delivery_mode not in {'notification', 'alarm', 'in_app_call'}:
+                return 'Not saved: choose notification, alarm, or in_app_call. Telephone calls are not supported.'
+            parsed_due = normalize_due_at(due_at) or None
+            if parsed_due:
+                try:
+                    datetime.fromisoformat(parsed_due.replace('Z', '+00:00'))
+                except ValueError:
+                    return reminder_input_error("invalid_time", "due_at", "The reminder time is missing or invalid; supply an ISO timestamp or a relative duration such as in 10 seconds.")
+            # LLM is responsible for interpreting the chat and emitting a
+            # structured policy.  Keep execution deterministic by storing its
+            # canonical conditions in the existing activity field.
+            norm_activity = _normalize_activity_string(
+                ", ".join(part for part in (activity, context_states) if part)
+            ) or None
+            if activity_delay_seconds:
+                if (not 1 <= activity_delay_seconds <= 86400 or
+                        norm_activity not in {'WALKING','RUNNING','IN_VEHICLE','ON_BICYCLE','STILL'} or place_category):
+                    return 'Not saved: an activity timer needs one physical activity, 1–86400 seconds, and no dynamic place category.'
+
+            # Legacy/direct-call fallback.  The agent path supplies activity
+            # explicitly, so free text is never the primary policy parser.
+            if not norm_activity:
+                for cand in (title, location_name):
+                    cand_act = _normalize_activity_string(cand)
+                    if cand_act:
+                        norm_activity = cand_act
+                        break
+
+            if journey_origin and not place_category and not journey_destination:
+                label, lat, lon = _resolve_location_and_coords(db, uid, journey_origin, None, None)
+                if lat is None or lon is None:
+                    return reminder_input_error('unresolved_place', 'journey_origin', 'Choose the specific saved place to leave.')
+                from ..services.departure_setup import departure_policy, ensure_boundary, place_card
+                places = [p for p in db.list_places(uid,limit=1000) if p['name'].casefold()==str(label).casefold()]
+                place = places[0] if len(places)==1 else {'name':label,'latitude':lat,'longitude':lon}
+                boundary = ensure_boundary(db,uid,place)
+                policy = departure_policy(place)
+                data = {'title': title, 'location_name': 'After leaving ' + str(label),
+                        'dynamic_policy': policy, 'activity': norm_activity, 'due_at': parsed_due,
+                        'status': 'ACTIVE', 'one_shot': True, 'delivery_mode': delivery_mode}
+                saved = db.create_reminder(uid, data)
+                if fs.is_available and not is_test_environment():
+                    if not fs.save_reminder(saved['id'], saved):
+                        db.update_reminder(uid, saved['id'], {'status': 'PAUSED'})
+                        return 'Not saved: cloud storage is unavailable; the local reminder is paused.'
+                return (f"Saved departure reminder (ID: {saved['id']}): {title}; on leaving {label}; delivery_mode={delivery_mode}. "
+                        "Uses fresh location, movement and available home Wi-Fi evidence. A satellite outline is supporting evidence when identifiable; no fixed 200 m departure radius. "
+                        "Copy this satellite-map card into the final reply:\n" + place_card(place,boundary))
+
+            if place_category:
+                from ..backend.dynamic_reminders import SUPPORTED_CATEGORIES
+                if place_category not in SUPPORTED_CATEGORIES:
+                    return reminder_input_error("unsupported_place_category", "place_category", "Choose a supported place category or a named place.")
+                if not re.fullmatch(r"[a-z][a-z_]{2,60}", place_category):
+                    return reminder_input_error("invalid_place_category", "place_category", "Choose a valid place category.")
+                if (activity or context_states) and not norm_activity:
+                    return reminder_input_error("unsupported_activity", "activity", "Choose a supported detectable activity.")
+                policy = {'version': 1, 'category': place_category, 'radius_m': min(500, max(100, nearby_radius_m))}
+                for key, name in [('origin', journey_origin), ('destination', journey_destination)]:
+                    if name:
+                        label, lat, lon = _resolve_location_and_coords(db, uid, name, None, None)
+                        if lat is None or lon is None:
+                            return reminder_input_error("unresolved_journey_place", "journey_" + key, f"Resolve the journey {key} before saving.")
+                        policy[key] = {'name': label, 'latitude': lat, 'longitude': lon}
+                description = 'Any nearby ' + place_category.replace('_', ' ')
+                if journey_origin: description += f' after leaving {journey_origin}'
+                if journey_destination: description += f' on the way to {journey_destination}'
+                data = {'title': title, 'location_name': description, 'dynamic_policy': policy,
+                    'activity': norm_activity, 'due_at': parsed_due, 'status': 'ACTIVE', 'one_shot': True, 'delivery_mode': delivery_mode}
+                saved = db.create_reminder(uid, data)
+                if fs.is_available and not is_test_environment(): fs.save_reminder(saved['id'], saved)
+                return f"Saved dynamic reminder (ID: {saved['id']}): {description}; activity={norm_activity}; alerts once within {policy['radius_m']}m of a verified matching place during the observed journey. Requires fresh background location."
+            if journey_origin or journey_destination or re.search(r"\b(route|along the way|on the way|any (?:petrol|fuel|gas))\b", location_name, re.I):
+                return reminder_input_error("invalid_journey", "place_category", "Use place_category and journey_origin/journey_destination for a dynamic journey.")
+
+            # Auto-detect relative location cues from title if location_name is omitted
+            if not location_name:
+                t_lower = title.lower()
+                for rel_phrase in (
+                    "out of this gate", "out of the gate", "this gate", "the gate",
+                    "leave here", "leaving here", "when i leave", "when leaving",
+                    "outside gate", "from here", "at my flat", "near home", "at home"
+                ):
+                    if rel_phrase in t_lower:
+                        location_name = rel_phrase
+                        break
+
+            resolved_loc, res_lat, res_lon = _resolve_location_and_coords(
+                db, uid, location_name, latitude, longitude
+            )
+
+            semantic_states = {"PARKED", "DWELLING", "IN_SHOP"}
+            activity_parts = {
+                part.strip() for part in (norm_activity or "").split(",") if part.strip()
+            }
+            has_semantic_state = bool(activity_parts.intersection(semantic_states))
+            has_location_request = bool(location_name.strip() or latitude is not None or longitude is not None)
+            has_resolved_geofence = res_lat is not None and res_lon is not None
+            if (activity or context_states) and not norm_activity:
+                return reminder_input_error("unsupported_activity", "activity", "Choose a supported detectable activity or a reminder time.")
+            if not (norm_activity or parsed_due or has_resolved_geofence):
+                return reminder_input_error("missing_trigger", "due_at", "Supply a reminder time, supported activity, or resolved place from the user request.")
+            if parsed_due:
+                try:
+                    datetime.fromisoformat(parsed_due.replace("Z", "+00:00"))
+                except ValueError:
+                    return reminder_input_error("invalid_time", "due_at", "The reminder time is missing or invalid; supply an ISO timestamp or a relative duration such as in 10 seconds.")
+
+            # Do not silently turn a conversational guess into an automation.
+            # Semantic states are deliberately place-bound: Android emits
+            # physical activities, while the backend derives dwell/parked
+            # transitions from a verified session at a known location.
+            if has_location_request and not has_resolved_geofence:
+                return reminder_input_error("unresolved_place", "location_name", "The requested place could not be resolved. Choose or save the specific place.")
+            if has_semantic_state and not has_resolved_geofence:
+                return reminder_input_error("unresolved_semantic_place", "location_name", "A DWELLING, PARKED, or IN_SHOP reminder needs a specific resolved place.")
+            if fs.is_available and not is_test_environment():
+                try:
+                    for r in fs.get_reminders(uid):
+                        db.create_reminder(uid, r)
+                except Exception as fe:
+                    logger.debug("RecordStore create_reminder sync note: %s", fe)
+
+            # Digest existing active reminders: check if an existing reminder for the same task/errand exists to consolidate
+            existing_rems = db.list_reminders(uid, status="ACTIVE", limit=50)
+            matching_existing = None
+            for r in existing_rems:
+                if r.get('delivery_mode', 'notification') != delivery_mode:
+                    continue
+                if int(r.get('activity_delay_seconds') or 0) != activity_delay_seconds:
+                    continue
+                if _are_matching_errands(title, resolved_loc, r.get("title", ""), r.get("location_name")):
+                    matching_existing = r
+                    break
+
+            if matching_existing:
+                rem_id = matching_existing["id"]
+                # Merge activities across both
+                existing_act = matching_existing.get("activity") or ""
+                combined_acts = set()
+                for act_part in _normalize_activity_string(existing_act).split(","):
+                    if act_part.strip():
+                        combined_acts.add(act_part.strip())
+                if norm_activity:
+                    for act_part in norm_activity.split(","):
+                        if act_part.strip():
+                            combined_acts.add(act_part.strip())
+                merged_activity = ", ".join(sorted(combined_acts)) if combined_acts else None
+
+                final_lat = res_lat if res_lat is not None else matching_existing.get("latitude")
+                final_lon = res_lon if res_lon is not None else matching_existing.get("longitude")
+                final_loc = resolved_loc or matching_existing.get("location_name") or None
+
+                merged_data = {
+                    "title": title or matching_existing.get("title"),
+                    "location_name": final_loc,
+                    "activity": merged_activity,
+                    "due_at": parsed_due if parsed_due is not None else matching_existing.get("due_at"),
+                    "latitude": final_lat,
+                    "longitude": final_lon,
+                    "status": "ACTIVE",
+                    "activity_delay_seconds": activity_delay_seconds,
+                    "delivery_mode": delivery_mode,
+                }
+                db.update_reminder(uid, rem_id, merged_data)
+                if fs.is_available and not is_test_environment():
+                    fs.save_reminder(rem_id, {**merged_data, "id": rem_id, "uid": uid, "created_at": matching_existing.get("created_at")})
+
+                # Clean up any other sibling duplicate active reminders with matching title/errand
+                for other in existing_rems:
+                    if other["id"] != rem_id:
+                        if other.get('delivery_mode', 'notification') != delivery_mode:
+                            continue
+                        if int(other.get('activity_delay_seconds') or 0) != activity_delay_seconds:
+                            continue
+                        if _are_matching_errands(title, resolved_loc, other.get("title", ""), other.get("location_name")):
+                            db.delete_reminder(uid, other["id"])
+                            if fs.is_available and not is_test_environment():
+                                fs.delete_reminder(other["id"])
+
+                act_summary = f" covering activities: [{merged_activity}]" if merged_activity else ""
+                loc_summary = f" at {final_loc}" if final_loc else ""
+                return f"Consolidated into a single intelligent reminder: '{merged_data['title']}'{loc_summary}{act_summary} (ID: {rem_id}). Verified saved record: {db.get_reminder(uid, rem_id)}"
+
+            data = {
+                "title": title,
+                "location_name": resolved_loc,
+                "activity": norm_activity,
+                "due_at": parsed_due,
+                "latitude": res_lat,
+                "longitude": res_lon,
+                "status": "ACTIVE",
+                "activity_delay_seconds": activity_delay_seconds,
+                "delivery_mode": delivery_mode,
+            }
+            res = db.create_reminder(uid, data)
+            rem_id = res.get("id", "saved")
+            created_at = res.get("created_at") or datetime.now(timezone.utc).isoformat()
+            if fs.is_available and not is_test_environment():
+                fs.save_reminder(rem_id, {**data, "id": rem_id, "uid": uid, "created_at": created_at})
+            saved = db.get_reminder(uid, rem_id)
+            return f"Successfully created reminder (ID: {rem_id}); verified saved record: {saved}"
+        except Exception as e:
+            return f"Error creating reminder: {e}"
+
+
+    @tool
+    def update_reminder(
+        reminder_id: str,
+        title: str = "",
+        location_name: str = "",
+        activity: str = "",
+        context_states: str = "",
+        due_at: str = "",
+        status: str = "",
+        confirmed: Annotated[bool, InjectedToolArg] = False,
+        activity_delay_seconds: int | None = None,
+        delivery_mode: str | None = None,
+        journey_origin: str | None = None,
+    ) -> str:
+        """Apply requested reminder edits without asking for additional approval.
+        Args:
+            reminder_id: The ID or title of the reminder to update.
+            delivery_mode: Optional notification, alarm, or in_app_call. The latter rings inside Jarvis and reads the reminder when answered; it does not place a telephone call.
+            title: Optional updated title.
+            location_name: Optional updated location trigger name.
+            activity: Optional updated physical-activity trigger (e.g. 'WALKING, IN_VEHICLE').
+            context_states: Optional updated session-state trigger(s): 'PARKED', 'DWELLING', and/or 'IN_SHOP'.
+            due_at: Optional updated ISO timestamp or relative duration.
+            activity_delay_seconds: Optional one-shot timer delay after activity start, 0–86400 seconds. Zero removes the delay. This measures elapsed time after the start, not uninterrupted activity.
+            status: Optional updated status: 'ACTIVE', 'PAUSED', 'COMPLETED'.
+            journey_origin: Set to a saved place to replace a shop/journey condition with leaving that place alone. Originals need not be deleted.
+        """
+        try:
+            target_id = reminder_id
+            existing = db.get_reminder(uid, target_id)
+            if not existing:
+                recs = db.list_reminders(uid, limit=50)
+                for r in recs:
+                    if reminder_id.lower() in (str(r.get("title", "")).lower() or str(r.get("body", "")).lower()):
+                        target_id = r["id"]
+                        existing = r
+                        break
+            if not existing:
+                return f"Could not find reminder matching '{reminder_id}' to update."
+
+            patch: dict[str, Any] = {}
+            if journey_origin is not None:
+                label, lat, lon = _resolve_location_and_coords(db, uid, journey_origin, None, None)
+                if not journey_origin or lat is None or lon is None:
+                    return reminder_input_error('unresolved_place', 'journey_origin', 'Choose the specific saved place to leave.')
+                from ..services.departure_setup import departure_policy, ensure_boundary
+                places = [p for p in db.list_places(uid,limit=1000) if p['name'].casefold()==str(label).casefold()]
+                place = places[0] if len(places)==1 else {'name':label,'latitude':lat,'longitude':lon}
+                ensure_boundary(db,uid,place)
+                patch.update(dynamic_policy=departure_policy(place),
+                    location_name='After leaving ' + str(label), latitude=None, longitude=None, activity=None,
+                    activity_delay_seconds=0)
+            if delivery_mode is not None:
+                if delivery_mode not in {'notification', 'alarm', 'in_app_call'}:
+                    return 'Not changed: choose notification, alarm, or in_app_call.'
+                patch['delivery_mode'] = delivery_mode
+            if title:
+                patch["title"] = title
+            if location_name:
+                resolved_loc, loc_lat, loc_lon = _resolve_location_and_coords(db, uid, location_name)
+                if loc_lat is None or loc_lon is None:
+                    return reminder_input_error("unresolved_place", "location_name", "Choose or save the specific requested place before changing this reminder.")
+                patch["location_name"] = resolved_loc
+                if loc_lat is not None:
+                    patch["latitude"] = loc_lat
+                    patch["longitude"] = loc_lon
+            if activity or context_states:
+                patch["activity"] = _normalize_activity_string(
+                    ", ".join(part for part in (activity, context_states) if part)
+                ) or None
+                if not patch["activity"]:
+                    return reminder_input_error("unsupported_activity", "activity", "Choose a supported detectable activity.")
+            if due_at:
+                patch["due_at"] = normalize_due_at(due_at) or None
+            if status:
+                patch["status"] = status.upper()
+            if activity_delay_seconds is not None:
+                if not 0 <= activity_delay_seconds <= 86400:
+                    return 'Not changed: activity delay must be 0–86400 seconds.'
+                patch['activity_delay_seconds'] = activity_delay_seconds
+
+            candidate = {**existing, **patch}
+            if candidate.get('activity_delay_seconds'):
+                if candidate.get('activity') not in {'WALKING','RUNNING','IN_VEHICLE','ON_BICYCLE','STILL'} or candidate.get('dynamic_policy') or not candidate.get('one_shot', True):
+                    return 'Not changed: activity timers require one physical activity and a one-shot reminder without a dynamic place category.'
+            if candidate.get("status") == "ACTIVE":
+                acts = set((candidate.get("activity") or "").replace(" ", "").split(","))
+                if not candidate.get('dynamic_policy') and (candidate.get("location_name") or acts & {"DWELLING", "PARKED", "IN_SHOP"}) and (
+                    candidate.get("latitude") is None or candidate.get("longitude") is None
+                ):
+                    return reminder_input_error("unresolved_place", "location_name", "This reminder needs a specific resolved place.")
+                if not (candidate.get("activity") or candidate.get("due_at") or candidate.get("latitude") is not None or candidate.get('dynamic_policy')):
+                    return reminder_input_error("missing_trigger", "due_at", "Supply a reminder time, supported activity, or resolved place from the user request.")
+            if due_at:
+                try:
+                    datetime.fromisoformat(str(patch["due_at"]).replace("Z", "+00:00"))
+                except ValueError:
+                    return reminder_input_error("invalid_time", "due_at", "Supply an ISO timestamp or a relative duration such as in 10 seconds.")
+
+            res = db.update_reminder(uid, target_id, patch)
+            if fs.is_available and not is_test_environment():
+                if not fs.save_reminder(target_id, {**existing, **patch, "id": target_id, "uid": uid}):
+                    db.update_reminder(uid, target_id, {key: existing.get(key) for key in patch})
+                    return 'Not changed: cloud storage is unavailable; the previous reminder was kept.'
+            return f"Successfully updated reminder (ID: {target_id}); verified saved record: {db.get_reminder(uid, target_id)}"
+        except Exception as e:
+            return f"Error updating reminder: {e}"
+
+
+    @tool
+    def consolidate_reminders(criteria: str = "") -> str:
+        """Digest and consolidate existing active reminders that match specific criteria or share similar tasks/errands into a single intelligent reminder.
+        Merges multiple travel/activity triggers (e.g. WALKING and IN_VEHICLE), unified locations, and timing conditions, while removing redundant duplicate reminders.
+        Args:
+            criteria: Optional topic, task keywords, location, or activity to target for consolidation (e.g. 'groceries', 'walking or bike', 'flat', or '' / 'all' to digest all active reminders).
+        """
+        try:
+            if fs.is_available and not is_test_environment():
+                try:
+                    for r in fs.get_reminders(uid):
+                        db.create_reminder(uid, r)
+                except Exception as fe:
+                    logger.debug("RecordStore consolidate_reminders sync note: %s", fe)
+
+            active_rems = db.list_reminders(uid, status="ACTIVE", limit=50)
+            if not active_rems:
+                return "No active reminders found to consolidate."
+
+            criteria_clean = (criteria or "").strip().lower()
+            target_rems = active_rems
+            if criteria_clean and criteria_clean not in ("all", "any", "*"):
+                target_rems = [
+                    r for r in active_rems
+                    if _are_matching_errands(criteria_clean, criteria_clean, r.get("title", ""), r.get("location_name"))
+                    or criteria_clean in (r.get("title", "")).lower()
+                    or criteria_clean in (r.get("location_name") or "").lower()
+                    or criteria_clean in (r.get("activity") or "").lower()
+                ]
+                if not target_rems:
+                    return f"No active reminders found matching criteria '{criteria}'."
+
+            # Group target reminders into clusters by matching errand/task/location
+            # Delayed activity policies must not be merged into immediate or
+            # multi-activity rules by the generic errand consolidation flow.
+            target_rems = [r for r in target_rems if not r.get('activity_delay_seconds')]
+            if not target_rems:
+                return 'Activity timers need individual updates; no reminders were consolidated.'
+            clusters: list[list[dict[str, Any]]] = []
+            for r in target_rems:
+                placed = False
+                for c in clusters:
+                    lead = c[0]
+                    if _are_matching_errands(r.get("title", ""), r.get("location_name"), lead.get("title", ""), lead.get("location_name")):
+                        c.append(r)
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append([r])
+
+            if criteria_clean and criteria_clean not in ("all", "any", "*") and len(clusters) > 1 and len(target_rems) > 1:
+                clusters = [target_rems]
+
+            consolidated_summaries = []
+            for cluster in clusters:
+                if len(cluster) == 1 and not criteria_clean:
+                    continue
+
+                primary = cluster[0]
+                prim_id = primary["id"]
+
+                merged_acts = set()
+                for rem in cluster:
+                    for act_part in _normalize_activity_string(rem.get("activity")).split(","):
+                        if act_part.strip():
+                            merged_acts.add(act_part.strip())
+                if criteria_clean:
+                    crit_norm = _normalize_activity_string(criteria_clean)
+                    if crit_norm:
+                        for act_part in crit_norm.split(","):
+                            if act_part.strip():
+                                merged_acts.add(act_part.strip())
+
+                merged_activity = ", ".join(sorted(merged_acts)) if merged_acts else None
+
+                best_loc = None
+                best_lat = None
+                best_lon = None
+                for rem in cluster:
+                    loc = rem.get("location_name")
+                    lat = rem.get("latitude")
+                    lon = rem.get("longitude")
+                    if lat is not None and lon is not None:
+                        best_loc = loc or best_loc
+                        best_lat = lat
+                        best_lon = lon
+                        break
+                    elif loc and not best_loc:
+                        best_loc = loc
+
+                resolved_loc, resolved_lat, resolved_lon = _resolve_location_and_coords(
+                    db, uid, best_loc, best_lat, best_lon
+                )
+
+                best_due = None
+                for rem in cluster:
+                    due = rem.get("due_at")
+                    if due and str(due).strip():
+                        best_due = str(due).strip()
+                        break
+
+                best_title = max((rem.get("title") or "" for rem in cluster), key=len) or primary.get("title")
+
+                patch = {
+                    "title": best_title,
+                    "location_name": resolved_loc,
+                    "latitude": resolved_lat,
+                    "longitude": resolved_lon,
+                    "activity": merged_activity,
+                    "due_at": best_due,
+                    "status": "ACTIVE",
+                }
+                db.update_reminder(uid, prim_id, patch)
+                if fs.is_available and not is_test_environment():
+                    fs.save_reminder(prim_id, {**primary, **patch, "id": prim_id, "uid": uid})
+
+                for other in cluster[1:]:
+                    other_id = other["id"]
+                    db.delete_reminder(uid, other_id)
+                    if fs.is_available and not is_test_environment():
+                        fs.delete_reminder(other_id)
+
+                act_str = f" [Activities: {merged_activity}]" if merged_activity else ""
+                loc_str = f" (at {resolved_loc})" if resolved_loc else ""
+                consolidated_summaries.append(
+                    f"• Consolidated {len(cluster)} reminder(s) into '{best_title}'{loc_str}{act_str} (ID: {prim_id})"
+                )
+
+            if not consolidated_summaries:
+                return "All active reminders are already unique and consolidated."
+
+            return "Successfully digested and consolidated reminders:\n" + "\n".join(consolidated_summaries)
+        except Exception as e:
+            logger.error("Error consolidating reminders: %s", e)
+            return f"Error consolidating reminders: {e}"
+
+
+    @tool
+    def list_reminders(status: str = "ACTIVE") -> str:
+        """List the user's reminders.
+        Args:
+            status: Filter by status: 'ACTIVE', 'PAUSED', 'COMPLETED', or 'ALL'.
+        """
+        try:
+            if fs.is_available:
+                try:
+                    for r in fs.get_reminders(uid):
+                        db.create_reminder(uid, r)
+                except Exception as fe:
+                    logger.debug("RecordStore list_reminders pull note: %s", fe)
+
+            stat_arg = None if status.upper() == "ALL" else status.upper()
+            records = db.list_reminders(uid, status=stat_arg, limit=20)
+            if not records:
+                return "No reminders found."
+            lines = []
+            for r in records:
+                loc = f" (at {r.get('location_name')})" if r.get("location_name") else ""
+                act = f" [on {r.get('activity')}]" if r.get("activity") else ""
+                lines.append(f"• ID: {r.get('id')}: {r.get('title') or r.get('body', '')}{loc}{act} [{r.get('status', 'ACTIVE')}]")
+            return f"Found {len(records)} reminder(s):\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Error listing reminders: {e}"
+
+    @tool
+    def search_reminders(query: str) -> str:
+        """Search reminders matching a text query or keyword.
+        Args:
+            query: The keyword to search for in reminder titles or locations.
+        """
+        try:
+            recs = db.list_reminders(uid, limit=50)
+            matches = [
+                r for r in recs
+                if query.lower() in " ".join(str(r.get(key) or "").lower() for key in ("title", "location_name", "body"))
+            ]
+            if not matches:
+                return f"No reminders found matching '{query}'."
+            lines = [f"• ID: {r.get('id')}: {r.get('title') or r.get('body', '')} [{r.get('status', 'ACTIVE')}]" for r in matches]
+            return f"Found {len(matches)} reminder(s) matching '{query}':\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Error searching reminders: {e}"
+
+    @tool
+    def delete_reminder(reminder_id: str) -> str:
+        """Move a reminder to recoverable Trash using its exact ID or title match.
+        Only for a request to delete the reminder itself. To change its policy,
+        trigger, time or delivery, use update_reminder and preserve the same ID.
+        Args:
+            reminder_id: The exact ID of the reminder, or the title of the reminder to delete.
+        """
+        try:
+            recs = db.list_reminders(uid, limit=50)
+            if fs.is_available and not is_test_environment():
+                recs.extend(fs.get_reminders(uid))
+            for r in recs:
+                if r.get("id") == reminder_id and r.get("status") != "DELETED":
+                    move_reminder_to_trash(r)
+                    return f"Moved reminder to Trash (ID: {reminder_id}). It can be restored."
+            for r in recs:
+                if r.get("status") != "DELETED" and reminder_id.lower() in (str(r.get("title", "")).lower() or str(r.get("body", "")).lower()):
+                    move_reminder_to_trash(r)
+                    return f"Moved reminder '{r.get('title')}' to Trash (ID: {r['id']}). It can be restored."
+            return f"Could not find reminder matching '{reminder_id}' to delete."
+        except Exception as e:
+            return f"Error deleting reminder: {e}"
+
+    @tool
+    def delete_all_reminders() -> str:
+        """Move ALL reminders for the user to recoverable Trash."""
+        try:
+            recs = fs.get_reminders(uid) if fs.is_available and not is_test_environment() else db.list_reminders(uid, limit=1000)
+            for r in recs:
+                if r.get("status") != "DELETED":
+                    move_reminder_to_trash(r)
+            return "Moved all reminders to Trash. They can be restored."
+        except Exception as e:
+            return f"Error deleting all reminders: {e}"
+
+    @tool
+    def restore_reminder(reminder_id: str) -> str:
+        """Restore a reminder from Trash by exact ID or unambiguous title."""
+        records = db.list_reminders(uid, status="DELETED", limit=100)
+        if fs.is_available and not is_test_environment():
+            records.extend(r for r in fs.get_reminders(uid) if r.get("status") == "DELETED")
+        matches = {r["id"]: r for r in records if r.get("id") == reminder_id}
+        if not matches:
+            matches = {r["id"]: r for r in records if reminder_id.lower() in str(r.get("title") or "").lower()}
+        if len(matches) != 1:
+            return "CLARIFICATION_REQUIRED: Name one reminder in Trash to restore." if matches else "Reminder not found in Trash."
+        record = next(iter(matches.values()))
+        data = {**record, "uid": uid, "status": record.get("previous_status") or "ACTIVE",
+                "previous_status": None, "deleted_at": None}
+        db.create_reminder(uid, data)
+        if fs.is_available and not is_test_environment():
+            fs.save_reminder(record["id"], data)
+        return f"Restored reminder '{record.get('title')}' (ID: {record['id']})."
+
+    # ── Notes ────────────────────────────────────────────────────────────────
+
+    @tool
+    def create_note(text: str, title: str = "", place: str = "", new_note: bool = False) -> str:
+        """Save a note after searching for its subject. A unique matching title appends in place.
+        If several notes match, ask the user which one; do not retry with a different title.
+        Args:
+            text: The content of the note (e.g. 'Odometer reading 4,285 km', 'Checked chain tension').
+            title: Optional title for the note.
+            place: Optional place where the note was recorded.
+            new_note: True only when the user explicitly requests a separate new note.
+        """
+        try:
+            if not text.strip():
+                return 'Not saved: note text is required.'
+            if title.strip().casefold() not in {'', 'note', 'untitled'} and not new_note:
+                matches = db.search_notes(uid, title, exact_title=True, limit=2)
+                if len(matches) > 1 or (matches and place and place != (matches[0].get('place') or '')):
+                    return 'Not saved: multiple possible destinations for this subject. Ask the user which note to append to.\n' + format_notes(matches)
+                if matches:
+                    return append_to_note(matches[0]['id'], text)
+            data = {"text": text, "content": text, "title": title or "Note", "place": place}
+            res = db.create_note(uid, data)
+            n_id = res.get("id", "saved")
+            if fs.is_available:
+                fs.save_note(n_id, {**data, "id": n_id, "uid": uid})
+            return f"Successfully created note: '{text}' (ID: {n_id})"
+        except Exception as e:
+            return f"Error creating note: {e}"
+
+    def exact_active_note(note_id: str) -> dict[str, Any] | None:
+        # Refresh only the selected document, never a collection-wide scan.
+        if fs.is_available and not is_test_environment():
+            record = fs.sql.get('notes', note_id, uid=uid)
+            if not record or record.get('uid') != uid or record.get('deleted_at'):
+                return None
+            record = {**record, 'id': note_id}
+            db.create_note(uid, record)
+            return record
+        record = db.get_note(uid, note_id)
+        return record if record and not record.get('deleted_at') else None
+
+    def format_notes(records: list[dict[str, Any]]) -> str:
+        return '\n'.join(f"• ID {n['id']} | {n.get('title') or 'Untitled'} | Place: {n.get('place') or ''}\n{n.get('content') or n.get('text') or ''}" for n in records)
+
+    def append_to_note(note_id: str, text: str, entry_date: str = '') -> str:
+        record = exact_active_note(note_id)
+        if not record:
+            return 'Not saved: note not found or in Trash. Ask the user to choose an active note.'
+        if not text.strip():
+            return 'Not saved: entry text is required.'
+        try:
+            day = date.fromisoformat(entry_date).isoformat() if entry_date else datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+        except ValueError:
+            return 'Not saved: entry_date must be YYYY-MM-DD for the day the entry describes.'
+        original = str(record.get('content') or record.get('text') or '')
+        content = original + ('\n\n' if original else '') + f'[{day}]\n{text}'
+        data = {**record, 'content': content, 'text': content, 'updated_at': datetime.now(timezone.utc).isoformat()}
+        if fs.is_available and not is_test_environment() and not fs.save_note(note_id, data):
+            return 'Not saved: storage is unavailable. Please retry.'
+        db.create_note(uid, data)
+        return f"Appended entry to note '{record.get('title') or 'Untitled'}' (ID: {note_id}). Earlier entries are preserved."
+
+    @tool
+    def append_note(note_id: str, text: str, entry_date: str = '') -> str:
+        """Append new information to an existing subject's note by exact ID, preserving all earlier entries.
+        Use for follow-ups and daily habit logs, instead of create_note or replacing content with update_note.
+        Ask which note when the subject or destination is ambiguous. entry_date is YYYY-MM-DD;
+        use the date the user describes (resolve yesterday from request time), or omit for today in Asia/Kolkata.
+        """
+        return append_to_note(note_id, text, entry_date)
+
+    @tool
+    def update_note(note_id: str, title: str | None = None, text: str | None = None,
+                    place: str | None = None) -> str:
+        """Edit a requested note by exact ID. Does not delete or trash notes."""
+        record = exact_active_note(note_id)
+        if not record:
+            return 'Note not found. Use list_notes or search_notes to choose an active note.'
+        patch = {key: value for key, value in {'title': title, 'content': text, 'place': place}.items() if value is not None}
+        if not patch:
+            return 'No changes requested.'
+        data = {**record, **patch, 'updated_at': datetime.now(timezone.utc).isoformat()}
+        if not str(data.get('title') or '').strip() and not str(data.get('content') or '').strip():
+            return 'Not saved: a note needs a title or content.'
+        if fs.is_available and not is_test_environment() and not fs.save_note(note_id, data):
+            return 'Not saved: cloud storage is unavailable. Please retry.'
+        db.create_note(uid, data)
+        return f'Updated note (ID: {note_id}).'
+
+    @tool
+    def merge_notes(note_ids: list[str], title: str) -> str:
+        """Create a combined note from two or more exact note IDs, preserving full source text.
+        Once the combined note is created and verified, call delete_note on the original source
+        note IDs to clean up duplicates.
+        """
+        ids = list(dict.fromkeys(note_ids))
+        if not 2 <= len(ids) <= 20 or not title.strip():
+            return 'Choose 2 to 20 distinct notes and a title for the combined note.'
+        records = [exact_active_note(note_id) for note_id in ids]
+        if any(record is None for record in records):
+            return 'Not merged: one of the selected notes is missing or in Trash. Refresh the selection.'
+        parts = []
+        for record in records:
+            heading = record.get('title') or 'Untitled note'
+            place = record.get('place') or ''
+            parts.append(f"{heading}\n" + (f"Place: {place}\n" if place else '') + str(record.get('content') or record.get('text') or ''))
+        now = datetime.now(timezone.utc).isoformat()
+        data = {'id': str(uuid4()), 'uid': uid, 'title': title.strip(),
+                'content': '\n\n---\n\n'.join(parts), 'created_at': now, 'updated_at': now}
+        if fs.is_available and not is_test_environment() and not fs.save_note(data['id'], data):
+            return 'Not merged: cloud storage is unavailable. Originals are unchanged.'
+        db.create_note(uid, data)
+        return f"Created combined note '{title.strip()}' (ID: {data['id']}). Originals are unchanged until verified and cleaned up with delete_note."
+
+    @tool
+    def list_notes(limit: int = 10) -> str:
+        """List the user's recent notes.
+        Args:
+            limit: Maximum number of notes to return.
+        """
+        try:
+            if fs.is_available:
+                try:
+                    for n in fs.get_notes(uid):
+                        db.create_note(uid, n)
+                except Exception as fe:
+                    logger.debug("RecordStore list_notes pull note: %s", fe)
+
+            records = db.list_notes(uid, limit=limit)
+            if not records:
+                return "No notes found."
+            return f"Found {len(records)} note(s):\n" + format_notes(records)
+        except Exception as e:
+            return f"Error listing notes: {e}"
+
+    @tool
+    def search_notes(query: str) -> str:
+        """Search notes matching a text query or keyword.
+        Args:
+            query: The keyword to search for in note content or title.
+        """
+        try:
+            matches = db.search_notes(uid, query)
+            if not matches:
+                return f"No notes found matching '{query}'."
+            return f"Found {len(matches)} note(s) matching '{query}':\n" + format_notes(matches)
+        except Exception as e:
+            return f"Error searching notes: {e}"
+
+    @tool
+    def delete_note(note_id: str) -> str:
+        """Move a note to recoverable Trash using its exact ID.
+        Args:
+            note_id: The exact ID returned by list_notes or search_notes.
+        """
+        try:
+            record = exact_active_note(note_id)
+            if record:
+                move_note_to_trash(record)
+                return f"Moved note to Trash (ID: {note_id}). It can be restored."
+            return f"Could not find note matching '{note_id}' to delete."
+        except Exception as e:
+            return f"Error deleting note: {e}"
+
+    @tool
+    def delete_all_notes() -> str:
+        """Move ALL notes for the user to recoverable Trash."""
+        try:
+            recs = fs.get_notes(uid) if fs.is_available and not is_test_environment() else db.list_notes(uid, limit=1000)
+            for n in recs:
+                if not n.get("deleted_at"):
+                    move_note_to_trash(n)
+            return "Moved all notes to Trash. They can be restored."
+        except Exception as e:
+            return f"Error deleting all notes: {e}"
+
+    @tool
+    def restore_note(note_id: str) -> str:
+        """Restore a note from Trash by exact ID or unambiguous content snippet."""
+        records = [n for n in db.list_notes(uid, limit=100, include_deleted=True) if n.get("deleted_at")]
+        if fs.is_available and not is_test_environment():
+            records.extend(n for n in fs.get_notes(uid) if n.get("deleted_at"))
+        matches = {n["id"]: n for n in records if n.get("id") == note_id}
+        if not matches:
+            matches = {n["id"]: n for n in records if note_id.lower() in str(n.get("content") or "").lower()}
+        if len(matches) != 1:
+            return "CLARIFICATION_REQUIRED: Name one note in Trash to restore." if matches else "Note not found in Trash."
+        record = next(iter(matches.values()))
+        data = {**record, "uid": uid, "deleted_at": None}
+        db.create_note(uid, data)
+        if fs.is_available and not is_test_environment():
+            fs.save_note(record["id"], data)
+        return f"Restored note (ID: {record['id']})."
+
+    # ── Tasks ────────────────────────────────────────────────────────────────
+
+    @tool
+    def create_task(title: str, priority: str = "MEDIUM", due_date: str = "") -> str:
+        """Create a new task or action item.
+        Args:
+            title: Title of the task (e.g. 'Order chain lube', 'Service Hunter 350').
+            priority: Priority level: 'LOW', 'MEDIUM', or 'HIGH'.
+            due_date: Optional due date string.
+        """
+        try:
+            data = {
+                "title": title,
+                "description": f"Priority: {priority.upper()}",
+                "priority": priority.upper(),
+                "due_date": due_date,
+                "status": "PENDING",
+            }
+            res = db.create_task(uid, data)
+            return f"Successfully created task: '{title}' (ID: {res.get('id', 'saved')})"
+        except Exception as e:
+            return f"Error creating task: {e}"
+
+    @tool
+    def list_tasks() -> str:
+        """List all pending and active tasks."""
+        try:
+            records = db.list_tasks(uid, limit=20)
+            if not records:
+                return "No tasks found."
+            lines = []
+            for t in records:
+                desc = str(t.get("description", "")).upper()
+                raw_prio = t.get("priority")
+                prio = str(raw_prio).upper() if raw_prio else ("HIGH" if "HIGH" in desc else "LOW" if "LOW" in desc else "MED")
+                lines.append(f"• ID: {t.get('id')}: {t.get('title')} [{prio}] - {t.get('status', 'PENDING')}")
+            return f"Found {len(records)} task(s):\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Error listing tasks: {e}"
+
+    @tool
+    def update_task(task_id: str, title: str = "", priority: str = "", new_status: str = "") -> str:
+        """Update a task's title, priority, or status.
+        Args:
+            task_id: The ID of the task to update.
+            title: New task title.
+            priority: New priority ('LOW', 'MEDIUM', 'HIGH').
+            new_status: New status ('PENDING', 'COMPLETED', 'CANCELLED').
+        """
+        try:
+            updates: dict[str, Any] = {}
+            if title:
+                updates["title"] = title
+            if new_status:
+                updates["status"] = new_status.upper()
+            if priority:
+                updates["priority"] = priority.upper()
+            res = db.update_task(uid, task_id, updates)
+            if res:
+                return f"Successfully updated task {task_id}."
+            recs = db.list_tasks(uid, limit=50)
+            for t in recs:
+                if task_id.lower() in t.get("title", "").lower():
+                    db.update_task(uid, t["id"], updates)
+                    return f"Successfully updated task '{t.get('title')}' (ID: {t['id']})."
+            return f"Task {task_id} not found."
+        except Exception as e:
+            return f"Error updating task: {e}"
+
+    @tool
+    def update_task_status(task_id: str, new_status: str) -> str:
+        """Update a task's status (e.g. 'COMPLETED', 'PENDING').
+        Args:
+            task_id: The ID or title of the task.
+            new_status: 'COMPLETED' or 'PENDING'.
+        """
+        return update_task.invoke({"task_id": task_id, "new_status": new_status})
+
+    @tool
+    def delete_task(task_id: str) -> str:
+        """Delete a task using its ID or title match.
+        Args:
+            task_id: The ID or title of the task to delete.
+        """
+        try:
+            ok = db.delete_task(uid, task_id)
+            if ok:
+                return f"Successfully deleted task (ID: {task_id})."
+            recs = db.list_tasks(uid, limit=50)
+            for t in recs:
+                if task_id.lower() in t.get("title", "").lower():
+                    db.delete_task(uid, t["id"])
+                    return f"Successfully deleted task '{t.get('title')}' (ID: {t['id']})."
+            return f"Could not find task matching '{task_id}' to delete."
+        except Exception as e:
+            return f"Error deleting task: {e}"
+
+    # ── Places ───────────────────────────────────────────────────────────────
+
+    @tool
+    def save_place(name: str, category: str = "custom", latitude: float = 0.0, longitude: float = 0.0) -> str:
+        """Save a new place or geofence (e.g. 'Home', 'Gym', 'Royal Enfield Service').
+        Args:
+            name: Place name.
+            category: Place category (e.g. 'home', 'work', 'gym', 'service').
+            latitude: Latitude coordinate.
+            longitude: Longitude coordinate.
+        """
+        try:
+            data = {"name": name, "category": category, "latitude": latitude, "longitude": longitude}
+            res = db.create_place(uid, data)
+            p_id = res.get("id", "saved")
+            if fs.is_available:
+                fs.save_place(p_id, {**data, "id": p_id, "uid": uid})
+            return f"Successfully saved place: '{name}' (ID: {p_id})"
+        except Exception as e:
+            return f"Error saving place: {e}"
+
+    @tool
+    def list_saved_places() -> str:
+        """List the user's saved places and geofences."""
+        try:
+            if fs.is_available:
+                try:
+                    for p in fs.get_places(uid):
+                        db.create_place(uid, p)
+                except Exception as fe:
+                    logger.debug("RecordStore list_saved_places pull note: %s", fe)
+
+            records = db.list_places(uid)
+            if not records:
+                return "No saved places found."
+            lines = [f"• ID: {p.get('id')}: {p.get('name')} ({p.get('category', 'place')}) - Lat: {p.get('latitude')}, Lon: {p.get('longitude')}" for p in records]
+            return f"Found {len(records)} saved place(s):\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Error listing places: {e}"
+
+    @tool
+    def delete_place(place_id: str) -> str:
+        """Delete a saved place by ID or name match.
+        Args:
+            place_id: The ID or name of the place to delete.
+        """
+        try:
+            ok = db.delete_place(uid, place_id)
+            if ok:
+                if fs.is_available:
+                    fs.delete_place(place_id)
+                return f"Successfully deleted place (ID: {place_id})."
+            recs = db.list_places(uid)
+            for p in recs:
+                if place_id.lower() in p.get("name", "").lower():
+                    db.delete_place(uid, p["id"])
+                    if fs.is_available:
+                        fs.delete_place(p["id"])
+                    return f"Successfully deleted place '{p.get('name')}' (ID: {p['id']})."
+            return f"Could not find place matching '{place_id}' to delete."
+        except Exception as e:
+            return f"Error deleting place: {e}"
+
+    @tool
+    def search_nearby_places(query: str = "", radius_m: float = 250.0) -> str:
+        """Search nearby places, landmarks, buildings, and establishments using Google Places API.
+        Call get_current_location first when the current location is not yet known.
+        Args:
+            query: Optional place keyword or category (e.g. 'resorts', 'cafe', 'restaurant', 'store'). Uses text search when provided.
+            radius_m: Search radius in meters (default 250m; use e.g. 20000 for resorts, maximum 50000).
+        """
+        try:
+            from ..services.places_client import PlacesClient
+            gps = db.get_latest_gps(uid)
+            if not gps or gps.get("latitude") is None or gps.get("longitude") is None:
+                return "Cannot search nearby places: no recent location fix available."
+            observed = datetime.fromisoformat(str(gps.get('observed_at', '')).replace('Z', '+00:00'))
+            if observed.tzinfo is None: observed = observed.replace(tzinfo=timezone.utc)
+            if not 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 300:
+                return f"The last GPS observation was at {observed.isoformat()}; current location is unknown. Do not describe that old position as current."
+            lat = gps["latitude"]
+            lon = gps["longitude"]
+            client = PlacesClient()
+            radius_m = min(50000, max(1, radius_m))
+            pois = client.search_nearby(lat, lon, radius_m=radius_m, uid=uid, max_results=8,
+                                       **({'query': query} if query.strip() else {}))
+            if not pois:
+                return f"No landmarks or places found within {int(radius_m)}m."
+            lines = []
+            for p in pois:
+                cat = p.category.replace("_", " ")
+                lines.append(f"• {p.name} ({cat}) - ~{int(p.distance_m)}m away")
+            return f"Nearby places from Google Places (within {int(radius_m)}m):\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Error searching Google Places: {e}"
+
+    @tool
+    def get_current_location() -> str:
+        """Request phone location ONLY for a current-location, nearby, here or location-dependent task. Then resolve saved places and address. Do not call for document/resume questions or general conversation."""
+        try:
+            from ..backend.session_manager import _haversine_m
+            from ..services.places_client import PlacesClient
+            from ..graph.nodes.agent import reverse_geocode_location
+
+            if fs.is_available and not is_test_environment():
+                try:
+                    for p in fs.get_places(uid):
+                        db.create_place(uid, p)
+                except Exception:
+                    pass
+
+            from ..backend.command_execution import execution
+            current = execution.get()
+            if current and current.approval_dispatch:
+                result = current.approval_dispatch({'operation': 'location_read'})
+                current.check()
+                if result.get('status') != 'ok':
+                    reason = str(result.get('message') or 'Current phone location is unavailable; the cause was not reported.')[:500]
+                    return reason + ' Do not infer current location from old history or guess that GPS is disabled. This device result does not explain an earlier AI budget error.'
+                gps = result.get('gps') or {}
+                if gps.get('latitude') is not None and gps.get('longitude') is not None:
+                    gps = {**gps, 'accuracy_m': gps.get('accuracy_m', gps.get('accuracy'))}
+                    db.create_event_idempotent(uid, f'location_{uuid4()}', {
+                        'activity': 'USER_INTERACTION', 'transition': 'LOCATION_REQUEST',
+                        'gps': gps, 'timestamp': result.get('observed_at') or datetime.now(timezone.utc).isoformat(),
+                    })
+            else:
+                gps = db.get_latest_gps(uid)
+            if not gps or gps.get("latitude") is None or gps.get("longitude") is None:
+                return "No live GPS coordinates available in the current session."
+            lat = gps["latitude"]
+            lon = gps["longitude"]
+            lines = []
+
+            # 1. Check saved places first (highest precision intent)
+            places = db.list_places(uid)
+            exact_saved = None
+            nearby_saved = []
+            for p in places:
+                plat = p.get("latitude")
+                plon = p.get("longitude")
+                if plat and plon and (plat != 0.0 or plon != 0.0):
+                    d = _haversine_m(lat, lon, plat, plon)
+                    label = p.get("user_label") or p.get("alias") or p.get("category") or "place"
+                    if d <= 40.0:
+                        exact_saved = f"CURRENTLY AT saved place: '{p.get('name')}' ({label}, exact location match, ~{int(d)}m)"
+                    elif d <= (p.get("radius_m") or 150.0):
+                        nearby_saved.append(f"At saved place '{p.get('name')}' ({label}, within compound, ~{int(d)}m away)")
+                    elif d <= 1500.0:
+                        nearby_saved.append(f"Near saved place '{p.get('name')}' (~{int(d)}m away)")
+
+            if exact_saved:
+                lines.append(exact_saved)
+            elif nearby_saved:
+                lines.append("Saved Places Proximity: " + "; ".join(nearby_saved))
+
+            # 2. Google Places landmarks (identifying building footprint)
+            try:
+                client = PlacesClient()
+                pois = client.search_nearby(lat, lon, radius_m=250.0, uid=uid, max_results=5)
+                if pois:
+                    landmarks = []
+                    for p in pois:
+                        cat = p.category.replace("_", " ")
+                        d = int(p.distance_m)
+                        if d <= 65 and any(k in cat for k in ("apartment", "building", "residential", "complex", "premise")):
+                            landmarks.append(f"{p.name} (CURRENT BUILDING / PREMISE, {cat})")
+                        else:
+                            landmarks.append(f"{p.name} ({cat}, ~{d}m away)")
+                    lines.append(f"Immediate Landmarks: {', '.join(landmarks)}")
+            except Exception as pe:
+                logger.debug("Google Places search error: %s", pe)
+
+            # 3. Reverse geocoded address
+            addr = reverse_geocode_location(lat, lon)
+            if addr:
+                lines.append(f"Area / Address: {addr}")
+
+            lines.append(f"[Internal GPS Reference: {lat:.5f}, {lon:.5f}]")
+            return "\n".join(lines) if lines else "Location acquired, but no named landmarks found."
+        except Exception as e:
+            return f"Error reading location: {e}"
+
+    @tool
+    def inspect_satellite_view(
+        place_name: str = "",
+        latitude: float | None = None,
+        longitude: float | None = None,
+        query_focus: str = "gates and walking paths",
+    ) -> str:
+        """Fetch and inspect a Google Maps high-resolution satellite aerial photo of a place or complex.
+        Use this tool when the user asks about building geometry, layout, outdoor walking space,
+        security gates, entrance/exit distance, or explicitly asks to check Google Maps satellite view.
+
+        Args:
+            place_name: Name of the building or complex (e.g. 'Creations Valencia', 'Home', 'TCS Siruseri').
+            latitude: Optional latitude. If omitted, resolved from saved places or current GPS.
+            longitude: Optional longitude. If omitted, resolved from saved places or current GPS.
+            query_focus: Specific focus of spatial inspection (e.g. 'gates and walking paths', 'distance to main road', 'courtyard layout').
+        """
+        try:
+            from ..services.satellite_vision_service import SatelliteVisionService
+
+            lat = latitude
+            lon = longitude
+            resolved_name = place_name or ""
+
+            # If coords not given, resolve from saved places or current location
+            if lat is None or lon is None:
+                if resolved_name:
+                    resolved_name_lower = resolved_name.lower().strip()
+                    for p in db.list_places(uid):
+                        pname = (p.get("name") or "").lower()
+                        plabel = (p.get("user_label") or "").lower()
+                        palias = (p.get("alias") or "").lower()
+                        if resolved_name_lower in pname or resolved_name_lower in plabel or resolved_name_lower in palias:
+                            lat = p.get("latitude")
+                            lon = p.get("longitude")
+                            resolved_name = p.get("name") or resolved_name
+                            break
+
+                if lat is None or lon is None:
+                    gps = db.get_latest_gps(uid)
+                    if gps and gps.get("latitude"):
+                        lat = gps["latitude"]
+                        lon = gps["longitude"]
+                        if not resolved_name:
+                            resolved_name = "current location"
+
+            if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
+                return "Cannot inspect satellite view: no coordinates available for this location."
+
+            from ..services.departure_setup import ensure_boundary, place_card
+            places = [p for p in db.list_places(uid,limit=1000) if p.get('latitude')==lat and p.get('longitude')==lon]
+            place = places[0] if len(places)==1 else {'name':resolved_name,'latitude':lat,'longitude':lon}
+            boundary = ensure_boundary(db,uid,place)
+            note = ('The highlighted outline is an automatic satellite estimate, not a surveyed fence.' if boundary
+                    else 'The image is available; no reliable outline could be identified. Do not invent a fence.')
+            return note + '\nCopy the satellite-map card into your final reply to show the actual Google map image:\n' + place_card(place,boundary)
+        except Exception as e:
+            return f"Error inspecting satellite view: {e}"
+
+    @tool
+    def recall_context_history(lookback_minutes: int = 2880, start_at: str = "", end_at: str = "") -> str:
+        """Recall a time window of recorded activity, parking, stops and nearby places.
+        This is MOVEMENT/LOCATION evidence, NOT app usage/screen time or Health Connect steps/sleep.
+        Use get_app_usage for screen-time follow-ups and get_health_records for steps or sleep.
+
+        For last 10 minutes use lookback_minutes=10; last 2 days use 2880.
+        For calendar dates use start_at/end_at ISO timestamps with timezone offsets.
+        Maximum query window is 31 days. Dense source windows are read in smaller
+        windows automatically. activity_totals are deterministic classified-session
+        spans; uncertain_seconds is the part with missing/uncertain evidence.
+        ON_FOOT alone is not WALKING. session_history_truncated means no complete
+        duration total is available; timeline_truncated only caps the preview.
+        Use for trip recaps or questions about previous locations. Results are
+        historical evidence: nearby candidates are not confirmed shop visits,
+        stationary is not proof of sitting, and a shop visit is not a purchase.
+        """
+        import json
+        if not fs.is_available:
+            return "Context history is temporarily unavailable. Do not invent a trip recap."
+        from ..backend.context_history import history_window, build_timeline
+        try:
+            start, end = history_window(lookback_minutes, start_at, end_at)
+            from ..backend.activity_sessions import enriched_history, compact_history
+            result, _ = enriched_history(fs, uid, start, end)
+            return json.dumps(compact_history(result))
+        except Exception as exc:
+            logger.warning("History recall failed: %s", exc)
+            return "History could not be retrieved. Check the time window or retry; do not claim there were no activities."
+
+    @tool
+    def respond_to_user(
+        message: str,
+        intent: str = "general",
+        resolved_place: str = "",
+        needs_user_input: bool = False,
+    ) -> str:
+        """Deliver the final structured response to the user. Use this tool to complete the interaction cleanly.
+
+        Args:
+            message: Complete natural response in GitHub Flavored Markdown. Use headings, lists, links, comparison tables and supported chart blocks when they help; preserve code and numeric chart data. Avoid raw GPS unless requested.
+            intent: Primary recognized intent ('location_query', 'create_reminder', 'delete_reminder', 'list_reminders', 'create_note', 'save_place', 'general').
+            needs_user_input: True when a question, clarification, or confirmation must be answered before proceeding.
+            resolved_place: Human-readable building or place name if location was asked or referenced.
+        """
+        return message
+
+    from .calendar_tools import calendar_tools
+    from .file_memory_tools import file_memory_tools
+    from .web_tools import web_tools
+    from .phone_data_tools import phone_data_tools
+    from .chart_tools import chart_tools
+    from .context_tools import build_context_tools
+    from ..services.mobile_scope import mobile_only
+    return build_context_tools(db, uid) + calendar_tools() + file_memory_tools() + web_tools(uid) + phone_data_tools() + chart_tools() + [
+        create_reminder,
+        update_reminder,
+        consolidate_reminders,
+        list_reminders,
+        search_reminders,
+        delete_reminder,
+        delete_all_reminders,
+        restore_reminder,
+        create_note,
+        append_note,
+        update_note,
+        merge_notes,
+        list_notes,
+        search_notes,
+        delete_note,
+        delete_all_notes,
+        restore_note,
+        create_task,
+        list_tasks,
+        update_task,
+        update_task_status,
+        delete_task,
+        save_place,
+        list_saved_places,
+        delete_place,
+        get_current_location,
+        search_nearby_places,
+        inspect_satellite_view,
+        recall_context_history,
+        respond_to_user,
+    ]

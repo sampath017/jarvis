@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timezone
 from ..state import JarvisState
 from ...services.database import DatabaseService
@@ -44,8 +45,9 @@ class LoadContextNode:
                 raw = state.get('raw_request') or {}
                 # The conversational agent selects the relevant tool first. File
                 # questions must not trigger GPS, Places, or mobility hydration.
-                from ...backend.conversation_memory import recent_history
-                messages = recent_history(raw.get('history') or (self.db.get_recent_messages(uid, thread_id, limit=24) if thread_id else []))
+                from ...backend.conversation_memory import conversation_history
+                messages = conversation_history(raw['history'] if 'history' in raw else
+                    (self.db.get_recent_messages(uid, thread_id, limit=None) if thread_id else []))
                 return {'thread_id': thread_id, 'messages': messages,
                         'context_scope': 'on_demand', 'cloud_context_loaded': True,
                         'context_packet': {}, 'session': None, 'tasks': [],
@@ -57,15 +59,11 @@ class LoadContextNode:
             cloud_context_loaded = False
             context_history = None
 
-            # A Cloud Run request can land on any instance.  Prefer the
-            # uid-scoped Firestore session so journey context survives an
-            # instance recycle; SQLite remains an offline/local fallback.
+            # Both repositories read the phone-supplied SQL workspace. Prefer
+            # its UID-scoped continuity state when that state is available.
             try:
-                from ...services.firestore_service import FirestoreService
-                from ...cloud.tier2_agent_tools import is_test_environment
-                fs = FirestoreService()
-                if is_test_environment():
-                    fs._db = None
+                from ...services.record_store import RecordStore
+                fs = RecordStore()
                 if fs.is_available:
                     reads = {
                         "session": lambda: fs.get_active_mobility_session(uid),
@@ -89,7 +87,7 @@ class LoadContextNode:
                     # Only independent remote reads run concurrently. SQLite
                     # hydration happens afterwards, on the requesting thread.
                     with ThreadPoolExecutor(max_workers=len(reads)) as pool:
-                        pending = {name: pool.submit(read) for name, read in reads.items()}
+                        pending = {name: pool.submit(copy_context().run, read) for name, read in reads.items()}
                         for name, future in pending.items():
                             try:
                                 results[name] = future.result()
@@ -107,7 +105,7 @@ class LoadContextNode:
                     context["reminders"] = self.db.list_reminders(uid, status="ACTIVE", limit=15)
                     cloud_context_loaded = True
             except Exception as cloud_err:
-                logger.info("Optional Firestore session hydration skipped: %s", cloud_err)
+                logger.info("Optional RecordStore session hydration skipped: %s", cloud_err)
 
             # Retrieve the latest GPS reading from context events
             latest_gps = None
@@ -142,7 +140,7 @@ class LoadContextNode:
 
             if gps_info:
                 from ...services.places_client import PlacesClient
-                from .tier2_agent import reverse_geocode_location
+                from .agent import reverse_geocode_location
                 started = time.perf_counter()
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     nearby = None

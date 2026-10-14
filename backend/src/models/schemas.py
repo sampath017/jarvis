@@ -15,14 +15,13 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-from .file_urls import GOOGLE_FILE_URL_PATTERN
+from .file_urls import MOBILE_FILE_URL_PATTERN
 from .telemetry import TelemetryTiming
 
 from .enums import (
     CRUDEntity,
     CRUDOperation,
     SessionStatus,
-    Tier1Action,
     VehicleClass,
 )
 
@@ -158,7 +157,7 @@ class FileMemoryReference(BaseModel):
     name: str = Field(max_length=4096)
     mimeType: str = Field(max_length=128)
     caption: str = Field(default="", max_length=32768)
-    url: str = Field(max_length=4096, pattern=GOOGLE_FILE_URL_PATTERN)
+    url: str = Field(max_length=4096, pattern=MOBILE_FILE_URL_PATTERN)
 
 
 class RecalledAnswer(BaseModel):
@@ -193,7 +192,7 @@ class CommandRequest(BaseModel):
     )
     history: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Recent conversation history turns for multi-turn grounding",
+        description="Complete ordered conversation history for this thread, with absolute timestamps; current text is separate",
     )
     current_context_ref: str | None = Field(
         default=None,
@@ -425,36 +424,10 @@ class ContextPacket(BaseModel):
         return self
 
 
-# ── Tier 1: Context Resolution ───────────────────────────────────────────────
-
-class Tier1Request(BaseModel):
-    """Input to Tier 1 reasoner when deterministic resolution fails."""
-    event_id: str
-    context_packet: ContextPacket
-    session: SessionState | None = None
-    conflict_reason: str = ""
-    classification_confidence: float = 0.0
-    gps_accuracy_m: float = 0.0
-
-
-class Tier1Response(BaseModel):
-    """Structured output from Tier 1 reasoner."""
-    resolved_vehicle: VehicleClass = VehicleClass.UNKNOWN
-    resolved_place: str = ""
-    place_category: str = ""
-    recommended_action: Tier1Action = Tier1Action.ACCEPT
-    confidence: float = 0.0
-    uncertainty: float = 1.0
-    reasoning: str = ""
-    model_id: str = "mock"
-    tokens_used: int = 0
-    latency_ms: float = 0.0
-
-
-# ── Tier 2: Agentic Orchestration ────────────────────────────────────────────
+# ── Validated function execution ───────────────────────────────────────────
 
 class FunctionCall(BaseModel):
-    """Allow-listed function call emitted by Tier 2."""
+    """Allow-listed function call emitted by LLM."""
     function_name: str
     entity: CRUDEntity
     operation: CRUDOperation
@@ -462,35 +435,6 @@ class FunctionCall(BaseModel):
     is_valid: bool = False
     validation_error: str | None = None
 
-
-class Tier2Request(BaseModel):
-    """Input to Tier 2 orchestrator for user command processing."""
-    user_command: str
-    thread_id: str = ""
-    context_packet: ContextPacket | None = None
-    session: SessionState | None = None
-    tier1_response: Tier1Response | None = None
-    resolved_place: str = ""
-    resolved_place_category: str = ""
-    resolved_address: str | None = None
-    recent_messages: list[dict[str, Any]] = Field(default_factory=list)
-    user_tasks: list[dict[str, Any]] = Field(default_factory=list)
-    user_reminders: list[dict[str, Any]] = Field(default_factory=list)
-    user_notes: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class Tier2Response(BaseModel):
-    """Output from Tier 2 orchestrator."""
-    user_response: str = ""
-    function_calls: list[FunctionCall] = Field(default_factory=list)
-    reasoning: str = ""
-    model_id: str = "mock"
-    tokens_used: int = 0
-    latency_ms: float = 0.0
-    all_calls_valid: bool = False
-
-
-# ── Audit Log ────────────────────────────────────────────────────────────────
 
 class AuditEntry(BaseModel):
     """Structured audit log entry for every decision across all graph nodes."""

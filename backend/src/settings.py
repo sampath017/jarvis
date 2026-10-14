@@ -6,6 +6,7 @@ for all backend settings.
 """
 
 from __future__ import annotations
+from .budget_profiles import budget_limits
 
 import os
 from pathlib import Path
@@ -18,10 +19,11 @@ load_dotenv(_env_path)
 
 # ── Local Database & Paths ───────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
-# Tests and local simulator runs can isolate their data without changing a
-# developer's normal local database. Production defaults to backend/data.
+# Explicit isolated repository test path. API requests always use
+# a temporary RAM database and never open this path.
 LOCAL_DB_PATH: Path = Path(
-    os.getenv("JARVIS_LOCAL_DB_PATH", str(BASE_DIR / "data" / "jarvis_local.db"))
+    os.getenv("JARVIS_LOCAL_DB_PATH", str(
+        BASE_DIR / "data" / "jarvis_local.db"))
 )
 
 # ── Google Places API (New) ─────────────────────────────────────────────────
@@ -33,17 +35,19 @@ PLACES_DAILY_BUDGET_PER_USER = 50
 OPENROUTER_API_KEY: str = "".join(
     os.getenv("OPENROUTER_API_KEY", "").split()).strip()
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_TIER1: str = os.getenv(
-    "OPENROUTER_MODEL_TIER1", "z-ai/glm-5.3-flash")
-OPENROUTER_MODEL_TIER2: str = os.getenv(
-    "OPENROUTER_MODEL_TIER2", "z-ai/glm-5.3-flash")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "z-ai/glm-5.3-flash")
 OPENROUTER_TEMPERATURE: float = 0.1
-OPENROUTER_MODEL_MULTIMODAL: str = os.getenv("OPENROUTER_MODEL_MULTIMODAL", OPENROUTER_MODEL_TIER2)
-OPENROUTER_MODEL_PDF: str = os.getenv("OPENROUTER_MODEL_PDF", "google/gemini-3.8-flash")
-AGENT_MAX_ITERATIONS: int = int(os.getenv("JARVIS_AGENT_MAX_ITERATIONS", "50"))
+OPENROUTER_MODEL_MULTIMODAL: str = os.getenv(
+    "OPENROUTER_MODEL_MULTIMODAL", LLM_MODEL)
+OPENROUTER_MODEL_PDF: str = os.getenv(
+    "OPENROUTER_MODEL_PDF", "google/gemini-3.8-flash")
+AGENT_MAX_ITERATIONS = 50
+# ── OpenRouter Daily Budget (USD) ───────────────────────────────────────────
+OPENROUTER_DAILY_BUDGET_USD = 0.50
 
 # ── LangSmith Observability ─────────────────────────────────────────────────
-LANGCHAIN_TRACING_V2: str = os.getenv("JARVIS_ENABLE_TRACING", "false").strip()
+# Phone content stays out of external trace storage.
+LANGCHAIN_TRACING_V2: str = 'false'
 os.environ["LANGSMITH_TRACING"] = LANGCHAIN_TRACING_V2
 os.environ["LANGCHAIN_TRACING_V2"] = LANGCHAIN_TRACING_V2
 LANGCHAIN_API_KEY: str = os.getenv(
@@ -71,31 +75,34 @@ PARKING_RADIUS_M: float = 1000.0
 MIN_DWELL_SEC: float = 60.0            # Minimum dwell time to qualify as a "stop"
 MAX_SPEED_WALKING_MPS: float = 2.0     # Max speed (m/s) considered walking
 
-# ── Conflict Resolution (Tier 1) ───────────────────────────────────────────
+# ── Conflict Resolution (context assessment) ───────────────────────────────────────────
 CONFLICT_CONFIDENCE_THRESHOLD: float = 0.6
 GPS_ACCURACY_POOR_M: float = 50.0
 VEHICLE_HIGH_CONFIDENCE_THRESHOLD: float = 0.75
-TIER1_SESSION_PROMOTION_THRESHOLD: float = 0.75
+CONTEXT_SESSION_PROMOTION_THRESHOLD: float = 0.75
 
 # ── API Server ──────────────────────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-APP_CHECK_MODE = "monitor"
 
 # ── Rate Limiting & Token Budget Guards ───────────────────────────────────────
-from .budget_profiles import budget_limits
 _budget_limits = budget_limits()
 LLM_BUDGET_PROFILE: str = _budget_limits.profile
 RATE_LIMIT_PER_USER_PER_MINUTE: int = _budget_limits.requests_per_minute
 MAX_DAILY_LLM_CALLS: int = _budget_limits.daily_calls
-MAX_TOKENS_PER_CALL: int = 2048               # Max output tokens per call (allows full structured JSON schemas without truncation)
+
+# Max output tokens per call (allows full structured JSON schemas without truncation)
+MAX_TOKENS_PER_CALL: int = 2048
+
 # Reasoning and the final answer share the provider's completion allowance.
 # An 8k ceiling exhausted the reasoning budget and forced a complete retry.
-TIER2_OUTPUT_TOKENS: int = max(2048, min(32768, int(os.getenv("JARVIS_TIER2_OUTPUT_TOKENS", "16384"))))
-OPENROUTER_MAX_TOKENS: int = MAX_TOKENS_PER_CALL # Enforced max token generation per call in OpenRouter
+LLM_OUTPUT_TOKENS: int = max(2048, min(32768, int(os.getenv("LLM_OUTPUT_TOKENS", "16384"))))
+
+# Enforced max token generation per call in OpenRouter
+OPENROUTER_MAX_TOKENS: int = MAX_TOKENS_PER_CALL
 MAX_DAILY_TOKENS: int = _budget_limits.daily_tokens
-LLM_CACHE_TTL_SECONDS: int = 300              # 5-minute cache to deduplicate duplicate mobile requests
+
+# 5-minute cache to deduplicate duplicate mobile requests
+LLM_CACHE_TTL_SECONDS: int = 300
 MAX_REQUEST_SIZE_BYTES: int = 65536           # 65 KB max payload size
 NOTIFICATION_SWEEP_SECONDS: float = 30.0
-
-

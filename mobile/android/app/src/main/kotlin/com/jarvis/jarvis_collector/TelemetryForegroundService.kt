@@ -27,6 +27,7 @@ class TelemetryForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!JarvisPower.enabled(this)) { stopSelf(); return START_NOT_STICKY }
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY

@@ -4,21 +4,22 @@ Deterministic Journey Session State Machine
 Maintains journey continuity across park → walk → shop → return transitions.
 Uses a deterministic state machine with configurable TTL.
 
-In production, session state is persisted to Firestore. This module contains
-the pure state-transition logic; Firestore I/O is handled by the graph nodes.
+In production, session state is persisted to RecordStore. This module contains
+the pure state-transition logic; RecordStore I/O is handled by the graph nodes.
 """
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta, timezone
+
+from ..services.context_evidence import haversine_m as _haversine_m
 
 from ..settings import (
     MAX_SPEED_WALKING_MPS,
     MIN_DWELL_SEC,
     PARKING_RADIUS_M,
     SESSION_TTL_SEC,
-    TIER1_SESSION_PROMOTION_THRESHOLD,
+    CONTEXT_SESSION_PROMOTION_THRESHOLD,
     VEHICLE_HIGH_CONFIDENCE_THRESHOLD,
 )
 from ..models.enums import ActivityType, SessionStatus, VehicleClass
@@ -48,7 +49,7 @@ class SessionManager:
         """
         Process a context packet through the state machine.
 
-        Takes the current session (loaded from Firestore) and returns
+        Takes the current session (loaded from RecordStore) and returns
         the updated session, a newly created session, or None.
         """
         now = packet.timestamp
@@ -95,13 +96,13 @@ class SessionManager:
         return current_session
 
     def force_complete(self, session: SessionState) -> SessionState:
-        """Force-complete a session (used by Tier 1 when it recommends COMPLETE)."""
+        """Force-complete a session (used after a validated COMPLETE assessment)."""
         session.status = SessionStatus.COMPLETED
         session.completed_at = datetime.now(timezone.utc)
         session.last_updated = datetime.now(timezone.utc)
         return session
 
-    def apply_tier1_resolution(
+    def apply_context_assessment(
         self,
         packet: ContextPacket,
         current_session: SessionState | None,
@@ -109,7 +110,7 @@ class SessionManager:
         resolved_vehicle: str,
         confidence: float,
     ) -> SessionState | None:
-        """Apply a constrained Tier 1 outcome before mutating session state."""
+        """Apply a validated context assessment before mutating session state."""
         if action in ("REJECT", "RECLASSIFY"):
             return current_session
         if action == "COMPLETE":
@@ -127,7 +128,7 @@ class SessionManager:
             effective_packet.activity,
             confidence,
             resolved_vehicle,
-            threshold=TIER1_SESSION_PROMOTION_THRESHOLD,
+            threshold=CONTEXT_SESSION_PROMOTION_THRESHOLD,
         )
 
         if action == "RESUME":
@@ -282,14 +283,3 @@ class SessionManager:
             dwell = (now - session.paused_at).total_seconds()
             return dwell >= MIN_DWELL_SEC
         return False
-
-
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculate distance between two GPS coordinates in meters."""
-    R = 6371000  # Earth radius in meters
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlam = math.radians(lon2 - lon1)
-    a = (math.sin(dphi / 2) ** 2
-         + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2)
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))

@@ -17,7 +17,7 @@ from ...models.schemas import (
     ReminderPatchRequest,
 )
 from ...services.database import DatabaseService
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ..auth import get_current_user
 
 
@@ -45,31 +45,24 @@ def _db() -> DatabaseService:
     return DatabaseService()
 
 
-def _fs() -> FirestoreService:
-    return FirestoreService()
+def _fs() -> RecordStore:
+    return RecordStore()
 
 
 @router.get("/context-identity")
 def context_identity(uid: Annotated[str, Depends(get_current_user)]) -> dict:
     """Stable private fingerprints survive reinstall without uploading MACs."""
     import secrets
-    from google.cloud import firestore
     fs = _fs()
     if not fs.is_available:
         raise HTTPException(status_code=503, detail="Context identity temporarily unavailable")
-    ref = fs._user_collection(uid, "context_identity").document("radio")
-    def identity(tx=None):
-        saved = ref.get(transaction=tx) if tx else ref.get()
-        previous = saved.to_dict() if saved.exists else {}
+    with fs.sql.atomic():
+        previous = fs.sql.get('context_identity', 'radio', uid=uid) or {}
         if previous.get("fingerprint_salt"):
             return previous
         value = {"fingerprint_salt": secrets.token_hex(32)}
-        if tx:
-            tx.set(ref, value)
-        else:
-            ref.set(value)
+        fs.sql.put('context_identity', 'radio', value, uid=uid, merge=False)
         return value
-    return firestore.transactional(identity)(fs._db.transaction())
 
 
 @router.get("/context-memory")
@@ -99,6 +92,30 @@ def activity_history(
     start_at: str,
     end_at: str,
 ) -> dict[str, object]:
+    from ...services.activity_history_cache import history_cache
+    from ...backend.context_history import utc_time
+    try:
+        start, end = utc_time(start_at), utc_time(end_at)
+        if start >= end or (end - start).total_seconds() > 26 * 3600:
+            raise ValueError('Choose one day at a time')
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    fs = _fs()
+    revision = getattr(fs, 'history_revision', None)
+    from ...services.mobile_scope import mobile_only
+    if mobile_only() or not callable(revision):
+        return _build_activity_history(uid, start_at, end_at)
+    try:
+        return history_cache.get_or_compute(
+            (uid, start.isoformat(), end.isoformat()),
+            lambda: revision(uid, start, end),
+            lambda: _build_activity_history(uid, start_at, end_at),
+        )
+    except Exception as exc:
+        raise HTTPException(503, 'Activity history temporarily unavailable') from exc
+
+
+def _build_activity_history(uid, start_at, end_at):
     """Return one local day's sampled events and overlapping journey sessions."""
     from ...backend.context_history import build_timeline, utc_time
 
@@ -114,7 +131,7 @@ def activity_history(
         from ...backend.activity_sessions import enriched_history
         history, all_records = enriched_history(fs, uid, start, min(end, datetime.now(timezone.utc)), persist=True)
         records = [r for r in all_records if start <= utc_time(r["timestamp"]) <= end
-                   and r.get('activity_evidence') != 'diagnostic_event']
+                     and r.get('activity_evidence') not in {'diagnostic_event', 'power_state'}]
         sessions = fs.get_mobility_sessions(uid)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Activity history temporarily unavailable") from exc
@@ -168,6 +185,7 @@ def activity_history(
         **history,
         "observations": observations,
         "sessions": overlapping_sessions,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -262,8 +280,7 @@ def list_reminders(
     fs = _fs()
     if fs.is_available:
         try:
-            docs = fs._db.collection('reminders').where('uid', '==', uid).stream()
-            records = [d.to_dict() for d in docs]
+            records = fs.sql.list('reminders', uid=uid)
         except Exception as exc:
             raise HTTPException(503, 'Reminders temporarily unavailable') from exc
         records = [r for r in records if r.get('status') == status] if status else [r for r in records if r.get('status') != 'DELETED']

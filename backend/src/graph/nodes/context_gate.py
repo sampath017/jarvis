@@ -54,7 +54,7 @@ class ContextGateNode:
         packet = hydrate_packet(state.get("context_packet", {}))
         session = hydrate_session(state.get("session"))
         event_type = str((state.get("raw_request") or {}).get("event_type") or "").upper()
-        # Sparse phone observations have no IMU fingerprint for Tier 1 to
+        # Sparse phone observations have no IMU fingerprint for the agent to
         # reconcile. Preserve them and let the deterministic reducer decide.
         if event_type in {
             "ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE",
@@ -83,7 +83,7 @@ class ContextGateNode:
             },
             output_summary={
                 "conflicts": conflicts,
-                "needs_tier1": bool(conflicts),
+                "needs_context_assessment": bool(conflicts),
                 "conflict_count": len(conflicts),
             },
             gps_lat=packet.gps.latitude if packet.gps else None,
@@ -93,7 +93,7 @@ class ContextGateNode:
 
         return {
             "conflicts": conflicts,
-            "needs_tier1": bool(conflicts),
+            "needs_context_assessment": bool(conflicts),
         }
 
 

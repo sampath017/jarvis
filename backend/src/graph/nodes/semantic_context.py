@@ -8,11 +8,11 @@ from ...backend.semantic_context import (
     GeoPoint, SemanticContextLedger, SemanticObservation, SemanticPlace,
     SemanticPlaceKind,
 )
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 
 
 class SemanticContextNode:
-    """Maintain independent parked/dwell/shop contexts in Firestore.
+    """Maintain independent parked/dwell/shop contexts in RecordStore.
 
     The node is intentionally event-driven.  It performs no location polling
     and never invokes a model; the conversational agent creates policies while
@@ -27,7 +27,7 @@ class SemanticContextNode:
         if not uid or packet.get("transition") == "EXIT":
             return {"semantic_contexts": []}
 
-        fs = FirestoreService()
+        fs = RecordStore()
         existing = fs.get_semantic_contexts(uid, active_only=False) if fs.is_available else []
         ledger = SemanticContextLedger.from_dicts(existing)
         place = self._trusted_place(packet.get("nearby_pois") or [])

@@ -1,36 +1,67 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
+import 'phone_data_window.dart';
 
 class UsageService {
   static const channel = MethodChannel('com.jarvis/usage');
   static final openReport = ValueNotifier<String?>(null);
+  static final overviewDays = ValueNotifier<Map<String, Map<String, dynamic>>>(
+    {},
+  );
+  static Future<void>? _cacheLoad;
+  static Future<void>? _cacheRefresh;
+
+  /// Hydrate all retained days once; changing dates never calls Android's event reader.
+  static Future<void> loadOverviewCache() =>
+      _cacheLoad ??= _loadOverviewCache();
+
+  static Future<void> _loadOverviewCache() async {
+    try {
+      _replaceOverview(await channel.invokeMethod<String>('cachedDays'));
+    } catch (_) {
+      _cacheLoad = null;
+      rethrow;
+    }
+  }
+
+  static void _replaceOverview(String? payload) {
+    final data = jsonDecode(payload ?? '{}') as Map<String, dynamic>;
+    overviewDays.value = {
+      for (final entry in data.entries)
+        entry.key: Map<String, dynamic>.from(entry.value as Map),
+    };
+  }
+
+  /// Native collection updates SQLite and publishes each completed day separately.
+  static Future<void> refreshOverviewCache() => _cacheRefresh ??=
+      _refreshOverviewCache().whenComplete(() => _cacheRefresh = null);
+
+  static Future<void> _refreshOverviewCache() async {
+    await loadOverviewCache();
+    _replaceOverview(await channel.invokeMethod<String>('refreshCache'));
+  }
+
   static Future<void> initialize() async {
     channel.setMethodCallHandler((call) async {
       if (call.method == 'openReport') {
         openReport.value = null;
         openReport.value = call.arguments as String?;
+      } else if (call.method == 'usageDayUpdated') {
+        final args = Map<String, dynamic>.from(call.arguments as Map);
+        overviewDays.value = {
+          ...overviewDays.value,
+          args['day'] as String: Map<String, dynamic>.from(
+            jsonDecode(args['data'] as String) as Map,
+          ),
+        };
       }
     });
     try {
       openReport.value = await channel.invokeMethod<String>('takeInitialDay');
     } catch (_) {}
-  }
-
-  static bool isUsageQuestion(String text) {
-    final q = text.toLowerCase();
-    if (RegExp(r'\b(remind|reminder|delete|save|note)\b').hasMatch(q)) {
-      return false;
-    }
-    if (RegExp(
-      r'^(?:(?:show|give|send) )?(?:me )?(?:my |the )?(?:daily )?report[?.!]*$',
-    ).hasMatch(q.trim())) {
-      return true;
-    }
-    return RegExp(
-      r'digital\s*well\s*being|digital\s*wellbeing|(?:daily|today|day).*(?:total|report)|(?:total|report).*(?:daily|today|day)|screen\s*time|app\s*(usage|time)|\busage\b|time (?:did i |have i )?(?:spend|spent)|how (?:much|long).*(?:use|used| on )',
-    ).hasMatch(q);
+    unawaited(refreshOverviewCache().catchError((Object _) {}));
   }
 
   static String duration(num ms) {
@@ -49,7 +80,7 @@ class UsageService {
     'no_records' || 'records_unavailable' =>
       'Android has no usable activity records for that period. That does not mean your usage was zero.',
     'date_unavailable' =>
-      'I can read today and the previous six days while Android retains the activity records.',
+      'No saved usage is available for that date. Android only retains recent activity events.',
     _ =>
       'I could not read screen time. Check Usage Access in Jarvis Settings and try again.',
   };
@@ -66,53 +97,120 @@ class UsageService {
     }
   }
 
-  static Future<String> answer(String question, {DateTime? now}) async {
-    final q = question.toLowerCase();
-    if (RegExp(r'\b(week|month|year|average|ago)\b').hasMatch(q)) {
-      return 'Which day should I check? Ask for today, yesterday, or a date such as 2026-10-02. Android retains only recent detailed usage.';
-    }
-    // Reports use IST consistently, independent of the phone's current timezone.
-    final today = (now ?? DateTime.now()).toUtc().add(
-      const Duration(hours: 5, minutes: 30),
+  /// Structured records for a model-selected read, not a prewritten answer.
+  static Future<Map<String, dynamic>> readToolRecords(
+    Map<String, dynamic> arguments, {
+    DateTime? now,
+  }) async {
+    final window = PhoneDataWindow.parse(
+      arguments['start_date']?.toString() ?? '',
+      arguments['end_date']?.toString() ?? '',
+      now: now,
     );
-    final iso = RegExp(r'\b\d{4}-\d{2}-\d{2}\b').firstMatch(q)?.group(0);
-    final day =
-        iso ??
-        DateFormat('yyyy-MM-dd').format(
-          q.contains('yesterday')
-              ? today.subtract(const Duration(days: 1))
-              : today,
-        );
-    try {
-      final data =
-          jsonDecode(await channel.invokeMethod<String>('read', day) ?? '{}')
-              as Map<String, dynamic>;
-      return formatAnswer(question, data);
-    } catch (_) {
-      return errorText(null);
+    final requestedLimit = arguments['max_apps'] ?? 20;
+    final query = arguments['app_query']?.toString().trim().toLowerCase() ?? '';
+    if (requestedLimit is! int ||
+        requestedLimit < 1 ||
+        requestedLimit > 100 ||
+        query.length > 120) {
+      throw const FormatException(
+        'Use max_apps from 1 to 100 and app_query up to 120 characters.',
+      );
     }
-  }
-
-  static String formatAnswer(String question, Map<String, dynamic> data) {
-    if (data['error'] != null) return errorText(data['error'].toString());
-    final q = question.toLowerCase();
-    final apps = List<Map<String, dynamic>>.from(data['apps'] ?? []);
-    final matches = apps.where((a) {
-      final name = a['name'].toString().toLowerCase();
-      final package = a['package'].toString().toLowerCase();
-      return name.length > 2 &&
-          (RegExp('\\b${RegExp.escape(name)}\\b').hasMatch(q) ||
-              q.contains(package));
-    }).toList();
-    final all = RegExp(
-      r'\b(all|total|breakdown|report|apps)\b|screen\s*time|digital\s*well\s*being|digital\s*wellbeing',
-    ).hasMatch(q);
-    if (matches.isNotEmpty && !all) {
-      return '${data['day']} · foreground app time\n${matches.map((a) => '${a['name']}: ${duration(a['milliseconds'] as num)}').join('\n')}\n\nBased on Android activity records; background use is excluded.';
+    final limit = requestedLimit.clamp(
+      1,
+      (300 ~/ window.days.length).clamp(1, 100),
+    );
+    final days = <Map<String, dynamic>>[];
+    for (final day in window.days) {
+      final key = PhoneDataWindow.dayKey(day);
+      final data = Map<String, dynamic>.from(
+        jsonDecode(await channel.invokeMethod<String>('read', key) ?? '{}')
+            as Map,
+      );
+      if (data['error'] != null ||
+          data['day'] != key ||
+          data['total_ms'] is! num) {
+        days.add({
+          'day': key,
+          'status': 'unavailable',
+          'reason': data['error'] ?? 'records_unavailable',
+          'message': errorText(data['error']?.toString()),
+        });
+        continue;
+      }
+      final all = List<Map<String, dynamic>>.from(data['apps'] ?? []);
+      final apps =
+          all
+              .where(
+                (app) =>
+                    app['milliseconds'] is num &&
+                    (app['milliseconds'] as num).isFinite &&
+                    (app['milliseconds'] as num) > 0 &&
+                    (query.isEmpty ||
+                        '${app['name']} ${app['package']}'
+                            .toLowerCase()
+                            .contains(query)),
+              )
+              .map(
+                (app) => <String, dynamic>{
+                  'name': app['name']?.toString() ?? 'Unnamed app',
+                  'package': app['package']?.toString() ?? '',
+                  'milliseconds': app['milliseconds'],
+                },
+              )
+              .toList()
+            ..sort(
+              (a, b) => (b['milliseconds'] as num).compareTo(
+                a['milliseconds'] as num,
+              ),
+            );
+      final matched = apps.fold<num>(
+        0,
+        (sum, app) => sum + (app['milliseconds'] as num),
+      );
+      final selected = apps
+          .take(apps.length > limit ? limit - 1 : limit)
+          .toList();
+      if (selected.length < apps.length) {
+        selected.add({
+          'name': query.isEmpty ? 'Other apps' : 'Other matching apps',
+          'is_aggregate': true,
+          'milliseconds': apps
+              .skip(selected.length)
+              .fold<num>(0, (sum, app) => sum + (app['milliseconds'] as num)),
+        });
+      }
+      days.add({
+        'day': key,
+        'status': 'ok',
+        'total_ms': data['total_ms'],
+        'matched_ms': matched,
+        'start_ms': data['start_ms'],
+        'end_ms': data['end_ms'],
+        'apps': selected,
+        'matching_app_count': apps.length,
+        'aggregated_remainder':
+            selected.length < apps.length || apps.length > limit,
+      });
     }
-    if (!all) {
-      return 'I could not match a named app with recorded usage for ${data['day']}. Here is the available breakdown; an absent app may have no recorded foreground use.\n\n${data['text'] ?? 'No breakdown available.'}';
-    }
-    return data['text']?.toString() ?? errorText(null);
+    final good = days.where((day) => day['status'] == 'ok').length;
+    return {
+      'status': good == days.length
+          ? 'ok'
+          : good > 0
+          ? 'partial'
+          : 'unavailable',
+      'source': 'android_app_usage',
+      'timezone': 'Asia/Kolkata',
+      'start_date': arguments['start_date'],
+      'end_date': PhoneDataWindow.dayKey(window.end),
+      'unit': 'milliseconds',
+      'app_query': query,
+      'max_apps_per_day': limit,
+      'days': days,
+      'notes':
+          'Recorded foreground app time. Excludes home/lock screens and background use. Missing days are unknown, not zero. total_ms is the full day; matched_ms and apps respect the app filter. Use exact durations for chart shares.',
+    };
   }
 }

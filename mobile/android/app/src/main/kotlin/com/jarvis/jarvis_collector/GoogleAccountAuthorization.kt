@@ -39,6 +39,10 @@ class GoogleAccountAuthorization(private val activity: MainActivity, messenger: 
             prefs.edit().putBoolean("connected", false).putBoolean("needsReconnect", true).commit()
         }
         MethodChannel(messenger, "com.jarvis/google_$provider").setMethodCallHandler { call, result ->
+            if (!JarvisPower.enabled(activity) && call.method in setOf("connect", "restoreConnection", "token", "refreshToken", "openServerConsent")) {
+                result.error("powered_off", "Jarvis is powered off", null)
+                return@setMethodCallHandler
+            }
             when (call.method) {
                 "indexingScreen" -> {
                     if (call.arguments == true) activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -83,13 +87,16 @@ class GoogleAccountAuthorization(private val activity: MainActivity, messenger: 
                     else { prefs.edit().putBoolean("connected", true).putString("email", email)
                         .putBoolean("needsReconnect", false).putBoolean("userDisconnected", false)
                         .putInt("scopeVersion", if (provider == "drive") 3 else 2)
-                        .putString("calendarId", call.argument<String>("calendarId") ?: "primary").commit(); result.success(true) }
+                        .putString("calendarId", call.argument<String>("calendarId") ?: "primary").commit()
+                        if (provider == "drive") DatabaseBackup.schedule(activity.applicationContext)
+                        result.success(true) }
                 }
                 "selectCalendar" -> { prefs.edit().putString("calendarId", call.arguments as String).commit(); result.success(true) }
                 "disconnect" -> {
                     fail("CANCELLED", "$providerName was disconnected.")
                     token = null; tokenEmail = null; tokenAt = 0; selectedEmail = null
                     prefs.edit().clear().putBoolean("userDisconnected", true).commit()
+                    if (provider == "drive") DatabaseBackup.cancel(activity.applicationContext)
                     // No further reads/writes are possible locally; account grants can also be revoked in Google settings.
                     result.success(true)
                 }
@@ -106,6 +113,19 @@ class GoogleAccountAuthorization(private val activity: MainActivity, messenger: 
                         }
                     }
                     result.success(key)
+                }
+                "openServerConsent" -> {
+                    val uri = android.net.Uri.parse(call.arguments as? String ?: "")
+                    if (uri.scheme != "https" || uri.host != "accounts.google.com" || uri.path != "/o/oauth2/v2/auth") {
+                        result.error("URL", "Invalid Google authorization link.", null)
+                    } else {
+                        try {
+                            activity.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            result.success(true)
+                        } catch (_: Exception) {
+                            result.error("BROWSER", "Could not open Google authorization.", null)
+                        }
+                    }
                 }
                 "readRecord" -> result.success(records.getString("record_" + call.arguments.toString(), null))
                 "writeRecord" -> {
@@ -127,11 +147,13 @@ class GoogleAccountAuthorization(private val activity: MainActivity, messenger: 
     }
 
     private fun authorize(interactive: Boolean) {
+        if (!JarvisPower.enabled(activity)) { fail("powered_off", "Jarvis is powered off"); return }
         val email = selectedEmail ?: return fail("ACCOUNT", "Choose your Google account.")
         val request = pending ?: return
         client.authorize(AuthorizationRequest.builder().setAccount(Account(email, "com.google"))
             .setRequestedScopes(scopes).build())
             .addOnSuccessListener { response ->
+                if (!JarvisPower.enabled(activity)) { fail("powered_off", "Jarvis is powered off"); return@addOnSuccessListener }
                 if (pending !== request || selectedEmail != email) return@addOnSuccessListener
                 if (response.hasResolution()) {
                     if (!interactive) fail("CONSENT_REQUIRED", "Reconnect $providerName in Settings to renew permission.")

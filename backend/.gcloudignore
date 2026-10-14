@@ -1,6 +1,7 @@
 .gcloudignore
 .git
 .venv
+.uv-cache
 __pycache__
 **/__pycache__
 .pytest_cache
@@ -13,6 +14,6 @@ temp/
 data
 logs
 tests
-.env.yaml
-.env
-.env.local
+.env*
+!.env.example
+/models/

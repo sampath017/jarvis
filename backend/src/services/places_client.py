@@ -19,7 +19,7 @@ from ..models.schemas import POICandidate
 logger = logging.getLogger(__name__)
 
 # Simple in-memory budget tracker (per-instance).
-# For multi-instance Cloud Run, move to Firestore counters.
+# For multi-instance Cloud Run, move to RecordStore counters.
 _daily_budgets: dict[str, int] = {}
 
 
@@ -32,6 +32,7 @@ class PlacesClient:
     """
 
     NEARBY_SEARCH_URL = "https://places.googleapis.com/v1/places:searchNearby"
+    TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
     def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key or GOOGLE_PLACES_API_KEY
@@ -44,6 +45,7 @@ class PlacesClient:
         uid: str = "",
         max_results: int = 5,
         included_types: list[str] | None = None,
+        query: str = "",
     ) -> list[POICandidate]:
         """
         Search for nearby places around ``(latitude, longitude)``.
@@ -63,8 +65,15 @@ class PlacesClient:
             return []
 
         try:
+            circle = {"circle": {"center": {"latitude": latitude, "longitude": longitude},
+                                  "radius": min(50000, max(1, radius_m))}}
+            body = ({"textQuery": query.strip(), "locationBias": circle,
+                     "pageSize": min(20, max(1, max_results))} if query.strip() else {
+                         "locationRestriction": circle, "maxResultCount": min(20, max(1, max_results)),
+                         **({"includedPrimaryTypes": included_types} if included_types else {}),
+                     })
             response = httpx.post(
-                self.NEARBY_SEARCH_URL,
+                self.TEXT_SEARCH_URL if query.strip() else self.NEARBY_SEARCH_URL,
                 headers={
                     "Content-Type": "application/json",
                     "X-Goog-Api-Key": self._api_key,
@@ -74,19 +83,7 @@ class PlacesClient:
                         "places.shortFormattedAddress"
                     ),
                 },
-                json={
-                    "locationRestriction": {
-                        "circle": {
-                            "center": {
-                                "latitude": latitude,
-                                "longitude": longitude,
-                            },
-                            "radius": radius_m,
-                        },
-                    },
-                    "maxResultCount": max_results,
-                    **({"includedPrimaryTypes": included_types} if included_types else {}),
-                },
+                json=body,
                 timeout=10.0,
             )
             response.raise_for_status()
@@ -94,7 +91,9 @@ class PlacesClient:
 
             self._record_usage(uid)
 
-            return self._parse_results(data, latitude, longitude)
+            results = self._parse_results(data, latitude, longitude)
+            # Text Search locationBias is a preference, not a hard radius.
+            return [p for p in results if p.distance_m <= min(50000, max(1, radius_m))] if query.strip() else results
 
         except httpx.HTTPStatusError as e:
             logger.error("Places API HTTP error: %s", e)

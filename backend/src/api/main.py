@@ -1,218 +1,71 @@
-"""
-FastAPI Application Entry Point — 100% Local Execution.
+"""Phone-owned SQLite processing API with disposable request workspaces."""
+from __future__ import annotations
 
-Configures application lifespan (Local SQLite setup), middlewares, routers, and CORS.
-"""
-
-import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime
 import logging
-import sqlite3
-import sys
-from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
-from pathlib import Path
 
-# Ensure backend root directory is in sys.path when executed directly
-_backend_root = str(Path(__file__).resolve().parent.parent.parent)
-if _backend_root not in sys.path:
-    sys.path.insert(0, _backend_root)
-
-import uvicorn
-from fastapi import FastAPI, Response, status
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
-try:
-    from ..backend.context_automation import ContextAutomationService
-    from ..backend.logging_config import configure_logging
-    from ..services.database import get_db_path, init_database
-    from ..settings import LOG_LEVEL, NOTIFICATION_SWEEP_SECONDS, PORT
-    from .middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
-    from .routers import automation, commands, context_events, sync, session_library, file_memories
-except (ImportError, ValueError):
-    from src.backend.context_automation import ContextAutomationService
-    from src.backend.logging_config import configure_logging
-    from src.services.database import get_db_path, init_database
-    from src.settings import LOG_LEVEL, NOTIFICATION_SWEEP_SECONDS, PORT
-    from src.api.middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
-    from src.api.routers import automation, commands, context_events, sync, session_library, file_memories
-
+from ..backend.logging_config import configure_logging, IST_TZ
+from ..settings import PORT
+from .middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
+from .mobile_middleware import MobileStateMiddleware
+from .power_middleware import PowerMiddleware
+from .routers import commands, context_events, drive_index, file_memories, mobile_compute, satellite
 
 configure_logging()
 logger = logging.getLogger(__name__)
 
 
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    init_database()
-
-    # Prominent Cloud Run application startup banner
-    fs_status = "OFFLINE"
-    try:
-        from ..services.firestore_service import FirestoreService
-        if FirestoreService().is_available:
-            fs_status = "ONLINE (jarvis-agent-61947)"
-    except Exception:
-        try:
-            from src.services.firestore_service import FirestoreService
-            if FirestoreService().is_available:
-                fs_status = "ONLINE (jarvis-agent-61947)"
-        except Exception:
-            pass
-
-    try:
-        from ..settings import (
-            MAX_DAILY_TOKENS,
-            MAX_TOKENS_PER_CALL,
-            OPENROUTER_MODEL_TIER1,
-            OPENROUTER_MODEL_TIER2,
-            RATE_LIMIT_PER_USER_PER_MINUTE,
-        )
-    except (ImportError, ValueError):
-        from src.settings import (
-            MAX_DAILY_TOKENS,
-            MAX_TOKENS_PER_CALL,
-            OPENROUTER_MODEL_TIER1,
-            OPENROUTER_MODEL_TIER2,
-            RATE_LIMIT_PER_USER_PER_MINUTE,
-        )
-
-    logger.info("=" * 72)
-    logger.info("🚀 [APP_STARTUP] Jarvis Context-Aware Agent API Started Successfully")
-    logger.info("• Service: jarvis-backend | Port: %d | Cloud Run (asia-south1)", PORT)
-    logger.info("• LLM Tier 1: %s", OPENROUTER_MODEL_TIER1)
-    logger.info("• LLM Tier 2: %s", OPENROUTER_MODEL_TIER2)
-    logger.info("• Firestore Sync: %s", fs_status)
-    from .spend_policy import DAILY_BUDGET_INR
-    logger.info("• AI allowance: Rs %d/day (fixed INR/USD budget conversion) | %d req/min | no daily token ceiling", DAILY_BUDGET_INR, RATE_LIMIT_PER_USER_PER_MINUTE)
-    from ..settings import LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS
-    logger.info("• AI budget profile: %s | daily calls: %d | reset: midnight IST", LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS)
-    logger.info("=" * 72)
-
-    stop_sweeper = asyncio.Event()
-    sweeper = asyncio.create_task(_notification_sweeper(stop_sweeper))
-    try:
-        yield
-    finally:
-        stop_sweeper.set()
-        _ = sweeper.cancel()
-        with suppress(asyncio.CancelledError):
-            await sweeper
-        logger.info("Shutting down local Jarvis API")
+    from ..settings import LLM_MODEL, LLM_BUDGET_PROFILE, RATE_LIMIT_PER_USER_PER_MINUTE
+    from .spend_policy import OPENROUTER_DAILY_BUDGET_USD
+    logger.info("Jarvis processing API started | port=%s | model=%s | storage=request SQLite RAM", PORT, LLM_MODEL)
+    logger.info("AI allowance $%.2f/day | %s requests/min | profile=%s",
+                OPENROUTER_DAILY_BUDGET_USD, RATE_LIMIT_PER_USER_PER_MINUTE, LLM_BUDGET_PROFILE)
+    yield
+    logger.info("Jarvis processing API stopped")
 
 
-async def _notification_sweeper(stop: asyncio.Event) -> None:
-    """Persist due time reminders even if no mobile client is polling."""
-    while not stop.is_set():
-        try:
-            _ = await asyncio.to_thread(ContextAutomationService().process_due_reminders)
-            from ..services.push_notifications import PushNotifications
-            from ..services.background_tasks import BackgroundTasks
-            from ..services.firestore_service import FirestoreService
-            def refresh_delivery():
-                fs = FirestoreService()
-                if not fs.is_available: return
-                users = {'jarvis_local_user'}
-                for reminder in fs.get_reminders():
-                    uid = reminder.get('uid') or 'jarvis_local_user'
-                    users.add(uid)
-                    BackgroundTasks().schedule_reminder(uid, reminder)
-                    if reminder.get('activity_delay_seconds'):
-                        from ..services.activity_reminder_timers import ActivityReminderTimers
-                        ActivityReminderTimers(fs).reconcile(uid, reminder)
-                for uid in users: PushNotifications().deliver(uid)
-            await asyncio.to_thread(refresh_delivery)
-        except Exception:
-            logger.exception("Notification sweeper failed")
-        try:
-            _ = await asyncio.wait_for(stop.wait(), timeout=NOTIFICATION_SWEEP_SECONDS)
-        except TimeoutError:
-            continue
-
-
-async def health_check(response: Response) -> dict[str, object]:
-    """
-    Liveness and readiness probe for the Jarvis local API.
-
-    Verifies service operational status, environment mode, and local SQLite
-    database connectivity. Returns HTTP 200 when healthy, or HTTP 503 if any
-    critical dependency fails.
-    """
-    try:
-        from ..backend.logging_config import IST_TZ
-    except (ImportError, ValueError):
-        from src.backend.logging_config import IST_TZ
-
-    health_status: dict[str, object] = {
-        "status": "healthy",
-        "service": "jarvis-local-api",
-        "mode": "local",
-        "timestamp": datetime.now(IST_TZ).isoformat(),
-        "timezone": "IST (Asia/Kolkata)",
-        "database": {"status": "healthy"},
-    }
+async def health_check() -> dict:
     from ..settings import LLM_BUDGET_PROFILE, MAX_DAILY_LLM_CALLS, MAX_DAILY_TOKENS, RATE_LIMIT_PER_USER_PER_MINUTE
-    from .spend_policy import DAILY_BUDGET_INR, DAILY_BUDGET_NANOS, BUDGET_INR_PER_USD
-    health_status['ai_budget'] = {'profile': LLM_BUDGET_PROFILE,
-        'daily_tokens': MAX_DAILY_TOKENS or None, 'daily_calls': MAX_DAILY_LLM_CALLS or None,
-        'daily_budget_inr': DAILY_BUDGET_INR, 'daily_budget_usd': DAILY_BUDGET_NANOS / 1_000_000_000, 'budget_inr_per_usd': BUDGET_INR_PER_USD,
-        'requests_per_minute': RATE_LIMIT_PER_USER_PER_MINUTE,
-        'reset_timezone': 'Asia/Kolkata'}
-
-    try:
-        db_path = get_db_path()
-        with sqlite3.connect(db_path, timeout=2.0) as conn:
-            cursor = conn.cursor()
-            _ = cursor.execute("SELECT 1;")
-            cursor.fetchone()
-    except Exception as exc:
-        logger.warning("Database health check probe failed: %s", exc)
-        health_status["status"] = "unhealthy"
-        health_status["database"] = {
-            "status": "unhealthy",
-            "error": str(exc),
-        }
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-
-    return health_status
+    from .spend_policy import OPENROUTER_DAILY_BUDGET_USD
+    return {
+        "status": "healthy", "service": "jarvis-processing-api", "mode": "mobile",
+        "timestamp": datetime.now(IST_TZ).isoformat(), "timezone": "IST (Asia/Kolkata)",
+        "database": {"status": "healthy", "engine": "sqlite"},
+        "storage": {"backend": "mobile-only", "mobile_is_authoritative": True,
+                    "server_storage": "request-memory", "document_index": "existing-chroma"},
+        "ai_budget": {"profile": LLM_BUDGET_PROFILE, "daily_tokens": MAX_DAILY_TOKENS or None,
+                      "daily_calls": MAX_DAILY_LLM_CALLS or None, "daily_budget_usd": OPENROUTER_DAILY_BUDGET_USD,
+                      "requests_per_minute": RATE_LIMIT_PER_USER_PER_MINUTE, "reset_timezone": "Asia/Kolkata"},
+    }
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application instance."""
-    app = FastAPI(
-        title="Jarvis Local API",
-        description="Jarvis Context-Aware Mobile Agent Local Backend",
-        version="1.0.0",
-        lifespan=lifespan,
-    )
-
-    # 1. Mount standard middlewares
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app = FastAPI(title="Jarvis Processing API", version="1.0.0", lifespan=lifespan)
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                       allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(RequestLimitingMiddleware)
     app.add_middleware(StructuredLoggingMiddleware)
-
-    # 2. Register routers
-    app.include_router(context_events.router)
-    app.include_router(commands.router)
-    app.include_router(automation.router)
-    app.include_router(session_library.router)
-    app.include_router(file_memories.router)
-    from .routers import drive_index
-    app.include_router(drive_index.router)
-    app.include_router(sync.router)
-
-    # 3. Liveness/Readiness probes and Root landing
-    app.add_api_route(
-        "/", health_check, methods=["GET"], status_code=status.HTTP_200_OK, tags=["monitoring"])
-    app.add_api_route("/health", health_check,
-                      methods=["GET"], status_code=status.HTTP_200_OK, tags=["monitoring"])
-
+    app.add_middleware(PowerMiddleware)
+    compute = APIRouter()
+    compute.routes.extend(route for route in commands.router.routes if getattr(route, 'path', '').startswith('/commands/'))
+    compute.routes.extend(route for route in context_events.router.routes if getattr(route, 'path', '') == '/context-events')
+    compute.routes.extend(route for route in file_memories.router.routes if getattr(route, 'path', '').endswith('/analyze'))
+    allowed_index = {'/drive-index/status', '/drive-index/search', '/drive-index/search-contents',
+                     '/drive-index/evidence', '/drive-index/files/{file_id}'}
+    compute.routes.extend(route for route in drive_index.router.routes if getattr(route, 'path', '') in allowed_index)
+    app.include_router(compute)
+    app.include_router(mobile_compute.router)
+    app.include_router(satellite.router)
+    app.add_middleware(MobileStateMiddleware)
+    app.add_api_route('/', health_check, methods=['GET'], tags=['monitoring'])
+    app.add_api_route('/health', health_check, methods=['GET'], tags=['monitoring'])
     return app
 
 
@@ -220,16 +73,9 @@ app = create_app()
 
 
 def run() -> None:
-    """CLI script entry point (runs uvicorn)."""
-    uvicorn.run(
-        "src.api.main:app",
-        host="0.0.0.0",
-        port=PORT,
-        reload=True,
-        reload_dirs=["src"],
-        reload_excludes=["*.db", "*.db-*", "data/*", "logs/*", "*.log"],
-    )
+    uvicorn.run('src.api.main:app', host='0.0.0.0', port=PORT, reload=True,
+                reload_dirs=['src'], reload_excludes=['*.db', '*.db-*', 'data/*', 'logs/*', '*.log'])
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

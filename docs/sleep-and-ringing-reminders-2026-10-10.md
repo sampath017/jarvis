@@ -1,75 +1,48 @@
-# Sleep lookup and ringing reminders
+# Sleep records and ringing reminders
 
-## Observed sleep failure
+This guide describes current behavior; the filename is retained for existing links.
 
-The latest Jarvis chat at 08:38 IST on 10 October 2026 asked "How I slept?".
-Its immediate local reply reported missing Health Connect sleep read access.
-`HealthService.isHealthQuestion` matched the request; `hasSleepAccess` returned
-false, so no sleep query was performed. This was not a backend memory lookup
-failure and is not evidence that the user did not sleep.
+## Sleep and steps
 
-The updated reader requests Android's sleep read permission when necessary.
-Settings also contains a Sleep records connection tile. A sleep tracking app or
-watch must supply sleep sessions to Health Connect. Stationary phone data does
-not establish sleep. The existing reader reports the longest recorded session
-since 6 PM yesterday, not sleep quality or total sleep across multiple sessions.
+The shared chat agent selects `get_health_records` for explicit date windows.
+Android `HealthService` reads Health Connect only on request. Steps and sleep have
+separate read permissions, granted through Settings/Health Connect. A read cannot
+grant missing access. A watch or other health app must supply the requested
+records; absent sleep sessions mean unknown coverage, not proof of no sleep.
+Stationary phone data and movement duration are not substitutes for these datasets.
 
-## Delivery options
+The phone returns structured days/sessions and source/coverage information for
+model synthesis. Sleep windows are aligned to the requested IST day and capped at
+now; multi-day requests remain bounded. This is not a local keyword-generated
+sleep-quality answer or a background health polling loop.
 
-- `notification`: existing ordinary notification behavior.
-- `alarm`: an Android alarm that rings.
-- `in_app_call`: a free ringing reminder screen. Answer stops ringing and reads
-  the text with an installed offline English Android voice. It is neither a
-  telephone call nor a live assistant conversation.
+## Alert modes and delivery
 
-Chat create/update tools store the mode, and each active reminder has a Change
-alert type menu. Examples: "Set an alarm for 7 AM tomorrow" and "Remind me in 20
-minutes to leave, and ring me in-app." These are one-shot reminders; daily
-recurrence is not implemented.
+Reminders support ordinary `notification`, ringing `alarm`, and `in_app_call`.
+The last is a local reminder screen: Answer stops ringing and reads the saved text
+with an installed Android voice. It does not dial a telephone or start a live
+assistant conversation.
 
-Time-only ringing reminders are persisted on Android and scheduled with
-`AlarmManager.setAlarmClock`. They survive process exit and are restored after
-reboot, app updates, clock changes, and granting exact-alarm access. The phone
-must first download the reminder. Changes made on another device cannot cancel
-an offline phone's previously downloaded alarm until it syncs.
+Android owns reminder records. Time-only ACTIVE reminders are reconciled into
+AlarmManager schedules, including process-exit/reboot/update restoration. Context
+conditions require fresh eligible activity/location evidence and successful
+processing. After a genuine fresh activity ENTER satisfies a one-shot elapsed
+activity delay, the backend returns a time-only reminder; Android then owns the
+remaining deadline without a continued server connection.
 
-Context conditions are never converted into a plain time alarm. Activity,
-location and activity-delay reminders continue through the existing backend
-notification outbox and FCM/polling, and require connectivity. No new calling
-provider, account, paid voice API, or subscription was added. Existing Jarvis
-backend/inference costs are unchanged.
+Keep notification, exact-alarm and (when used) full-screen permissions enabled.
+Android channel/volume/Do Not Disturb settings affect presentation. A foreground
+phone may use a heads-up alert. Jarvis Off, force-stop or a powered-off phone can
+prevent normal delivery; WorkManager processing is not an exact timer.
 
-Notifications, Alarms & reminders, and full-screen access are exposed in
-Settings. Android may show a heads-up alert while the phone is unlocked rather
-than opening the whole screen. Sound follows the user's channel, volume and
-Do Not Disturb settings. Android force-stop or a powered-off device prevents
-normal alarm delivery. Ringing expires after two minutes; alerts arriving more
-than 15 minutes late are shown silently as missed reminders. Snooze is five
-minutes and requires exact-alarm permission.
+Occurrence keys deduplicate local-clock and returned context notifications.
+Pause/delete cancels applicable alarms/snoozes. Ringing expires after two minutes;
+arrivals more than 15 minutes late become silent missed reminders. Snooze is five
+minutes and needs exact-alarm access.
 
-Local time alarms and cloud notifications share a normalized occurrence key to
-avoid ringing twice. Pause/delete cancels downloaded pending alarms; snoozes
-are also cancelled when their reminder is paused, removed, or changes alert
-type. Delivery acknowledgement remains separate from the user's Answer/Dismiss.
-
-## Release and verification
-
-Code changes are uncommitted. On 10 October 2026, the backend was deployed as
-`jarvis-backend-00090-r9p` with 100% traffic. Its health check is healthy, the
-live schema exposes all three delivery modes, and GET /reminders returns 200.
-The tested APK was installed on the connected phone without clearing app data.
-It launches without matching fatal/SQLite/plugin errors in the inspected startup
-logs. Android 13 reports exact-alarm and full-screen permissions granted.
-The APK SHA-256 is `7007e866e6c6088f964db788918d8571020d3e251c55e7038770682a33fd329a`.
-
-Checks passed: 32 backend tests, five focused Flutter tests, three Android alarm
-policy tests, Flutter static analysis, and the final APK build. Device behavior
-including audible locked-screen ringing, snooze, reboot restoration and the
-Health Connect permission UI still needs an acceptance run. No test alarm or
-call was created during deployment.
-
-Primary references:
-- https://developer.android.com/develop/background-work/services/alarms
-- https://developer.android.com/about/versions/14/behavior-changes-14#secure-fsi
-- https://developer.android.com/reference/android/app/Notification#FLAG_INSISTENT
-- https://developer.android.com/health-and-fitness/health-connect/experiences/sleep
+Main sources: `health_service.dart`, `phone_data_executor.dart`,
+`activity_reminder_timers.py`, `ReminderAlerts.kt` and `ReminderAlertPolicy.kt`.
+See [background delivery](background-context-delivery.md) and
+[phone power](runtime-power-2026-10-13.md). Unit/widget tests exercise contracts and
+policy; audible ringing, OEM restrictions and permission presentation require
+real-device acceptance checks.

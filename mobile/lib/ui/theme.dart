@@ -1,24 +1,26 @@
 import 'package:flutter/material.dart';
+import 'brand_colors.dart';
 
 /// Shared visual tokens for the Jarvis workspace.
 class AppTheme {
-  static const Color background = Color(0xFF10141B);
-  static const Color surface = Color(0xFF181E28);
-  static const Color surfaceBright = Color(0xFF222B38);
-  static const Color border = Color(0xFF303A49);
+  static const Color background = BrandColors.background;
+  static const Color sidebar = BrandColors.sidebar;
+  static const Color surface = BrandColors.surface;
+  static const Color surfaceBright = BrandColors.surfaceBright;
+  static const Color border = BrandColors.border;
 
-  static const Color primary = Color(0xFF416FDC);
-  static const Color primaryLight = Color(0xFF9CB8FF);
-  static const Color primarySurface = Color(0xFF203252);
+  static const Color primary = BrandColors.accent;
+  static const Color primaryLight = BrandColors.accent;
+  static const Color primarySurface = BrandColors.accentSurface;
   static const Color cyan = primary;
   static const Color accent = primaryLight;
-  static const Color amber = Color(0xFFE3B777);
-  static const Color green = Color(0xFF89C7AC);
-  static const Color red = Color(0xFFED9A9A);
-  static const Color textPrimary = Color(0xFFF0F3F8);
-  static const Color textSecondary = Color(0xFFA5B1C2);
+  static const Color amber = BrandColors.amber;
+  static const Color green = BrandColors.green;
+  static const Color red = BrandColors.red;
+  static const Color textPrimary = BrandColors.text;
+  static const Color textSecondary = BrandColors.muted;
   static const double contentWidth = 840;
-  static const double radius = 12;
+  static const double radius = 20;
 
   static ThemeData get darkTheme {
     return ThemeData(
@@ -71,7 +73,7 @@ class AppTheme {
       ),
       colorScheme: const ColorScheme.dark(
         primary: primary,
-        onPrimary: Colors.white,
+        onPrimary: sidebar,
         secondary: accent,
         onSecondary: background,
         primaryContainer: primarySurface,
@@ -93,7 +95,7 @@ class AppTheme {
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        toolbarHeight: 72,
+        toolbarHeight: 64,
         titleTextStyle: TextStyle(
           fontFamily: 'Roboto',
           color: textPrimary,
@@ -115,20 +117,21 @@ class AppTheme {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: primary,
-          foregroundColor: Colors.white,
+          foregroundColor: sidebar,
           elevation: 0,
           minimumSize: const Size(0, 48),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(24),
           ),
           textStyle: const TextStyle(fontWeight: FontWeight.w600),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
+          foregroundColor: sidebar,
           minimumSize: const Size(0, 48),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(24),
           ),
         ),
       ),
@@ -139,6 +142,23 @@ class AppTheme {
         ),
       ),
       iconTheme: const IconThemeData(color: textSecondary, size: 22),
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          minimumSize: const Size(48, 48),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      ),
+      tooltipTheme: TooltipThemeData(
+        decoration: BoxDecoration(
+          color: surfaceBright,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: border),
+        ),
+        textStyle: const TextStyle(color: textPrimary, fontSize: 12),
+        waitDuration: const Duration(milliseconds: 500),
+      ),
       listTileTheme: const ListTileThemeData(
         contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 6),
         iconColor: textSecondary,
@@ -162,10 +182,10 @@ class AppTheme {
         space: 1,
       ),
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: background,
+        backgroundColor: sidebar,
         surfaceTintColor: Colors.transparent,
         indicatorColor: primarySurface,
-        height: 72,
+        height: 68,
         labelTextStyle: WidgetStateProperty.resolveWith(
           (states) => TextStyle(
             fontSize: 11,
@@ -187,7 +207,7 @@ class AppTheme {
         ),
       ),
       navigationRailTheme: const NavigationRailThemeData(
-        backgroundColor: background,
+        backgroundColor: sidebar,
         indicatorColor: primarySurface,
         selectedIconTheme: IconThemeData(color: primaryLight),
         unselectedIconTheme: IconThemeData(color: textSecondary),
@@ -223,7 +243,7 @@ class AppTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: surfaceBright,
+        fillColor: surface,
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
           vertical: 13,
@@ -239,12 +259,12 @@ class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: primary, width: 2),
+          borderSide: const BorderSide(color: primaryLight, width: 1.5),
         ),
       ),
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: primary,
-        foregroundColor: Colors.white,
+        foregroundColor: sidebar,
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(12)),

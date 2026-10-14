@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS places (
     uid TEXT NOT NULL,
     google_place_id TEXT,
     name TEXT NOT NULL,
+    boundary_json TEXT,
     user_label TEXT,
     category TEXT DEFAULT '',
     latitude REAL NOT NULL,

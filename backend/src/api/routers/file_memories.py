@@ -1,4 +1,4 @@
-"""Drive references in Firestore; approved file analysis uses transient RAM only."""
+"""Drive references in RecordStore; approved file analysis uses transient RAM only."""
 import base64
 import asyncio
 import hashlib
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ...models.file_urls import GOOGLE_FILE_URL_PATTERN
 from ...settings import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_MODEL_MULTIMODAL, OPENROUTER_MODEL_PDF
 from ..rate_limiter import TokenBudgetGuard
@@ -33,11 +33,24 @@ def owner(x_file_memory_session: Annotated[str, Header()] = "") -> str:
     return hashlib.sha256(x_file_memory_session.encode()).hexdigest()
 
 
-def collection(uid: str, kind: str = "files"):
-    fs = FirestoreService()
+def metadata_store():
+    fs = RecordStore()
     if not fs.is_available:
-        raise HTTPException(503, "Firebase memory is unavailable")
-    return fs._db.collection("file_memories").document(uid).collection(kind)
+        raise HTTPException(503, "File memory cache is unavailable")
+    return fs.sql
+
+
+def get_metadata(uid: str, file_id: str):
+    row = metadata_store().get('file_memories', file_id, uid=uid)
+    return public_metadata(row) if row else None
+
+
+def public_metadata(row: dict):
+    return {name: value for name, value in row.items() if name not in {'_key', 'uid'} and value is not None}
+
+
+def save_metadata(uid: str, value: dict):
+    return metadata_store().put('file_memories', value['id'], value, uid=uid, merge=False)
 
 
 def key(value: str) -> str:
@@ -60,7 +73,7 @@ class FileMemory(BaseModel):
 
 @router.get("")
 def memories(uid: Annotated[str, Depends(owner)]):
-    return {"items": [d.to_dict() for d in collection(uid).stream()]}
+    return {"items": [public_metadata(row) for row in metadata_store().list('file_memories', uid=uid)]}
 
 
 @router.get("/config")
@@ -76,7 +89,7 @@ def save_memory(file_id: str, value: FileMemory, uid: Annotated[str, Depends(own
     metadata = value.model_dump()
     if not metadata['source_version']:
         metadata.pop('source_version')
-    collection(uid).document(key(file_id)).set(metadata)
+    save_metadata(uid, metadata)
     return {"saved": True}
 
 
@@ -101,20 +114,18 @@ def native_payload(memory: dict, question: str, raw: bytes) -> dict:
     return payload
 
 
-def claim_analysis(ref, fingerprint: str):
-    from google.cloud import firestore
-    @firestore.transactional
-    def claim(transaction):
-        previous = ref.get(transaction=transaction).to_dict() or {}
+def claim_analysis(uid: str, analysis_id: str, fingerprint: str):
+    store = metadata_store()
+    with store.atomic():
+        previous = store.get('file_analyses', analysis_id, uid=uid) or {}
         if previous:
             if previous.get("fingerprint") != fingerprint:
                 raise HTTPException(409, "Analysis ID belongs to a different question or file")
             if previous.get("status") == "complete":
                 return previous["result"]
             raise HTTPException(409, "Analysis was already started. No automatic paid retry; ask again to retry.")
-        transaction.set(ref, {"fingerprint": fingerprint, "status": "started"})
+        store.put('file_analyses', analysis_id, {"fingerprint": fingerprint, "status": "started"}, uid=uid, merge=False)
         return None
-    return claim(FirestoreService()._db.transaction())
 
 
 @router.post("/{file_id}/analyze")
@@ -128,7 +139,7 @@ async def analyze(file_id: str, request: Request, uid: Annotated[str, Depends(ow
         raise HTTPException(422, "Invalid analysis question") from exc
     if not 1 <= len(question) <= 2000:
         raise HTTPException(422, "Analysis question must contain 1–2000 characters")
-    memory = await run_in_threadpool(lambda: collection(uid).document(key(file_id)).get().to_dict())
+    memory = await run_in_threadpool(get_metadata, uid, file_id)
     if not memory:
         raise HTTPException(404, "Saved file not found")
     if memory["mimeType"] not in SUPPORTED_TYPES:
@@ -145,14 +156,14 @@ async def analyze(file_id: str, request: Request, uid: Annotated[str, Depends(ow
     if not raw or len(raw) != memory["size"]:
         raise HTTPException(422, "File size changed; refresh the saved file before analysis")
     fingerprint = key(file_id + question + hashlib.sha256(raw).hexdigest())
-    ref = collection(uid, "analyses").document(key(action_id))
-    cached = await run_in_threadpool(claim_analysis, ref, fingerprint)
+    analysis_id = key(action_id)
+    cached = await run_in_threadpool(claim_analysis, uid, analysis_id, fingerprint)
     if cached:
         return cached
     guard = TokenBudgetGuard()
     # Share the existing chat budget; a new phone capability cannot reset quotas.
     guard.check_request_rate(budget_uid)
-    # No extraction, temporary file, raw Firestore document, or tracing wrapper.
+    # No extraction, temporary file, raw RecordStore document, or tracing wrapper.
     payload = native_payload(memory, question, raw)
     reservation = await run_in_threadpool(guard.check_and_reserve_tokens, budget_uid, 30000 + payload["max_tokens"], model=payload["model"], max_output_tokens=payload["max_tokens"])
     del raw
@@ -174,7 +185,8 @@ async def analyze(file_id: str, request: Request, uid: Annotated[str, Depends(ow
             raise HTTPException(502, "The model returned no readable analysis")
         result = {"status": "ok", "answer": answer[:24000], "file_id": file_id, "model": payload["model"]}
         # Only the derived answer and receipt are persisted, never file content.
-        await run_in_threadpool(ref.set, {"fingerprint": fingerprint, "status": "complete", "result": result})
+        await run_in_threadpool(metadata_store().put, 'file_analyses', analysis_id,
+                               {"fingerprint": fingerprint, "status": "complete", "result": result}, uid=uid)
         return result
     except (httpx.HTTPError, TimeoutError, KeyError, ValueError) as exc:
         raise HTTPException(502, "File analysis was interrupted. Ask again to retry.") from exc

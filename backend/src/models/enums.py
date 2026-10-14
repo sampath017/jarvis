@@ -42,8 +42,8 @@ class VehicleClass(str, Enum):
     NOT_VEHICLE = "NOT_VEHICLE"
 
 
-class Tier1Action(str, Enum):
-    """Recommended actions from Tier 1 reasoner."""
+class ContextAssessmentAction(str, Enum):
+    """Recommended actions from context assessment reasoner."""
     PAUSE = "PAUSE"
     RESUME = "RESUME"
     COMPLETE = "COMPLETE"

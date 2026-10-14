@@ -1,0 +1,122 @@
+[
+  {
+    "id": "greeting-route",
+    "purpose": "Ordinary greetings reach the conversational model without keyword bypasses",
+    "node": "tests/backend/test_graph_builder.py::test_greeting_workflow_execution"
+  },
+  {
+    "id": "phone-usage-chart",
+    "purpose": "App-usage and chart tool observations return to the model for follow-up synthesis",
+    "node": "tests/backend/test_phone_data_tools.py::test_phone_read_and_chart_observations_return_to_model_in_order"
+  },
+  {
+    "id": "note-merge",
+    "purpose": "Merging keeps originals and full content without requesting approval",
+    "node": "tests/backend/test_note_merge_approval.py::test_merge_preserves_sources_and_text_without_prompt"
+  },
+  {
+    "id": "note-review-before-delete",
+    "purpose": "Deleting source notes after verified merge succeeds",
+    "node": "tests/backend/test_note_merge_approval.py::test_delete_after_verified_merge_succeeds"
+  },
+  {
+    "id": "note-delete-no-prompt",
+    "purpose": "Deleting notes executes without requiring human approval",
+    "node": "tests/backend/test_note_merge_approval.py::test_delete_note_executes_without_requiring_approval"
+  },
+  {
+    "id": "note-delete-direct",
+    "purpose": "Deleting directly moves notes to recoverable Trash",
+    "node": "tests/backend/test_note_merge_approval.py::test_delete_executes_directly_and_moves_to_trash"
+  },
+  {
+    "id": "chat-read",
+    "purpose": "Actual graph observes a reminder tool result before answering; two scripted model calls",
+    "node": "tests/backend/test_react_loop_integration.py::test_chat_react_loop_list_reminders"
+  },
+  {
+    "id": "chat-write",
+    "purpose": "Actual graph saves the requested reminder once and observes the result",
+    "node": "tests/backend/test_react_loop_integration.py::test_chat_react_loop_create_reminder"
+  },
+  {
+    "id": "call-reminder-no-confirmation",
+    "purpose": "A ten-second self-call request grounds model arguments, saves once without approval and preserves 24 history messages",
+    "node": "tests/backend/test_reminder_tool_recovery.py::test_call_in_ten_seconds_saves_once_without_confirmation_and_keeps_24_messages"
+  },
+  {
+    "id": "reminder-argument-recovery",
+    "purpose": "An invalid time can be corrected from the original user request without a confirmation loop",
+    "node": "tests/backend/test_reminder_tool_recovery.py::test_agent_can_correct_failed_time_arguments_before_retry"
+  },
+  {
+    "id": "reminder-retry-stop",
+    "purpose": "Unchanged failures and confirmed-flag variations stop with the specific validation problem before another model call",
+    "node": "tests/backend/test_reminder_tool_recovery.py::test_unchanged_failed_retry_and_confirmed_flag_do_not_loop_or_claim_success"
+  },
+  {
+    "id": "background-context",
+    "purpose": "Actual graph routes ambiguous vibration through the shared runtime with restricted context tools",
+    "node": "tests/backend/test_react_loop_integration.py::test_background_react_loop_ambiguous_vibration"
+  },
+  {
+    "id": "conversation-history",
+    "purpose": "Prior turns reach the conversational agent in order",
+    "node": "tests/backend/test_agent.py::test_agent_multi_turn_history_injection"
+  },
+  {
+    "id": "full-chat-history",
+    "purpose": "Every current-chat message and long body survives normalization without silent truncation",
+    "node": "tests/backend/test_conversation_memory.py::test_complete_dialogue_keeps_every_message_and_long_body"
+  },
+  {
+    "id": "file-followup",
+    "purpose": "Resume follow-up reuses dialogue without eager personal-context or GPS reads",
+    "node": "tests/backend/test_on_demand_context.py::test_resume_followup_reuses_chat_without_personal_context_reads"
+  },
+  {
+    "id": "file-answer",
+    "purpose": "File evidence returns to the conversational model for synthesis and requested formatting",
+    "node": "tests/backend/test_file_question_routing.py::test_file_evidence_returns_to_model_for_requested_format"
+  },
+  {
+    "id": "mixed-request",
+    "purpose": "An attachment answer does not drop a requested calendar action",
+    "node": "tests/backend/test_file_question_routing.py::test_mixed_attachment_request_hands_off_without_dropping_calendar_task"
+  },
+  {
+    "id": "reply-completion",
+    "purpose": "Truncated text is regenerated with observations and without replaying tools",
+    "node": "tests/backend/test_complete_reply.py::test_truncated_reply_is_regenerated_with_existing_observations_without_tools"
+  },
+  {
+    "id": "partial-tool",
+    "purpose": "Truncated tool arguments are discarded before execution",
+    "node": "tests/backend/test_complete_reply.py::test_truncated_tool_generation_is_discarded_before_execution"
+  },
+  {
+    "id": "provider-error",
+    "purpose": "Provider account text fails cleanly without exposing its details",
+    "node": "tests/backend/test_complete_reply.py::test_repeated_provider_account_error_is_failure_without_account_details"
+  },
+  {
+    "id": "duplicate-write",
+    "purpose": "Repeated routine tool calls execute a write once without a redundant approval",
+    "node": "tests/backend/test_routine_write_approval.py::test_requested_routine_write_executes_once_without_approval"
+  },
+  {
+    "id": "critical-write",
+    "purpose": "A declined consequential write performs no mutation",
+    "node": "tests/backend/test_routine_write_approval.py::test_critical_or_unknown_write_requires_approval"
+  },
+  {
+    "id": "sql-ledger-read",
+    "purpose": "Reading the SQL allowance status never creates or rewrites ledger rows",
+    "node": "tests/backend/test_durable_budget.py::test_status_read_never_creates_or_rewrites_ledger"
+  },
+  {
+    "id": "pending-notification-cost",
+    "purpose": "SQL owner/status predicates find the pending notification before the result limit and skip acknowledged history",
+    "node": "tests/backend/test_record_store_read_cost.py::test_pending_notification_filter_precedes_limit_and_skips_acknowledged_rows"
+  }
+]

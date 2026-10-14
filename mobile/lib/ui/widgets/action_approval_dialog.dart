@@ -8,12 +8,16 @@ Future<bool> showActionApproval(
 ) async {
   final operation = preview['operation']?.toString() ?? '';
   final generic = operation == 'approval';
+  final deletion =
+      generic && (preview['tool']?.toString().startsWith('delete_') ?? false);
   final drive = operation == 'drive_upload';
   final analysis = operation == 'file_analyze';
   final title = analysis
       ? 'Analyze this saved file?'
       : drive
       ? 'Save this file to Drive & memory?'
+      : deletion
+      ? 'Approve deletion?'
       : generic
       ? 'Approve this change?'
       : switch (operation) {
@@ -26,6 +30,8 @@ Future<bool> showActionApproval(
       ? 'Allow analysis'
       : drive
       ? 'Save file'
+      : deletion
+      ? 'Approve deletion'
       : generic
       ? 'Approve change'
       : switch (operation) {
@@ -39,7 +45,7 @@ Future<bool> showActionApproval(
     barrierDismissible: true,
     builder: (context) => AlertDialog(
       icon: Icon(
-        operation == 'delete'
+        operation == 'delete' || deletion
             ? Icons.delete_outline
             : Icons.verified_user_outlined,
         color: AppTheme.primaryLight,
@@ -64,7 +70,7 @@ Future<bool> showActionApproval(
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Jarvis will read this original from Drive and send its contents through the Jarvis backend and OpenRouter to the selected model for this question. Firebase retains metadata and the answer, never the raw file. The original stays in Drive.',
+                  'Jarvis will read this original from Drive and send its contents through the Jarvis backend and OpenRouter to the selected model for this question. Metadata and the answer are cached locally. The original stays in Drive.',
                 ),
               ] else if (drive) ...[
                 SelectableText(
@@ -85,7 +91,7 @@ Future<bool> showActionApproval(
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'The original goes to Google Drive. Firebase remembers the name, your description and private file link across chats. File contents are analyzed only after a separate approval.',
+                  'The original goes to Google Drive. Local storage remembers the name, your description and private file link across chats. File contents are analyzed only after a separate approval.',
                 ),
               ] else if (generic) ...[
                 Text(

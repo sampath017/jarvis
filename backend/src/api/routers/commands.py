@@ -1,7 +1,7 @@
 """
 Commands Router — POST /commands.
 
-Handles user text commands, passes them to Tier 2, executes allowed tool actions,
+Handles user text commands, passes them to LLM, executes allowed tool actions,
 and returns structured responses.
 """
 
@@ -11,20 +11,19 @@ import logging
 import asyncio
 import json
 import time
+import os
 from datetime import datetime, timezone
 from typing import Annotated, cast
 from fastapi import APIRouter, Depends, status, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from ...backend.command_execution import CommandExecution, execution, MAX_COMMAND_ROUNDS
 from ...services.command_run_store import CommandRunStore
-from ...services.background_tasks import BackgroundTasks, verify_task_identity
-from ...services.push_notifications import PushNotifications
 
 from langgraph.graph.state import CompiledStateGraph  # type: ignore[import-untyped]
 
 from ...graph.state import JarvisState
 from ...models.schemas import APIResponse, CommandRequest
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ..auth import get_current_user
 from ..dependencies import get_workflow
 from ..rate_limiter import TokenBudgetGuard
@@ -46,6 +45,7 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
 
     import time
     start_time = time.perf_counter()
+    received_at = datetime.now(timezone.utc).isoformat()
     logger.info(
         "💬 [CHAT_START] Request ID: %s | User: %s | Thread: %s | Query: \"%s\"",
         request.request_id,
@@ -114,9 +114,9 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         if status_str == "ok":
 
-            # Persist chat turn and session directly to Firestore
+            # Persist chat turn and session directly to RecordStore
             try:
-                fs = FirestoreService()
+                fs = RecordStore()
                 if fs.is_available:
                     thread = request.thread_id or "default"
                     # User message
@@ -127,7 +127,7 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
                             "id": request.request_id,
                             "role": "user",
                             "content": request.text,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": received_at,
                         },
                     )
                     # Assistant reply
@@ -156,7 +156,7 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
                         },
                     )
             except Exception as fe:
-                logger.warning("Failed to auto-save chat turn to Firestore: %s", fe)
+                logger.warning("Failed to auto-save chat turn to RecordStore: %s", fe)
 
             logger.info(
                 "✅ [CHAT_SUCCESS] Request ID: %s | Latency: %.1f ms | Executed Actions: %s | Response: \"%s\"",
@@ -220,7 +220,7 @@ def _run_owned(store, request, uid, workflow):
             response = {"status": "error", "error": str(getattr(error, "detail", error)),
                         "changed_records": list(context.changed_records)}
         if response.get('status') == 'error':
-            fs = FirestoreService()
+            fs = RecordStore()
             if fs.is_available:
                 fs.save_chat_message(uid, request.thread_id, {
                     'id': 'err_' + request.request_id, 'role': 'assistant',
@@ -229,19 +229,12 @@ def _run_owned(store, request, uid, workflow):
                     'executed_records': response.get('changed_records', []),
                 })
         store.finish(uid, request.request_id, response)
-        try:
-            PushNotifications().queue_chat(uid, request.request_id, request.thread_id, response)
-        except Exception:
-            logger.exception('Chat push delivery deferred; response is saved')
     finally:
         execution.reset(token)
 
 
 async def _start_run(request, uid, workflow, calendar_key=None):
     import os
-    dispatcher = BackgroundTasks()
-    if os.getenv('K_SERVICE') and not dispatcher.configured:
-        raise HTTPException(503, 'Background processing is not configured yet. Please retry shortly.')
     store = CommandRunStore()
     if request.calendar_connected or request.device_approvals:
         if not calendar_key or not 64 <= len(calendar_key) <= 128:
@@ -249,13 +242,6 @@ async def _start_run(request, uid, workflow, calendar_key=None):
         fresh = await asyncio.to_thread(store.claim, uid, request, calendar_key)
     else:
         fresh = await asyncio.to_thread(store.claim, uid, request)
-    dispatcher = BackgroundTasks()
-    if dispatcher.configured:
-        snapshot = await asyncio.to_thread(store.get, uid, request.request_id)
-        if snapshot['status'] == 'queued':
-            await asyncio.to_thread(dispatcher.enqueue, 'command',
-                {'uid': uid, 'request_id': request.request_id}, f'command:{uid}:{request.request_id}')
-        return store
     if fresh:
         task = asyncio.create_task(asyncio.to_thread(_run_owned, store, request, uid, workflow))
         _running_tasks.add(task)
@@ -268,23 +254,24 @@ async def _start_run(request, uid, workflow, calendar_key=None):
 
 
 async def _command_events(store, uid, request_id):
+    from ...services.command_updates import command_updates
+    from contextlib import aclosing
     last_sequence = None
     last_emit = 0.0
     last_action_id = None
-    while True:
-        data = await asyncio.to_thread(store.get, uid, request_id)
-        snapshot = store.public(data)
-        if snapshot['status'] == 'complete':
-            yield 'event: result\ndata: ' + json.dumps(snapshot['response']) + '\n\n'
-            return
-        if data.get('calendar_action') and data.get('calendar_result') is None and not data.get('cancel_requested') and data['calendar_action']['action_id'] != last_action_id:
-            yield 'event: calendar_action\ndata: ' + json.dumps(data['calendar_action']) + '\n\n'
-            last_action_id = data['calendar_action']['action_id']
-        sequence = (snapshot['sequence'], snapshot['message'])
-        if sequence != last_sequence or time.monotonic() - last_emit >= 10:
-            yield 'event: progress\ndata: ' + json.dumps(snapshot) + '\n\n'
-            last_sequence, last_emit = sequence, time.monotonic()
-        await asyncio.sleep(1)
+    async with aclosing(command_updates(store, uid, request_id)) as updates:
+        async for data in updates:
+            snapshot = store.public(data)
+            if snapshot['status'] == 'complete':
+                yield 'event: result\ndata: ' + json.dumps(snapshot['response']) + '\n\n'
+                return
+            if data.get('calendar_action') and data.get('calendar_result') is None and not data.get('cancel_requested') and data['calendar_action']['action_id'] != last_action_id:
+                yield 'event: calendar_action\ndata: ' + json.dumps(data['calendar_action']) + '\n\n'
+                last_action_id = data['calendar_action']['action_id']
+            sequence = (snapshot['sequence'], snapshot['message'])
+            if sequence != last_sequence or time.monotonic() - last_emit >= 10:
+                yield 'event: progress\ndata: ' + json.dumps(snapshot) + '\n\n'
+                last_sequence, last_emit = sequence, time.monotonic()
 
 
 @router.post('/commands/stream')
@@ -301,70 +288,6 @@ async def stream_user_command(
         headers={'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no'})
 
 
-@router.post('/internal/background/command')
-async def execute_background_command(payload: dict, authorization: Annotated[str | None, Header()] = None,
-    workflow: CompiledStateGraph = Depends(get_workflow)):
-    await asyncio.to_thread(verify_task_identity, authorization)
-    store = CommandRunStore()
-    uid, request_id = payload['uid'], payload['request_id']
-    raw = await asyncio.to_thread(store.start_execution, uid, request_id)
-    if raw is not None:
-        await asyncio.to_thread(_run_owned, store, CommandRequest(**raw), uid, workflow)
-    data = await asyncio.to_thread(store.get, uid, request_id)
-    response = store.public(data).get('response')
-    if response:
-        await asyncio.to_thread(PushNotifications().queue_chat, uid, request_id, data.get('thread_id'), response)
-    return {'status': 'ok'}
-
-
-@router.post('/internal/background/reminder')
-async def execute_due_reminder(payload: dict, authorization: Annotated[str | None, Header()] = None):
-    await asyncio.to_thread(verify_task_identity, authorization)
-    from ...backend.context_automation import ContextAutomationService
-    def deliver_due():
-        fs = FirestoreService()
-        reminder = fs._db.collection('reminders').document(payload['reminder_id']).get().to_dict()
-        if reminder and reminder.get('uid') == payload['uid']:
-            from ...services.database import DatabaseService
-            db = DatabaseService()
-            db.create_reminder(payload['uid'], reminder)
-            BackgroundTasks().schedule_reminder(payload['uid'], reminder)
-            ContextAutomationService(db=db, cloud=fs).process_due_reminders()
-        PushNotifications().deliver(payload['uid'])
-    await asyncio.to_thread(deliver_due)
-    return {'status': 'ok'}
-
-
-@router.post('/internal/background/notification')
-async def deliver_background_notification(payload: dict, authorization: Annotated[str | None, Header()] = None):
-    await asyncio.to_thread(verify_task_identity, authorization)
-    await asyncio.to_thread(PushNotifications().deliver, payload['uid'])
-    return {'status': 'ok'}
-
-
-@router.post('/internal/background/activity-reminder')
-async def deliver_activity_reminder(payload: dict, authorization: Annotated[str | None, Header()] = None):
-    await asyncio.to_thread(verify_task_identity, authorization)
-    def deliver():
-        from ...services.activity_reminder_timers import ActivityReminderTimers
-        from ...backend.context_automation import ContextAutomationService
-        fs = FirestoreService()
-        ActivityReminderTimers(fs).deliver(payload['uid'], payload['reminder_id'], payload['timer_id'],
-                                          ContextAutomationService(cloud=fs))
-        PushNotifications().deliver(payload['uid'])
-    await asyncio.to_thread(deliver)
-    return {'status': 'ok'}
-
-
-@router.post('/devices/push-token')
-async def register_push_token(payload: dict, uid: Annotated[str, Depends(get_current_user)]):
-    token = payload.get('token')
-    if not isinstance(token, str) or not 20 <= len(token) <= 4096:
-        raise HTTPException(422, 'Invalid push token')
-    await asyncio.to_thread(PushNotifications().register, uid, token)
-    return {'status': 'ok'}
-
-
 @router.get('/commands/requests/{request_id}')
 async def command_status(request_id: str, uid: Annotated[str, Depends(get_current_user)], x_calendar_session: Annotated[str | None, Header()] = None):
     store = CommandRunStore()
@@ -378,7 +301,7 @@ async def command_status(request_id: str, uid: Annotated[str, Depends(get_curren
 
 @router.post('/commands/requests/{request_id}/calendar-result')
 async def calendar_result(request_id: str, payload: dict, uid: Annotated[str, Depends(get_current_user)], x_calendar_session: Annotated[str | None, Header()] = None):
-    if not isinstance(payload.get('result'), dict) or len(json.dumps(payload)) > 150000:
+    if not isinstance(payload.get('result'), dict) or len(json.dumps(payload)) > 8 * 1024 * 1024:
         raise HTTPException(422, 'Invalid calendar result')
     store = CommandRunStore()
     await asyncio.to_thread(store.calendar_result, uid, request_id, payload.get('action_id'), payload['result'], x_calendar_session)
@@ -415,8 +338,8 @@ def delete_chat_session_endpoint(
     session_id: str,
     uid: Annotated[str, Depends(get_current_user)],
 ) -> None:
-    """Delete a chat session and all its messages from Firestore."""
-    fs = FirestoreService()
+    """Delete a chat session and all its messages from RecordStore."""
+    fs = RecordStore()
     if fs.is_available:
         fs.delete_chat_session(session_id)
     return None
@@ -426,8 +349,8 @@ def delete_chat_session_endpoint(
 def delete_all_chat_sessions_endpoint(
     uid: Annotated[str, Depends(get_current_user)],
 ) -> None:
-    """Delete all chat sessions and messages for the user from Firestore."""
-    fs = FirestoreService()
+    """Delete all chat sessions and messages for the user from RecordStore."""
+    fs = RecordStore()
     if fs.is_available:
         fs.delete_all_chat_sessions(uid)
     return None

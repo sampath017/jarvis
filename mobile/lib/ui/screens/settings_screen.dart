@@ -1,18 +1,15 @@
+import '../widgets/database_backup_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../services/api_service.dart';
-import '../../services/local_db_service.dart';
-import '../../services/sync_service.dart';
-import '../../services/usage_service.dart';
-import '../../services/health_service.dart';
+import '../brand_colors.dart';
 import '../theme.dart';
 import '../widgets/workspace_widgets.dart';
 import 'google_calendar_screen.dart';
+import 'google_drive_screen.dart';
 import '../../services/google_calendar_service.dart';
 import '../../services/google_drive_service.dart';
-import 'google_drive_screen.dart';
-import 'motion_monitoring_screen.dart';
+import '../../services/runtime_power_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -22,562 +19,468 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen>
-    with WidgetsBindingObserver {
-  static const _channel = MethodChannel('com.jarvis/foreground_service');
-  final ApiService _api = ApiService();
-  final LocalDbService _db = LocalDbService();
-  bool _checking = true;
-  bool _syncing = false;
-  bool _connected = false;
-  bool? _notificationsEnabled;
-  int _cachedDays = 0;
-  bool _usageAllowed = false;
-  bool _usageDaily = true;
-  bool _exactAlarms = false;
-  bool _sleepAllowed = false;
-  bool _fullScreenAlerts = false;
-  bool? _backgroundLocation;
-  bool? _locationEnabled;
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  final _power = RuntimePowerService.instance;
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnimation;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _refresh();
-    GoogleCalendarService.instance.addListener(_calendarChanged);
+    _power.addListener(_onStateChanged);
+    GoogleCalendarService.instance.addListener(_onStateChanged);
     GoogleCalendarService.instance.refresh();
-    GoogleDriveService.instance.addListener(_calendarChanged);
+    GoogleDriveService.instance.addListener(_onStateChanged);
     GoogleDriveService.instance.refresh();
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat(reverse: true);
+
+    _pulseAnimation = CurvedAnimation(
+      parent: _pulseController,
+      curve: Curves.easeInOutSine,
+    );
   }
 
-  void _calendarChanged() {
+  void _onStateChanged() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    GoogleCalendarService.instance.removeListener(_calendarChanged);
-    GoogleDriveService.instance.removeListener(_calendarChanged);
+    _pulseController.dispose();
+    _power.removeListener(_onStateChanged);
+    GoogleCalendarService.instance.removeListener(_onStateChanged);
+    GoogleDriveService.instance.removeListener(_onStateChanged);
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refresh();
-  }
+  bool get _hasConnectedAccounts =>
+      GoogleCalendarService.instance.connected ||
+      GoogleDriveService.instance.connected;
 
-  Future<void> _refresh() async {
-    if (mounted) setState(() => _checking = true);
-    await Future.wait([
-      GoogleCalendarService.instance.refresh(),
-      GoogleDriveService.instance.refresh(),
-    ]);
-    final connected = await _api.checkHealth();
-    bool? notifications;
-    try {
-      notifications = await _channel.invokeMethod<bool>('notificationsEnabled');
-    } catch (_) {}
-    Map<dynamic, dynamic> usage = {};
-    try {
-      usage = await UsageService.channel.invokeMapMethod('status') ?? {};
-    } catch (_) {}
-    final days = await _db.activityCacheDayCount();
-    bool sleep = false;
-    Map<dynamic, dynamic> ringing = {};
-    try {
-      sleep = await HealthService.instance.hasSleepAccess();
-    } catch (_) {}
-    try {
-      ringing = await _channel.invokeMapMethod('ringingStatus') ?? {};
-    } catch (_) {}
-    Map<dynamic, dynamic> location = {};
-    try {
-      location = await _channel.invokeMapMethod('contextLocationStatus') ?? {};
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() {
-      _connected = connected;
-      _notificationsEnabled = notifications;
-      _cachedDays = days;
-      _usageAllowed = usage['allowed'] == true;
-      _usageDaily = usage['enabled'] != false;
-      _exactAlarms = usage['exact'] == true;
-      _sleepAllowed = sleep;
-      _fullScreenAlerts = ringing['full_screen'] == true;
-      _backgroundLocation = location['background'] as bool?;
-      _locationEnabled = location['enabled'] as bool?;
-      _checking = false;
-    });
-  }
-
-  Future<void> _syncNow() async {
-    setState(() => _syncing = true);
-    final online = await _api.checkHealth();
-    if (online) await SyncService().syncNow();
-    if (!mounted) return;
-    setState(() {
-      _connected = online;
-      _syncing = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          online
-              ? 'Sync checked. Pull down in Activity for the latest day.'
-              : 'Jarvis is offline. Your changes will sync when it reconnects.',
-        ),
+  void _showConnectedAccounts(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        side: BorderSide(color: AppTheme.border),
       ),
-    );
-  }
-
-  Future<void> _openNotificationSettings() async {
-    try {
-      await _channel.invokeMethod('openNotificationSettings');
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not open notification settings.'),
+      builder: (ctx) {
+        final cal = GoogleCalendarService.instance;
+        final drive = GoogleDriveService.instance;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 20),
+                    decoration: BoxDecoration(
+                      color: AppTheme.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    'Connected Accounts',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.4,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    'Manage your cloud Google services.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                ListTile(
+                  leading: Icon(
+                    cal.connected
+                        ? Icons.check_circle_outline
+                        : Icons.calendar_month_outlined,
+                    color: cal.connected ? AppTheme.green : AppTheme.primaryLight,
+                  ),
+                  title: const Text('Google Calendar'),
+                  subtitle: Text(
+                    cal.connected
+                        ? 'Connected · ${cal.email}'
+                        : (cal.needsReconnect
+                            ? 'Reconnect needed'
+                            : 'Not connected'),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const GoogleCalendarScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const Divider(height: 1, color: AppTheme.border),
+                ListTile(
+                  leading: Icon(
+                    drive.connected
+                        ? Icons.check_circle_outline
+                        : Icons.add_to_drive_outlined,
+                    color: drive.connected ? AppTheme.green : AppTheme.primaryLight,
+                  ),
+                  title: const Text('Google Drive'),
+                  subtitle: Text(
+                    drive.connected
+                        ? 'Connected · ${drive.email}'
+                        : (drive.needsReconnect
+                            ? 'Reconnect needed'
+                            : 'Not connected'),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const GoogleDriveScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
         );
-      }
-    }
+      },
+    );
   }
 
-  Future<void> _clearActivityCache() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Clear offline activity?'),
-        content: const Text(
-          'This removes saved Activity days from this phone. Your Firebase history stays available and can be loaded again.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Clear cache'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    await _db.clearActivityCache();
-    if (mounted) {
-      setState(() => _cachedDays = 0);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Offline activity cache cleared.')),
-      );
-    }
+  void _handlePowerToggle() {
+    if (_power.busy) return;
+    HapticFeedback.heavyImpact();
+    _power.setEnabled(!_power.enabled);
   }
 
   @override
   Widget build(BuildContext context) {
+    final enabled = _power.enabled;
+    final busy = _power.busy;
+
+    // Vibrant hero palette: Emerald Green when ON, Crimson Red when OFF
+    const onColor = Color(0xFF00E676);
+    const onDark = Color(0xFF008947);
+    const offColor = Color(0xFFFF3B30);
+    const offDark = Color(0xFF8B1E18);
+
+    final primaryColor = enabled ? onColor : offColor;
+    final gradientDark = enabled ? onDark : offDark;
+
     return Scaffold(
       backgroundColor: AppTheme.background,
-      appBar: AppBar(title: const Text('Settings')),
-      body: WorkspaceBody(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 96),
-          children: [
-            const PageIntro(
-              title: 'Make Jarvis work for you',
-              description:
-                  'Manage your connections, preferences, and notifications.',
+      appBar: AppBar(
+        title: const Text('Settings'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Badge(
+              isLabelVisible: _hasConnectedAccounts,
+              backgroundColor: AppTheme.green,
+              smallSize: 8,
+              child: const Icon(Icons.cloud_outlined),
             ),
-            _sectionLabel('Account'),
-            _card(
+            tooltip: 'Connected Accounts',
+            onPressed: () => _showConnectedAccounts(context),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: WorkspaceBody(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                ExpansionTile(
-                  leading: const Icon(
-                    Icons.account_circle_outlined,
-                    color: AppTheme.primaryLight,
+                // Top subtle header
+                const Text(
+                  'SYSTEM POWER',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 2.0,
+                    color: AppTheme.textSecondary,
                   ),
-                  title: const Text('Connected accounts'),
-                  subtitle: Text(_accountSummary),
-                  children: [
-                    ListTile(
-                      leading: Icon(
-                        GoogleCalendarService.instance.connected
-                            ? Icons.check_circle_outline
-                            : Icons.calendar_month_outlined,
-                        color: GoogleCalendarService.instance.connected
-                            ? AppTheme.green
-                            : AppTheme.primaryLight,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  enabled ? 'Jarvis is Active' : 'Jarvis is Powered Off',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.6,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 48),
+
+                // Hero Interactive Power Button with Pulse Animation
+                AnimatedBuilder(
+                  animation: _pulseAnimation,
+                  builder: (context, child) {
+                    final pulse = enabled ? _pulseAnimation.value : 0.0;
+                    final glowRadius = 24.0 + (pulse * 20.0);
+                    final glowSpread = 2.0 + (pulse * 8.0);
+                    final glowAlpha = enabled ? (0.28 + pulse * 0.18) : 0.20;
+
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 400),
+                      curve: Curves.easeInOutCubicEmphasized,
+                      width: 170,
+                      height: 170,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          // Outer ambient bloom
+                          BoxShadow(
+                            color: primaryColor.withValues(alpha: glowAlpha),
+                            blurRadius: glowRadius,
+                            spreadRadius: glowSpread,
+                          ),
+                          // Secondary soft perimeter shadow
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.5),
+                            blurRadius: 18,
+                            spreadRadius: 2,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
                       ),
-                      title: const Text('Google Calendar'),
-                      subtitle: Text(
-                        _connectionStatus(
-                          GoogleCalendarService.instance.connected,
-                          GoogleCalendarService.instance.needsReconnect,
-                          GoogleCalendarService.instance.restoring,
-                          GoogleCalendarService.instance.email,
+                      child: child,
+                    );
+                  },
+                  child: Material(
+                    color: Colors.transparent,
+                    shape: const CircleBorder(),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: busy ? null : _handlePowerToggle,
+                      splashColor: primaryColor.withValues(alpha: 0.3),
+                      highlightColor: primaryColor.withValues(alpha: 0.15),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 400),
+                        curve: Curves.easeInOutCubicEmphasized,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            center: const Alignment(-0.2, -0.3),
+                            radius: 0.85,
+                            colors: [
+                              primaryColor,
+                              gradientDark,
+                              const Color(0xFF14171B),
+                            ],
+                            stops: const [0.0, 0.65, 1.0],
+                          ),
+                          border: Border.all(
+                            color: primaryColor.withValues(alpha: 0.7),
+                            width: 2.5,
+                          ),
                         ),
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const GoogleCalendarScreen(),
+                        child: Center(
+                          child: busy
+                              ? const SizedBox(
+                                  width: 48,
+                                  height: 48,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3.5,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.white,
+                                    ),
+                                  ),
+                                )
+                              : AnimatedRotation(
+                                  turns: enabled ? 0.0 : 0.5,
+                                  duration: const Duration(milliseconds: 450),
+                                  curve: Curves.easeInOutBack,
+                                  child: AnimatedScale(
+                                    scale: enabled ? 1.05 : 0.95,
+                                    duration: const Duration(milliseconds: 300),
+                                    curve: Curves.easeOutBack,
+                                    child: Icon(
+                                      Icons.power_settings_new_rounded,
+                                      size: 72,
+                                      color: Colors.white.withValues(
+                                        alpha: enabled ? 1.0 : 0.9,
+                                      ),
+                                      shadows: [
+                                        Shadow(
+                                          color: Colors.black.withValues(alpha: 0.6),
+                                          blurRadius: 12,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                         ),
                       ),
                     ),
-                    ListTile(
-                      leading: Icon(
-                        GoogleDriveService.instance.connected
-                            ? Icons.check_circle_outline
-                            : Icons.add_to_drive_outlined,
-                        color: GoogleDriveService.instance.connected
-                            ? AppTheme.green
-                            : AppTheme.primaryLight,
-                      ),
-                      title: const Text('Google Drive'),
-                      subtitle: Text(
-                        _connectionStatus(
-                          GoogleDriveService.instance.connected,
-                          GoogleDriveService.instance.needsReconnect,
-                          GoogleDriveService.instance.restoring,
-                          GoogleDriveService.instance.email,
+                  ),
+                ),
+
+                const SizedBox(height: 48),
+
+                // Animated Status Badge
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 350),
+                  curve: Curves.easeInOut,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: primaryColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: primaryColor.withValues(alpha: 0.35),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: primaryColor,
+                          boxShadow: [
+                            BoxShadow(
+                              color: primaryColor.withValues(alpha: 0.8),
+                              blurRadius: 6,
+                              spreadRadius: 1,
+                            ),
+                          ],
                         ),
                       ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const GoogleDriveScreen(),
+                      const SizedBox(width: 10),
+                      Text(
+                        busy
+                            ? 'UPDATING…'
+                            : (enabled ? 'JARVIS ONLINE' : 'STANDBY MODE'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.4,
+                          color: primaryColor,
                         ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 18),
+
+                // Dynamic Status Explanation
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: Text(
+                    busy
+                        ? 'Applying power change to phone background services…'
+                        : enabled
+                            ? 'Background monitoring, location awareness, and assistant features are active.'
+                            : 'Phone services, sensor tracking, and automations are paused.\nTap the button to power on.',
+                    key: ValueKey('$enabled-$busy'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.5,
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                ),
+
+                if (_power.error != null) ...[
+                  const SizedBox(height: 24),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: BrandColors.red.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(AppTheme.radius),
+                      border: Border.all(
+                        color: BrandColors.red.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline, color: BrandColors.red, size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _power.error!,
+                            style: const TextStyle(
+                              color: BrandColors.red,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 48),
+
+                const DatabaseBackupSettings(),
+                const SizedBox(height: 24),
+
+                // Bottom note indicating connected accounts icon
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.cloud_outlined,
+                      size: 14,
+                      color: AppTheme.textSecondary.withValues(alpha: 0.7),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Google Calendar & Drive accessible via top-right cloud icon',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.textSecondary.withValues(alpha: 0.7),
                       ),
                     ),
                   ],
                 ),
               ],
             ),
-            const SizedBox(height: 24),
-            _sectionLabel('Activity & location'),
-            _card(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.sensors, color: AppTheme.primary),
-                  title: const Text('Motion monitoring'),
-                  subtitle: const Text(
-                    'Compare detection timing and label activities',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const MotionMonitoringScreen(),
-                    ),
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(
-                    Icons.bedtime_outlined,
-                    color: AppTheme.primary,
-                  ),
-                  title: const Text('Sleep records'),
-                  subtitle: Text(
-                    _sleepAllowed
-                        ? 'Read access allowed · your sleep app or watch must share records with Health Connect'
-                        : 'Connect sleep data from Health Connect',
-                  ),
-                  trailing: Icon(
-                    _sleepAllowed
-                        ? Icons.check_circle_outline
-                        : Icons.chevron_right,
-                  ),
-                  onTap: () async {
-                    var allowed = false;
-                    try {
-                      allowed = await HealthService.instance.connectSleep();
-                    } catch (_) {}
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          allowed
-                              ? 'Sleep connected. Ask “How did I sleep last night?”'
-                              : 'Open Health Connect, allow Jarvis to read Sleep, and connect a sleep tracking app.',
-                        ),
-                      ),
-                    );
-                    _refresh();
-                  },
-                ),
-                ListTile(
-                  leading: Icon(
-                    Icons.location_on_outlined,
-                    color:
-                        _backgroundLocation == true && _locationEnabled == true
-                        ? AppTheme.green
-                        : AppTheme.amber,
-                  ),
-                  title: const Text('Background location'),
-                  subtitle: Text(
-                    _locationEnabled == false
-                        ? 'Phone location is off. Turn it on to record places during trips.'
-                        : _backgroundLocation == true
-                        ? 'Allowed · places are sampled during activity changes'
-                        : _backgroundLocation == false
-                        ? 'Missing · choose Permissions → Location → Allow all the time. Rides may have no places until enabled.'
-                        : 'Check Permissions → Location → Allow all the time',
-                  ),
-                  trailing: const Icon(Icons.open_in_new, size: 18),
-                  onTap: () async {
-                    try {
-                      await _channel.invokeMethod('openLocationSettings');
-                    } catch (_) {
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Open Android Settings → Apps → Jarvis → Permissions → Location.',
-                          ),
-                        ),
-                      );
-                    }
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            _sectionLabel('Screen time'),
-            _card(
-              children: [
-                ListTile(
-                  leading: const Icon(
-                    Icons.query_stats,
-                    color: AppTheme.primary,
-                  ),
-                  title: const Text('Usage Access'),
-                  subtitle: Text(
-                    _usageAllowed
-                        ? 'Connected · foreground time for your apps'
-                        : 'Allow Jarvis to read time spent in your apps',
-                  ),
-                  trailing: Icon(
-                    _usageAllowed
-                        ? Icons.check_circle_outline
-                        : Icons.chevron_right,
-                  ),
-                  onTap: () => UsageService.channel.invokeMethod('openAccess'),
-                ),
-                const Divider(height: 1, color: AppTheme.border),
-                SwitchListTile(
-                  title: const Text('Daily report at 11 PM'),
-                  subtitle: const Text(
-                    'Midnight–11 PM · notification with an app breakdown',
-                  ),
-                  value: _usageDaily,
-                  onChanged: (enabled) async {
-                    await UsageService.channel.invokeMethod(
-                      'setEnabled',
-                      enabled,
-                    );
-                    if (mounted) setState(() => _usageDaily = enabled);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.schedule, color: AppTheme.primary),
-                  title: const Text('Alarms & reminders'),
-                  subtitle: Text(
-                    _exactAlarms
-                        ? 'Precise timing allowed · synced time alarms work offline'
-                        : 'Allow precise timing; otherwise Android may deliver late',
-                  ),
-                  trailing: Icon(
-                    _exactAlarms
-                        ? Icons.check_circle_outline
-                        : Icons.chevron_right,
-                  ),
-                  onTap: () =>
-                      UsageService.channel.invokeMethod('openExactAlarm'),
-                ),
-                ListTile(
-                  leading: const Icon(
-                    Icons.call_outlined,
-                    color: AppTheme.primary,
-                  ),
-                  title: const Text('Full-screen alarms & calls'),
-                  subtitle: Text(
-                    _fullScreenAlerts
-                        ? 'Allowed · in-app reminder calls are free'
-                        : 'Allow Jarvis to show ringing reminders over the lock screen',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _channel.invokeMethod('openFullScreenAlerts'),
-                ),
-                ListTile(
-                  title: const Text('View today’s screen time'),
-                  subtitle: const Text(
-                    'You can also ask “Instagram usage today” in chat',
-                  ),
-                  onTap: () async {
-                    final text = await UsageService.answer('screen time today');
-                    if (!context.mounted) return;
-                    showDialog(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Today’s app usage'),
-                        content: SingleChildScrollView(
-                          child: SelectableText(text),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text('Close'),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            _sectionLabel('Sync & backup'),
-            _card(
-              children: [
-                ListTile(
-                  leading: Icon(
-                    _connected
-                        ? Icons.cloud_done_outlined
-                        : Icons.cloud_off_outlined,
-                    color: _connected ? AppTheme.green : AppTheme.amber,
-                  ),
-                  title: const Text('Cloud connection'),
-                  subtitle: Text(
-                    _checking
-                        ? 'Checking…'
-                        : _connected
-                        ? 'Connected to Jarvis'
-                        : 'Offline — saved changes will retry',
-                  ),
-                ),
-                const Divider(height: 1, color: AppTheme.border),
-                ListTile(
-                  leading: const Icon(Icons.sync, color: AppTheme.primary),
-                  title: const Text('Sync now'),
-                  subtitle: const Text('Update reminders, notes and chats'),
-                  trailing: _syncing
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.chevron_right),
-                  onTap: _syncing ? null : _syncNow,
-                ),
-              ],
-            ),
-            const SizedBox(height: 28),
-            _sectionLabel('Alerts'),
-            _card(
-              children: [
-                ListTile(
-                  leading: const Icon(
-                    Icons.notifications_outlined,
-                    color: AppTheme.primary,
-                  ),
-                  title: const Text('Reminder notifications'),
-                  subtitle: Text(
-                    _notificationsEnabled == null
-                        ? 'Manage phone alert settings'
-                        : _notificationsEnabled!
-                        ? 'On · manage sounds and delivery'
-                        : 'Off · reminders may be missed',
-                  ),
-                  trailing: const Icon(Icons.open_in_new, size: 18),
-                  onTap: _openNotificationSettings,
-                ),
-              ],
-            ),
-            const SizedBox(height: 28),
-            _sectionLabel('On this phone'),
-            _card(
-              children: [
-                ListTile(
-                  leading: const Icon(
-                    Icons.offline_pin_outlined,
-                    color: AppTheme.primary,
-                  ),
-                  title: const Text('Saved Activity days'),
-                  subtitle: Text(
-                    '$_cachedDays ${_cachedDays == 1 ? 'day' : 'days'} available offline',
-                  ),
-                  trailing: TextButton(
-                    onPressed: _cachedDays == 0 ? null : _clearActivityCache,
-                    child: const Text('Clear'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8),
-              child: Text(
-                'Activity history contains sampled observations. Missing periods cannot be reconstructed.',
-                style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
-
-  String get _accountSummary {
-    final drive = GoogleDriveService.instance;
-    final calendar = GoogleCalendarService.instance;
-    if (drive.restoring || calendar.restoring) {
-      return 'Checking saved Google access…';
-    }
-    if (drive.needsReconnect || calendar.needsReconnect) {
-      return 'Google access needs attention';
-    }
-    if (drive.connected && calendar.connected) {
-      return drive.email == calendar.email
-          ? '${drive.email}\nDrive and Calendar connected'
-          : 'Drive and Calendar connected · 2 accounts';
-    }
-    if (drive.connected) return '${drive.email}\nDrive connected';
-    if (calendar.connected) return '${calendar.email}\nCalendar connected';
-    return 'Manage Google Drive and Calendar';
-  }
-
-  String _connectionStatus(
-    bool connected,
-    bool needsReconnect,
-    bool restoring,
-    String email,
-  ) {
-    if (restoring) return 'Checking saved access…';
-    if (connected) return 'Connected · $email';
-    return needsReconnect ? 'Reconnect to renew access' : 'Not connected';
-  }
-
-  Widget _sectionLabel(String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(8, 0, 8, 10),
-    child: Text(
-      text,
-      style: const TextStyle(
-        color: AppTheme.textSecondary,
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-      ),
-    ),
-  );
-
-  Widget _card({required List<Widget> children}) => Material(
-    color: AppTheme.surface,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(AppTheme.radius),
-      side: const BorderSide(color: AppTheme.border),
-    ),
-    clipBehavior: Clip.antiAlias,
-    child: Column(children: children),
-  );
 }
+

@@ -92,7 +92,8 @@ object UsageReporting {
         val alarms = c.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         alarms.cancel(alarmIntent(c))
         WorkManager.getInstance(c).cancelUniqueWork("jarvis_usage_backup")
-        if (!enabled(c)) return
+        if (JarvisPower.enabled(c)) UsageHistory.schedule(c)
+        if (!JarvisPower.enabled(c) || !enabled(c)) return
         val now = ZonedDateTime.now(zone)
         val missed = prefs(c).getLong("scheduled_at", 0)
         if (missed > 0 && missed <= now.toInstant().toEpochMilli() && now.toInstant().toEpochMilli() - missed < 86400000L) {
@@ -115,6 +116,7 @@ object UsageReporting {
         WorkManager.getInstance(c).enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE, work)
     }
     @Synchronized fun deliver(c: Context, day: String): Boolean {
+        if (!JarvisPower.enabled(c)) return true
         if (!enabled(c) || prefs(c).getBoolean("sent:$day", false)) return true
         if (!allowed(c)) return true
         val report = read(c, LocalDate.parse(day), true)
@@ -139,6 +141,12 @@ object UsageReporting {
         prefs(c).all.keys.filter { (it.startsWith("report:") || it.startsWith("sent:")) && it.substringAfter(':') < oldest }.forEach { editor.remove(it) }
         editor.apply()
         return true
+    }
+    fun pause(c: Context) {
+        (c.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(alarmIntent(c))
+        WorkManager.getInstance(c).cancelUniqueWork("jarvis_usage_backup")
+        WorkManager.getInstance(c).cancelUniqueWork("jarvis_usage_catchup")
+        WorkManager.getInstance(c).cancelUniqueWork("jarvis_usage_history")
     }
 }
 

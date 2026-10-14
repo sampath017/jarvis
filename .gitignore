@@ -34,7 +34,16 @@ ENV/
 .env.*
 *.env.yaml
 *.env.json
-google-services.json
+client_secret*.json
+service-account*.json
+credentials*.json
+token.json
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+!backend/.env.example
 
 # IDE / Editor
 .vscode/
@@ -61,12 +70,19 @@ coverage.xml
 .kotlin/
 tmp/
 temp/
+# Local coding-session archive, including its catalog and organizer.
+/tests/coding_agent_artifacts/
 
 # mypy
 .mypy_cache/
 
 # Project specific
 eval_output/
+# Model downloads stay local; keep only the directory's usage guide in Git.
+/backend/models/huggingface/
+/models/*
+!/backend/models/README.md
+!/models/README.md
 
 # OS files
 Thumbs.db
@@ -75,3 +91,6 @@ Thumbs.db
 data/
 logs/
 maps/
+
+# Local dependency resolver cache
+/backend/.uv-cache/

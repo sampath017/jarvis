@@ -1,7 +1,7 @@
 """
 FR-11: Allow-Listed Function Registry with Schema Validation
 
-Defines all permitted backend functions that Tier 2 may invoke.
+Defines all permitted backend functions that LLM may invoke.
 Validates function calls against JSON schemas before execution.
 The LLM never accesses the database directly — only through this interface.
 """
@@ -209,7 +209,7 @@ class FunctionRegistry:
     """
     Validates and executes allow-listed function calls.
 
-    All function calls from Tier 2 must pass through this registry.
+    All function calls from LLM must pass through this registry.
     Unauthorized or malformed calls are rejected with audit trail.
     """
 
@@ -289,8 +289,8 @@ class FunctionRegistry:
             if operation == CRUDOperation.CREATE:
                 record = self._crud.create(entity, call.arguments)
                 try:
-                    from ..services.firestore_service import FirestoreService
-                    fs = FirestoreService()
+                    from ..services.record_store import RecordStore
+                    fs = RecordStore()
                     if entity == CRUDEntity.REMINDER:
                         fs.save_reminder(record.get("id", ""), record)
                     elif entity == CRUDEntity.NOTE:
@@ -312,8 +312,8 @@ class FunctionRegistry:
                 record = self._crud.update(entity, record_id, update_data)
                 if record:
                     try:
-                        from ..services.firestore_service import FirestoreService
-                        fs = FirestoreService()
+                        from ..services.record_store import RecordStore
+                        fs = RecordStore()
                         if entity == CRUDEntity.REMINDER:
                             fs.save_reminder(record.get("id", ""), record)
                         elif entity == CRUDEntity.NOTE:
@@ -328,8 +328,8 @@ class FunctionRegistry:
                 deleted = self._crud.delete(entity, record_id)
                 if deleted:
                     try:
-                        from ..services.firestore_service import FirestoreService
-                        fs = FirestoreService()
+                        from ..services.record_store import RecordStore
+                        fs = RecordStore()
                         if entity == CRUDEntity.REMINDER:
                             fs.delete_reminder(record_id)
                         elif entity == CRUDEntity.NOTE:
@@ -350,7 +350,7 @@ class FunctionRegistry:
             return {"success": False, "error": str(e)}
 
     def get_function_specs(self) -> dict[str, dict[str, Any]]:
-        """Return the full function spec registry (for Tier 2 prompt construction)."""
+        """Return the full function spec registry (for LLM prompt construction)."""
         return ALLOWED_FUNCTIONS.copy()
 
     def is_allowed(self, function_name: str) -> bool:

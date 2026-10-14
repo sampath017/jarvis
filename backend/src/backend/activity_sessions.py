@@ -70,6 +70,12 @@ def _moments(records):
     ordered.sort(key=lambda pair: (pair[0], pair[1].get("transition") != "EXIT", str(pair[1].get("event_id", ""))))
     anchors, moments, active = {}, [], {}
     for at, record in ordered:
+        if record.get('event_type') == 'JARVIS_OFF_INTERVAL':
+            for prior in active.values():
+                prior['end_at'] = prior['last_observed_at']
+                prior['end_evidence'] = 'monitoring_powered_off'
+            active.clear()
+            continue
         if record.get('activity_evidence') == 'user_reported':
             try:
                 reported_end = utc_time(record['reported_end_at'])

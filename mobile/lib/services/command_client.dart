@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'power_http.dart' as http;
+import 'power_state.dart';
 
 class CommandProgress {
   const CommandProgress({
@@ -47,7 +48,7 @@ Stream<Map<String, dynamic>> decodeCommandEvents(
 
 class CommandClient {
   CommandClient({http.Client Function()? clientFactory})
-    : _clientFactory = clientFactory ?? http.Client.new;
+    : _clientFactory = clientFactory ?? http.powerClient;
   final http.Client Function() _clientFactory;
 
   Future<Map<String, dynamic>> send({
@@ -63,6 +64,9 @@ class CommandClient {
     final body = jsonEncode(payload); // Immutable across every reconnect.
     final requestId = payload['request_id'].toString();
     while (watch.elapsed < const Duration(minutes: 15)) {
+      if (!PowerState.enabled.value) {
+        return {'status': 'error', 'error': 'Jarvis is powered off.'};
+      }
       final client = _clientFactory();
       try {
         final request =
@@ -76,6 +80,12 @@ class CommandClient {
           final raw = await response.stream.bytesToString().timeout(
             const Duration(seconds: 15),
           );
+          if (response.statusCode == 503 && raw.contains('"power_off":true')) {
+            return {
+              'status': 'error',
+              'error': 'Jarvis is powered off. Turn it on in Settings.',
+            };
+          }
           if (response.statusCode >= 500) {
             throw http.ClientException('Service temporarily unavailable');
           }
@@ -106,6 +116,7 @@ class CommandClient {
         )) {
           failures = 0;
           final data = Map<String, dynamic>.from(frame['data'] as Map);
+          await http.acceptMobileChanges(data);
           if (frame['event'] == 'result') return data;
           if (frame['event'] == 'progress') {
             latest = CommandProgress.fromJson(data);
@@ -118,7 +129,9 @@ class CommandClient {
         throw http.ClientException(
           'Connection ended before the response arrived',
         );
-      } catch (_) {
+      } catch (error) {
+        if (error is http.MobileSaveException)
+          return {'status': 'error', 'error': error.message};
         failures++;
         onProgress?.call(
           CommandProgress(
@@ -131,6 +144,9 @@ class CommandClient {
         client.close();
       }
       // Fetch a saved result before reopening the same request. Never use a new ID.
+      if (!PowerState.enabled.value) {
+        return {'status': 'error', 'error': 'Jarvis is powered off.'};
+      }
       final recovery = _clientFactory();
       try {
         final response = await recovery
@@ -144,7 +160,11 @@ class CommandClient {
         if (response.statusCode == 200) {
           final snapshot = jsonDecode(response.body) as Map<String, dynamic>;
           if (snapshot['response'] is Map) {
-            return Map<String, dynamic>.from(snapshot['response'] as Map);
+            final result = Map<String, dynamic>.from(
+              snapshot['response'] as Map,
+            );
+            await http.acceptMobileChanges(result);
+            return result;
           }
           latest = CommandProgress.fromJson(snapshot);
           onProgress?.call(latest);
@@ -154,8 +174,16 @@ class CommandClient {
             );
           }
           failures = 0;
+        } else if (response.statusCode == 404) {
+          return {
+            'status': 'error',
+            'error':
+                'The processing session ended. Check local changes before sending a new request.',
+          };
         }
-      } catch (_) {
+      } catch (error) {
+        if (error is http.MobileSaveException)
+          return {'status': 'error', 'error': error.message};
         // Keep the accepted request's identity even when the network is unavailable.
       } finally {
         recovery.close();

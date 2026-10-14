@@ -24,6 +24,11 @@ def qualified_records(records):
         kind = record.get('event_type')
         activity = record.get('activity', 'UNKNOWN')
         evidence = record.get('activity_evidence')
+        if kind == 'JARVIS_OFF_INTERVAL':
+            current = None  # A later EXIT cannot pair through disabled monitoring.
+            record.update(activity='UNKNOWN', activity_evidence='power_state')
+            result.append(record)
+            continue
         try:
             at = utc_time(record['timestamp'])
         except (KeyError, TypeError, ValueError):

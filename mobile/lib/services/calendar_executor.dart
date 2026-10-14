@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'power_http.dart' as http;
 
 typedef CalendarApproval = Future<bool> Function(Map<String, dynamic> preview);
 

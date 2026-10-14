@@ -4,7 +4,7 @@ from uuid import uuid4
 import time
 
 from .push_notifications import PushNotifications
-from .firestore_service import FirestoreService
+from .record_store import RecordStore
 
 
 def dispatch_device_action(uid, action, fallback, check):
@@ -21,33 +21,30 @@ def dispatch_device_action(uid, action, fallback, check):
 
 class DeviceContext:
     def __init__(self):
-        self.fs = FirestoreService()
+        self.fs = RecordStore()
 
     def request(self, uid):
         now = datetime.now(timezone.utc)
         request_id = str(uuid4())
         record = {'request_id': request_id, 'status': 'PENDING', 'created_at': now.isoformat(),
                   'expires_at': (now + timedelta(minutes=2)).isoformat()}
-        self.fs._user_collection(uid, 'context_requests').document(request_id).set(record)
+        self.fs.sql.put('context_requests', request_id, record, uid=uid)
         count = PushNotifications().wake_context(uid, request_id, record['expires_at'])
         if not count:
             record['status'] = 'UNAVAILABLE'
-            self.fs._user_collection(uid, 'context_requests').document(request_id).update({'status': 'UNAVAILABLE'})
+            self.fs.sql.put('context_requests', request_id, {'status': 'UNAVAILABLE'}, uid=uid)
         return {**record, 'devices_notified': count}
 
     def status(self, uid, request_id):
-        record = self.fs._user_collection(uid, 'context_requests').document(request_id).get()
-        return record.to_dict() if record.exists else None
+        return self.fs.sql.get('context_requests', request_id, uid=uid)
 
     def receive(self, uid, event):
         request_id = event.get('context_request_id')
         if not request_id:
             return
-        ref = self.fs._user_collection(uid, 'context_requests').document(request_id)
-        snapshot = ref.get()
-        if not snapshot.exists:
+        request = self.fs.sql.get('context_requests', request_id, uid=uid)
+        if not request:
             return
-        request = snapshot.to_dict()
         now = datetime.now(timezone.utc)
         if now > datetime.fromisoformat(request['expires_at']):
             return
@@ -57,8 +54,9 @@ class DeviceContext:
             observed = datetime.fromisoformat(str(gps.get('timestamp', '')).replace('Z', '+00:00'))
             if not 0 <= (now - observed).total_seconds() <= 120:
                 gps = None
-        ref.update({'status': 'COMPLETED', 'received_at': now.isoformat(), 'gps': gps,
-                    'location_status': event.get('location_status'), 'event_id': event.get('event_id')})
+        self.fs.sql.put('context_requests', request_id,
+                        {'status': 'COMPLETED', 'received_at': now.isoformat(), 'gps': gps,
+                         'location_status': event.get('location_status'), 'event_id': event.get('event_id')}, uid=uid)
 
     def request_and_wait(self, uid, timeout=25, check=lambda: None):
         request = self.request(uid)

@@ -1,4 +1,4 @@
-/// Bounded recall of earlier answers, backed by the existing saved chat history.
+/// Full current-chat history and separately bounded recall from saved answers.
 class ConversationMemory {
   static final _separator = RegExp(r'[^\p{L}\p{M}\p{N}]+', unicode: true);
   static const _ignored = {
@@ -76,25 +76,32 @@ class ConversationMemory {
     return words.toList();
   }
 
-  static List<Map<String, dynamic>> recent(
+  static List<Map<String, dynamic>> fullHistory(
     Iterable<Map<String, dynamic>> history,
   ) {
     final selected = <Map<String, dynamic>>[];
-    var remaining = 16000;
-    for (final message in history.toList().reversed) {
+    for (final message in history) {
       final content = message['content'];
       if (content is! String ||
           content.trim().isEmpty ||
           !['user', 'assistant'].contains(message['role']) ||
-          '${message['id'] ?? ''}'.startsWith('err_') ||
           content.startsWith('Added to Jarvis Upload Cache:')) {
         continue;
       }
-      if (content.length > remaining || selected.length == 24) break;
-      selected.add({'role': message['role'], 'content': content});
-      remaining -= content.length;
+      final rawTime = message['timestamp']?.toString() ?? '';
+      final timestamp = RegExp(r'(Z|[+-]\d{2}:\d{2})$').hasMatch(rawTime)
+          ? DateTime.tryParse(rawTime)?.toUtc()
+          : null;
+      selected.add({
+        'role': message['role'],
+        'content': content,
+        if (message['is_error'] == true ||
+            '${message['id'] ?? ''}'.startsWith('err_'))
+          'is_error': true,
+        if (timestamp != null) 'timestamp': timestamp.toIso8601String(),
+      });
     }
-    return selected.reversed.toList();
+    return selected;
   }
 
   static List<Map<String, dynamic>> select(

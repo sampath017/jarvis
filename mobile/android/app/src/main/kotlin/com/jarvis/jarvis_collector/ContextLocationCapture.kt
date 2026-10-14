@@ -31,6 +31,7 @@ object ContextLocationCapture {
     }.getOrNull()
 
     fun capture(context: Context, events: List<JSONObject>, durationMs: Long): List<JSONObject> {
+        if (!JarvisPower.enabled(context)) return events
         if (events.isEmpty()) return events
         // Wi-Fi and existing connections provide context without waiting for a
         // Bluetooth scan that this phone's background policy repeatedly denies.
@@ -58,14 +59,22 @@ object ContextLocationCapture {
         ) return events.onEach { it.put("location_status", "location_permission_required") }
 
         val history = TelemetryHistory.get(context)
+        val fallbacks = mutableMapOf<String, JSONObject>()
         val remaining = events.filter { event ->
             if (event.has("location") && !event.isNull("location")) false
             else {
                 val historical = history.nearest(context, event)
-                if (historical != null) {
+                val eventAt = occurred(event)
+                val historicalAt = historical?.optString("timestamp")?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+                val preferFresh = eventAt != null && historicalAt != null && LocationEvidence.preferFresh(
+                    event.optString("activity"), event.optString("event_type"), System.currentTimeMillis()-eventAt, abs(historicalAt-eventAt))
+                if (historical != null && !preferFresh) {
                     event.put("location", historical).put("location_status", "historical_event_fix")
                     false
-                } else true
+                } else {
+                    if (historical != null) fallbacks[event.getString("event_id")] = historical
+                    true
+                }
             }
         }
         if (remaining.isEmpty()) return events
@@ -75,6 +84,7 @@ object ContextLocationCapture {
         val now = System.currentTimeMillis()
         if (remaining.any { occurred(it)?.let { at -> abs(now - at) <= MAX_AGE_MS } == true }) {
             val cancellation = CancellationTokenSource()
+            JarvisPower.trackLocation(context, cancellation)
             try {
                 val request = CurrentLocationRequest.Builder()
                     .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
@@ -86,14 +96,22 @@ object ContextLocationCapture {
             } catch (error: Exception) {
                 Log.d("JarvisLocation", "Fresh fix unavailable: ${error.message}")
             } finally {
-                cancellation.cancel()
+                JarvisPower.releaseLocation(cancellation)
             }
         }
         // A recent system fix is a fallback only; always try a new fix first.
+        if (!JarvisPower.enabled(context)) return events
         if (location == null || !location.hasAccuracy() || location.accuracy > 250f) {
             location = runCatching { Tasks.await(client.lastLocation, 1, TimeUnit.SECONDS) }.getOrNull()
         }
-        val fix = location ?: run { remaining.forEach { it.put("location_status", "fix_unavailable") }; return events }
+        val fix = location ?: run {
+            remaining.forEach { event ->
+                val saved = fallbacks[event.optString("event_id")]
+                if (saved != null) event.put("location", saved).put("location_status", "historical_event_fix")
+                else event.put("location_status", "fix_unavailable")
+            }
+            return events
+        }
         if (!fix.hasAccuracy() || fix.accuracy > 250f) { remaining.forEach { it.put("location_status", "low_accuracy") }; return events }
         history.remember(context, fix)
         for (event in remaining) {

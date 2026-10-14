@@ -1,13 +1,30 @@
 # AI spending allowance
 
-Production uses one **Rs 50/day AI allowance** (raised from Rs 20 on 2026-10-11), reset at midnight IST. There is no daily token or model-call ceiling. The per-minute guard remains 15 requests/minute. Local testing retains finite token/call guardrails but uses the same spending allowance.
+The source production allowance is **USD 0.50 per day**, reset at midnight
+Asia/Kolkata. `backend/src/settings.py` defines the amount. Production has a
+15-command-per-minute guard and no additional daily model-call or token ceiling;
+local regression profiles have finite call/token limits. HTTP request middleware
+has its own rate and payload limits.
 
-OpenRouter bills USD. Jarvis currently budgets at Rs 96.544/USD (verified 2026-10-06), so its daily provider-usage allowance is **approximately USD 0.51790**. This conversion is explicit in health metadata; payment fees, taxes, Cloud Run, Firebase, and Maps are outside this AI allowance.
+In mobile mode the phone owns durable usage accounting. A command supplies the
+current day's saved allowance state. The API reserves estimated input and maximum
+output cost before a model call, then settles against provider-reported usage and
+cost. The response carries an operation receipt; Android applies only the
+nonnegative difference from the previous receipt, preventing retries from counting
+the same usage twice. Reservations and settlement stay scoped to that operation.
 
-Cloud Run uses transactional Firestore ledgers at `users/{uid}/ai_usage/{IST-date}`, shared across instances and deployments. It reserves estimated input and maximum output cost before each model call, then settles using OpenRouter's reported `usage.cost`. Cached and reasoning usage is included in provider-reported cost. Settlement is idempotent and uses the call's starting day even if completion crosses midnight. Storage errors return 503; they never silently reset usage.
+Transport uncertainty retains a reservation rather than silently replaying a paid
+call. A known context-window rejection can release an unused reservation. Model
+pricing comes from the source pricing table, configured overrides, or the provider
+catalog/fallback policy in `backend/src/api/spend_policy.py`; source prices are not
+a statement of current market rates. `provider.max_price` bounds provider routing.
 
-Unknown transport outcomes retain their reservation until the next day. Missing billing data keeps at least the reserved cost. Model prices are bounded with OpenRouter `provider.max_price`: GLM 5.3 Flash USD 0.15 input / 0.50 output per million; Gemini 3.8 Flash USD 0.75 / 3.75. Unknown models fail closed until their pricing policy is added. No change to reasoning effort or generation allowance.
+This allowance covers the application's configured model usage. It is not a
+project-wide billing cap across simultaneous operations, replicas, resets or
+reinstalls. Embedding compute, Chroma, Maps, builds and Cloud Run have their own
+service costs. Input estimates and provider bills can differ, so a reservation is
+not an exact price quote.
 
-Preflight token estimates, especially native file input, are not exact quotes. A single request can cost more than its estimate. The user explicitly chose backend-only enforcement; OpenRouter account key limits stay unchanged. The backend stops new model calls when spent plus reserved cost would exceed the allowance, but a provider charge above an estimated input reservation can overshoot by one in-flight call. Bank charges and exchange-rate changes are not included in this fixed-conversion allowance. Previously process-only usage is not automatically migrated into the ledger.
-
-On 2026-10-06, the old 150,000-token guard rejected requests with 131,361 tokens used because estimated input plus 16,384 maximum output did not fit. A later Cloud Run instance started at zero, allowing more prompts. New errors identify remaining rupees, the requested reservation, the exact reset date, and distinguish app allowance, provider credits, and device location failures.
+Sources: `backend/src/api/rate_limiter.py`, `backend/src/api/spend_policy.py`,
+`backend/src/budget_profiles.py`, `backend/src/services/mobile_scope.py`, and
+`mobile/lib/services/mobile_store.dart`.

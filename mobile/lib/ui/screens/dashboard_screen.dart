@@ -96,7 +96,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => AgentScreen(sensorService: widget.sensorService),
+                  builder: (_) =>
+                      AgentScreen(sensorService: widget.sensorService),
                 ),
               );
             },
@@ -107,9 +108,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const SessionsScreen(),
-                ),
+                MaterialPageRoute(builder: (_) => const SessionsScreen()),
               );
             },
           ),
@@ -151,9 +150,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 12),
 
               // ── BRD STAGE 3 VIBRATION & FEATURE EXTRACTION ───────────────────
-              FeatureCards(
-                features: _service.latestFeature,
-              ),
+              FeatureCards(features: _service.latestFeature),
 
               const SizedBox(height: 16),
             ],
@@ -171,7 +168,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required VoidCallback onPressed,
   }) {
     final bgColor = isRecording ? AppTheme.red : AppTheme.cyan;
-    final fgColor = isRecording ? Colors.white : Colors.black;
+    final fgColor = isRecording ? AppTheme.textPrimary : AppTheme.background;
 
     return Container(
       decoration: BoxDecoration(
@@ -263,9 +260,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         onTap: () {
           Navigator.push(
             context,
-            MaterialPageRoute(
-              builder: (_) => const SessionsScreen(),
-            ),
+            MaterialPageRoute(builder: (_) => const SessionsScreen()),
           );
         },
         child: Container(
@@ -314,8 +309,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: AppTheme.surfaceBright,
                   borderRadius: BorderRadius.circular(6),
@@ -398,8 +392,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: AppTheme.surfaceBright,
                   borderRadius: BorderRadius.circular(6),
@@ -424,7 +417,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildTripwireStatusCard() {
     final tripwireActive = _service.isTripwireActive;
-    final lastTransition = _service.lastActivityTransition ?? 'DORMANT (Awaiting Vehicle Motion)';
+    final lastTransition =
+        _service.lastActivityTransition ?? 'DORMANT (Awaiting Vehicle Motion)';
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -441,7 +435,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               Row(
                 children: [
-                  Icon(Icons.sensors, color: tripwireActive ? AppTheme.green : AppTheme.textSecondary, size: 18),
+                  Icon(
+                    Icons.sensors,
+                    color: tripwireActive
+                        ? AppTheme.green
+                        : AppTheme.textSecondary,
+                    size: 18,
+                  ),
                   const SizedBox(width: 8),
                   const Text(
                     'STAGE 1: GAR TRIPWIRE',
@@ -575,10 +575,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   label: 'DISTANCE',
                   value: isRecording
                       ? (_service.sessionDistanceMeters < 1000
-                          ? '${_service.sessionDistanceMeters.toStringAsFixed(0)} m'
-                          : '${(_service.sessionDistanceMeters / 1000).toStringAsFixed(2)} km')
+                            ? '${_service.sessionDistanceMeters.toStringAsFixed(0)} m'
+                            : '${(_service.sessionDistanceMeters / 1000).toStringAsFixed(2)} km')
                       : '--',
-                  highlight: isRecording && _service.sessionDistanceMeters > 5.0,
+                  highlight:
+                      isRecording && _service.sessionDistanceMeters > 5.0,
                 ),
               ),
               const SizedBox(width: 6),
@@ -621,7 +622,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Icon(
                           Icons.circle,
                           size: 7,
-                          color: isRecording ? AppTheme.cyan : AppTheme.textSecondary,
+                          color: isRecording
+                              ? AppTheme.cyan
+                              : AppTheme.textSecondary,
                         ),
                         const SizedBox(width: 5),
                         const Text(
@@ -640,7 +643,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ? '50Hz Raw CSV + 1m GNSS'
                           : 'Dormant (Off when idle)',
                       style: TextStyle(
-                        color: isRecording ? AppTheme.cyan : AppTheme.textSecondary,
+                        color: isRecording
+                            ? AppTheme.cyan
+                            : AppTheme.textSecondary,
                         fontSize: 9,
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w600,
@@ -657,7 +662,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Icon(
                           Icons.circle,
                           size: 7,
-                          color: isRecording ? AppTheme.green : AppTheme.textSecondary,
+                          color: isRecording
+                              ? AppTheme.green
+                              : AppTheme.textSecondary,
                         ),
                         const SizedBox(width: 5),
                         const Text(
@@ -676,7 +683,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ? 'Edge FFT + Trajectory JSON'
                           : 'Dormant (Extract on record)',
                       style: TextStyle(
-                        color: isRecording ? AppTheme.green : AppTheme.textSecondary,
+                        color: isRecording
+                            ? AppTheme.green
+                            : AppTheme.textSecondary,
                         fontSize: 9,
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w600,

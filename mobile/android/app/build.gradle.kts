@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("com.google.gms.google-services")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -9,6 +8,13 @@ android {
     namespace = "com.jarvis.jarvis_collector"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+
+    sourceSets.getByName("test").java.setSrcDirs(
+        listOf(rootProject.file("../../tests/android/kotlin"))
+    )
+    sourceSets.getByName("androidTest").java.setSrcDirs(
+        listOf(rootProject.file("../../tests/android/instrumentation"))
+    )
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -24,6 +30,8 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        testInstrumentationRunner =
+            "com.jarvis.jarvis_collector.MobileRecordsOpenInstrumentation"
     }
 
     buildTypes {
@@ -43,8 +51,6 @@ kotlin {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
-    implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
-    implementation("com.google.firebase:firebase-messaging")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.google.android.gms:play-services-auth:22.0.0")
     implementation("androidx.work:work-runtime-ktx:2.12.0")

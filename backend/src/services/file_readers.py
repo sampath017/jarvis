@@ -69,25 +69,11 @@ def stream(raw):
 
 @contextmanager
 def materialize(source, suffix=''):
-    # Large archive members use private storage instead of filling container RAM.
-    if os.getenv('INDEX_STAGING_BUCKET') and Path('/sources').is_dir():
-        from google.cloud import storage
-        from uuid import uuid4
-        name = 'reader-temp/' + uuid4().hex
-        blob = storage.Client().bucket(os.environ['INDEX_STAGING_BUCKET']).blob(name)
-        try:
-            with blob.open('wb', chunk_size=8 * 1024 * 1024, ignore_flush=True) as target:
-                shutil.copyfileobj(source, target, length=1024 * 1024)
-            yield Path('/sources') / name
-        finally:
-            if blob.exists():
-                blob.delete()
-    else:
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / ('source' + suffix)
-            with target.open('wb') as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
-            yield target
+    with tempfile.TemporaryDirectory() as folder:
+        target = Path(folder) / ('source' + suffix)
+        with target.open('wb') as output:
+            shutil.copyfileobj(source, output, length=1024 * 1024)
+        yield target
 
 
 def xml_paragraphs(source):

@@ -1,8 +1,8 @@
 """
-Conflict Resolution & Tier 1 Invocation Logic
+Conflict detection for optional context assessment
 
 Determines whether the deterministic context is clear or ambiguous,
-and decides when to invoke the Tier 1 reasoner.
+and decides when to invoke the shared agent runtime.
 """
 
 from __future__ import annotations
@@ -12,17 +12,16 @@ from ..models.enums import ActivityType, VehicleClass
 from ..models.schemas import (
     ContextPacket,
     SessionState,
-    Tier1Request,
 )
 
 
 class ContextResolver:
     """
     Evaluates context packets for conflicts and ambiguity.
-    Invokes Tier 1 only when deterministic resolution is insufficient.
+    Requests an assessment only when deterministic resolution is insufficient.
     """
 
-    def needs_tier1(self, packet: ContextPacket, session: SessionState | None) -> bool:
+    def needs_context_assessment(self, packet: ContextPacket, session: SessionState | None) -> bool:
         """Check if this context packet has unresolvable ambiguity."""
         reasons = self.detect_conflicts(packet, session)
         return len(reasons) > 0
@@ -44,7 +43,7 @@ class ContextResolver:
         self, packet: ContextPacket, session: SessionState | None,
     ) -> list[str]:
         """
-        Detect all conflict conditions that warrant Tier 1 invocation.
+        Detect all conflict conditions that warrant context assessment.
 
         Triggers:
         - GPS accuracy is poor or drifting
@@ -69,7 +68,7 @@ class ContextResolver:
 
         # 2. An IN_VEHICLE transition with a burst that is not a verified
         # vehicle is ambiguous. NOT_VEHICLE is a definitive negative result,
-        # so it bypasses Tier 1 and cannot create a session.
+        # so it bypasses model assessment and cannot create a session.
         if (
             activity == ActivityType.IN_VEHICLE.value
             and packet.feature_summary is not None
@@ -117,19 +116,3 @@ class ContextResolver:
             )
 
         return conflicts
-
-    def build_tier1_request(
-        self,
-        packet: ContextPacket,
-        session: SessionState | None,
-        conflicts: list[str],
-    ) -> Tier1Request:
-        """Package a Tier 1 request from the context packet and detected conflicts."""
-        return Tier1Request(
-            event_id=packet.event_id,
-            context_packet=packet,
-            session=session,
-            conflict_reason="; ".join(conflicts),
-            classification_confidence=packet.classification_confidence,
-            gps_accuracy_m=packet.gps.accuracy_m if packet.gps else 0.0,
-        )

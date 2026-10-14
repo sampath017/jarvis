@@ -1,5 +1,6 @@
 """Evaluate category reminders against the user's observed journey, without an LLM loop."""
 import json
+import math
 from datetime import datetime, timezone
 from .session_manager import _haversine_m
 from ..services.places_client import PlacesClient
@@ -19,37 +20,75 @@ class DynamicReminders:
 
     def _state(self, uid, rid):
         if self.cloud:
-            return self.cloud._user_collection(uid, 'dynamic_reminder_state').document(rid).get().to_dict() or {}
+            return self.cloud.sql.get('dynamic_reminder_state', rid, uid=uid) or {}
         with self.db._conn() as conn:
             row = conn.execute('SELECT payload FROM dynamic_reminder_state WHERE uid=? AND reminder_id=?', (uid, rid)).fetchone()
         return json.loads(row['payload']) if row else {}
 
     def _save(self, uid, rid, state):
         if self.cloud:
-            self.cloud._user_collection(uid, 'dynamic_reminder_state').document(rid).set(state)
+            self.cloud.sql.put('dynamic_reminder_state', rid, state, uid=uid, merge=False)
         else:
             with self.db._conn() as conn:
                 conn.execute('INSERT OR REPLACE INTO dynamic_reminder_state VALUES (?,?,?)', (uid, rid, json.dumps(state)))
 
     def match(self, uid, reminder, event, now):
         policy = policy_dict(reminder.get('dynamic_policy'))
-        if policy.get('version') != 1 or not policy.get('category'):
+        departure = policy.get('trigger') == 'exit' and bool(policy.get('origin'))
+        if policy.get('version') not in (1, 2) or not (policy.get('category') or departure):
             return None
         loc = event.get('location') or event.get('gps') or {}
         if loc.get('latitude') is None or loc.get('longitude') is None or float(loc.get('accuracy_m', 999)) > 100:
             return None
+        if not all(math.isfinite(float(loc.get(k,999))) for k in ('latitude','longitude','accuracy_m')) or not (
+            -90 <= float(loc['latitude']) <= 90 and -180 <= float(loc['longitude']) <= 180 and float(loc['accuracy_m']) >= 0):
+            return None
         observed = datetime.fromisoformat(str(loc.get('timestamp') or event.get('occurred_at')).replace('Z', '+00:00'))
-        if observed.tzinfo is None or not 0 <= (now - observed).total_seconds() <= 120:
+        # Android obtains a fresh fix *after* observing a transition. Its
+        # timestamp may be slightly later than event time, without being stale.
+        if observed.tzinfo is None or abs((now - observed).total_seconds()) > 120:
             return None
         created = datetime.fromisoformat(str(reminder['created_at']).replace('Z', '+00:00'))
         if created.tzinfo is None: created = created.replace(tzinfo=timezone.utc)
         if now <= created: return None
         state = self._state(uid, reminder['id'])
-        if state.get('at') and now.isoformat() <= state['at']: return None
+        if state.get('at'):
+            prior_at = datetime.fromisoformat(str(state['at']).replace('Z','+00:00'))
+            if prior_at.tzinfo is not None and now <= prior_at: return None
         previous = state.get('location')
         state.update(at=now.isoformat(), location=loc)
         distance = lambda point: _haversine_m(loc['latitude'], loc['longitude'], point['latitude'], point['longitude'])
         origin, destination = policy.get('origin'), policy.get('destination')
+        if departure:
+            from ..services.place_boundary import boundary_dict, evaluate_departure
+            origin_id = origin.get('place_id')
+            places = self.db.list_places(uid, limit=1000)
+            candidates = [p for p in places if p['id'] == origin_id] if origin_id else [
+                p for p in places if p.get('name','').casefold() == origin.get('name','').casefold()]
+            boundary = boundary_dict(candidates[0].get('boundary_json')) if len(candidates) == 1 else None
+            if boundary or policy.get('version') == 2:
+                signature = json.dumps({'origin':origin,'boundary':boundary},sort_keys=True)
+                if state.get('origin_signature') != signature:
+                    state = {'origin_signature':signature}
+                exited = evaluate_departure(state,boundary,event,loc,now,origin=origin)
+                self._save(uid,reminder['id'],state)
+                return {'name':origin.get('name','the saved place'),'trigger':'exit'} if exited else None
+            # An observed exit is sufficient. Do not require a destination,
+            # nearby shop, movement class, or another model interpretation.
+            signature = json.dumps(origin, sort_keys=True)
+            if state.get('origin_signature') != signature:
+                state = {'at': now.isoformat(), 'location': loc, 'origin_signature': signature}
+            radius = float(policy.get('radius_m', 200))
+            accuracy = max(0, float(loc.get('accuracy_m', 0)))
+            if distance(origin) + accuracy <= radius:
+                state['origin_seen'] = now.isoformat()
+            seen = state.get('origin_seen')
+            exited = bool(seen and 0 <= (now - datetime.fromisoformat(seen)).total_seconds() <= 8 * 3600
+                          and distance(origin) - accuracy > radius + 50)
+            self._save(uid, reminder['id'], state)
+            if exited:
+                return {'name': origin.get('name', 'the saved place'), 'trigger': 'exit'}
+            return None
         if origin and distance(origin) <= 200:
             state.update(origin_seen=now.isoformat(), journey_started=None)
         if destination and distance(destination) <= 150:

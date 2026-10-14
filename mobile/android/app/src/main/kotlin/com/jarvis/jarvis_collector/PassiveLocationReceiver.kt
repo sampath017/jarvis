@@ -11,6 +11,7 @@ import kotlin.math.abs
 /** Uses fixes produced by the system or other apps, without starting GPS. */
 class PassiveLocationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (!JarvisPower.enabled(context)) return
         if (!ActivityRecognitionRegistrar.isEnabled(context)) return
         val result = LocationResult.extractResult(intent) ?: return
         val prefs = context.getSharedPreferences("jarvis_passive_location", Context.MODE_PRIVATE)

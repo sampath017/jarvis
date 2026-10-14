@@ -1,5 +1,7 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+# Source deletions must also reach incremental runtime images.
+RUN rm -rf /app/src /app/reader_smoke
 COPY src/ /app/src/
 COPY reader_smoke/ /app/reader_smoke/
-RUN python -m reader_smoke.smoke
+RUN python -m reader_smoke.smoke && python -c "import src.api.main"

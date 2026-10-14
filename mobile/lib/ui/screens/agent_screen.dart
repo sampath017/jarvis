@@ -163,11 +163,11 @@ class _AgentScreenState extends State<AgentScreen> {
             _buildCommandInputCard(),
             const SizedBox(height: 14),
 
-            // ── 4. Active Reminders (Tier 2 / CRUD Store) ───────────────────
+            // ── 4. Active Reminders (personal records) ───────────────────
             _buildRemindersSection(),
             const SizedBox(height: 14),
 
-            // ── 5. Context Notes (Tier 2 / CRUD Store) ───────────────────────
+            // ── 5. Context Notes (personal records) ───────────────────────
             _buildNotesSection(),
           ],
         ),
@@ -362,7 +362,7 @@ class _AgentScreenState extends State<AgentScreen> {
               Icon(Icons.mic, color: AppTheme.primary, size: 18),
               SizedBox(width: 6),
               Text(
-                'NATURAL AGENT COMMAND (TIER 2)',
+                'AGENT COMMAND',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,

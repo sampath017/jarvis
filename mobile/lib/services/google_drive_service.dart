@@ -1,3 +1,5 @@
+import 'mobile_index_catalog.dart';
+import 'mobile_store.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
@@ -5,12 +7,13 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
+import 'power_http.dart' as http;
 import 'google_connection_restore.dart';
+import 'package:path_provider/path_provider.dart';
 
 class GoogleDriveService extends ChangeNotifier {
   GoogleDriveService({http.Client Function()? clientFactory})
-    : _clientFactory = clientFactory ?? http.Client.new;
+    : _clientFactory = clientFactory ?? http.powerClient;
   static final instance = GoogleDriveService();
   final http.Client Function() _clientFactory;
   String baseUrl = 'https://jarvis-backend-898516599131.asia-south1.run.app';
@@ -91,25 +94,20 @@ class GoogleDriveService extends ChangeNotifier {
     String path, {
     Map<String, dynamic>? body,
   }) async {
-    final client = _clientFactory();
-    try {
-      final request = http.Request(
-        method,
-        Uri.parse('$baseUrl/file-memories$path'),
-      )..headers.addAll(await _memoryHeaders());
-      if (body != null) request.body = jsonEncode(body);
-      final response = await http.Response.fromStream(
-        await client.send(request),
-      ).timeout(const Duration(seconds: 25));
-      if (response.statusCode != 200) {
-        throw const DriveFailure(
-          'Firebase memory is unavailable. Your original remains in Drive; retry to save its memory.',
-        );
-      }
-      return Map<String, dynamic>.from(jsonDecode(response.body));
-    } finally {
-      client.close();
+    if (method == 'GET' && path == '/config') {
+      return {'max_analysis_bytes': 20 * 1024 * 1024};
     }
+    if (method == 'GET') return {'items': memories};
+    if (body != null) {
+      memories = [
+        ...memories.where(
+          (m) => m['id'] != body['id'] || m['account'] != body['account'],
+        ),
+        body,
+      ];
+      await _write('memories', memories);
+    }
+    return {'saved': true};
   }
 
   Future<void> loadCloudMemories() async {
@@ -254,31 +252,23 @@ class GoogleDriveService extends ChangeNotifier {
     String method,
     String path, {
     Object? body,
-    List<int>? bytes,
   }) async {
+    if ({'/catalog', '/results', '/jobs'}.contains(Uri.parse(path).path))
+      return MobileIndexCatalog.instance.request(path, body: body);
     final client = _clientFactory();
     try {
       final request = http.Request(
         method,
         Uri.parse('$baseUrl/drive-index$path'),
       )..headers.addAll(await _memoryHeaders());
-      if (bytes != null) {
-        request.headers['Content-Type'] = 'application/octet-stream';
-        request.bodyBytes = bytes;
-      } else if (body != null) {
-        request.body = jsonEncode(body);
-      }
+      if (body != null) request.body = jsonEncode(body);
       final response = await http.Response.fromStream(
         await client.send(request),
-      ).timeout(const Duration(minutes: 10));
-      if (response.statusCode != 200) {
-        String message =
-            'Content index request failed (${response.statusCode}). Retry to resume.';
-        try {
-          message = jsonDecode(response.body)['detail']?.toString() ?? message;
-        } catch (_) {}
-        throw DriveFailure(message, statusCode: response.statusCode);
-      }
+      ).timeout(const Duration(seconds: 60));
+      if (response.statusCode != 200)
+        throw DriveFailure(
+          'Document search is unavailable (${response.statusCode}).',
+        );
       return Map<String, dynamic>.from(jsonDecode(response.body));
     } finally {
       client.close();
@@ -349,12 +339,57 @@ class GoogleDriveService extends ChangeNotifier {
     String contentQuery = '',
     bool readContents = true,
   }) async {
-    final files = await searchDrive(query);
+    await refresh();
+    final localCandidates = <Map<String, dynamic>>[];
+    for (final memory
+        in memories.where((m) => m['storage'] == 'local').take(62)) {
+      final file = File(memory['path'].toString());
+      if (await file.exists() && await file.length() == memory['size'])
+        localCandidates.add(memory);
+    }
+    var localMatches = <String, dynamic>{};
+    if (readContents && localCandidates.isNotEmpty) {
+      try {
+        localMatches = await _indexRequest(
+          'POST',
+          '/search-contents',
+          body: {
+            'account': 'local',
+            'query': contentQuery.isEmpty ? query : contentQuery,
+            'files': [
+              for (final m in localCandidates)
+                {
+                  'file_id': m['id'],
+                  'source_version': m['source_version'] ?? '',
+                },
+            ],
+          },
+        );
+      } catch (_) {
+        /* Filename recall remains available. */
+      }
+    }
+    final localIds = {
+      for (final r in localMatches['evidence'] as List? ?? []) r['file_id'],
+    };
+    final localFiles = localCandidates
+        .where(
+          (m) =>
+              localIds.contains(m['id']) ||
+              '${m['name']} ${m['caption']}'.toLowerCase().contains(
+                query.toLowerCase(),
+              ),
+        )
+        .map((m) => Map<String, dynamic>.from(m)..remove('path'))
+        .toList();
+    final files = connected
+        ? await searchDrive(query)
+        : <Map<String, dynamic>>[];
     final account = email;
     final semanticQuery = contentQuery.trim().isEmpty ? query : contentQuery;
     String? notice;
     final passages = <Map<String, dynamic>>[];
-    if (readContents) {
+    if (readContents && connected) {
       try {
         final indexed = await searchIndex(semanticQuery);
         final ids = files.map((file) => file['id']).toSet();
@@ -386,9 +421,13 @@ class GoogleDriveService extends ChangeNotifier {
             'Content index unavailable. Read relevant originals before answering; filename matches alone do not prove contents or absence.';
       }
     }
-    if (email != account || !connected) {
+    if (email != account) {
       throw const DriveFailure('Drive account changed. Retry the search.');
     }
+    files.addAll(localFiles);
+    passages.addAll(
+      List<Map<String, dynamic>>.from(localMatches['evidence'] as List? ?? []),
+    );
     final verifiedIds = files.map((file) => file['id']).toSet();
     passages.removeWhere(
       (passage) => !verifiedIds.contains(passage['file_id']),
@@ -452,11 +491,6 @@ class GoogleDriveService extends ChangeNotifier {
     if (config['configured'] != true) {
       throw const DriveFailure('Content indexing has not been deployed yet.');
     }
-    if (config['background'] != true) {
-      throw const DriveFailure(
-        'Background indexing is being deployed. Retry shortly.',
-      );
-    }
     final account = email;
     indexing = true;
     _stopIndex = false;
@@ -499,7 +533,7 @@ class GoogleDriveService extends ChangeNotifier {
           final file = Map<String, dynamic>.from(f);
           final memory = _memory(file, account);
           indexProgress =
-              'Submitting ${memory['name']} · $completed submitted · $attention need attention';
+              'Submitting ${memory['name']} · $completed processed · $attention need attention';
           notifyListeners();
           try {
             await _indexOne(file, account, {});
@@ -519,8 +553,11 @@ class GoogleDriveService extends ChangeNotifier {
         await _write(recordKey, page);
       } while (page != null);
       indexProgress =
-          'Scan submitted · $completed queued or already indexed · $attention need attention. Background processing continues.';
-      final jobs = await _indexRequest('GET', '/jobs');
+          'Scan processed · $completed processed or already indexed · $attention need attention. Search index saved in Chroma.';
+      final jobs = await _indexRequest(
+        'GET',
+        '/jobs?account=${Uri.encodeComponent(account)}',
+      );
       final counts = Map<String, dynamic>.from(jobs['counts'] as Map? ?? {});
       indexProgress +=
           ' ${counts['complete'] ?? 0} processed · ${counts['queued'] ?? 0} queued · ${counts['attention'] ?? 0} metadata only · ${counts['failed'] ?? 0} failed.';
@@ -668,12 +705,6 @@ class GoogleDriveService extends ChangeNotifier {
     String? resourceKey,
   }) async {
     final account = email;
-    final upload = await _indexRequest('POST', '/uploads', body: memory);
-    if (upload['upload_required'] != true) return;
-    final uri = Uri.parse(upload['upload_url'].toString());
-    if (uri.scheme != 'https' || uri.host != 'storage.googleapis.com') {
-      throw const DriveFailure('Invalid processing upload endpoint.');
-    }
     final client = _clientFactory();
     try {
       final exportMime = _exports[memory['mimeType']];
@@ -702,83 +733,48 @@ class GoogleDriveService extends ChangeNotifier {
           statusCode: source.statusCode,
         );
       }
-      final iterator = StreamIterator<List<int>>(
-        source.stream.timeout(const Duration(seconds: 60)),
-      );
-      List<int> carry = const [];
-      var position = 0;
-      Future<Uint8List> readPart() async {
-        final result = BytesBuilder(copy: false);
-        while (result.length < 8 * 1024 * 1024) {
-          if (position == carry.length) {
-            if (!await iterator.moveNext()) break;
-            carry = iterator.current;
-            position = 0;
-          }
-          final count = min(
-            8 * 1024 * 1024 - result.length,
-            carry.length - position,
-          );
-          result.add(carry.sublist(position, position + count));
-          position += count;
+      final raw = BytesBuilder(copy: false);
+      await for (final part in source.stream.timeout(
+        const Duration(seconds: 60),
+      )) {
+        if (_stopIndex || email != account || !connected) {
+          throw const DriveFailure('Index paused. Tap Index to resume.');
         }
-        return result.takeBytes();
-      }
-
-      var offset = 0;
-      var part = await readPart();
-      try {
-        while (part.isNotEmpty) {
-          if (_stopIndex || email != account || !connected) {
-            throw const DriveFailure('Index scan paused. Tap Index to resume.');
-          }
-          final next = await readPart();
-          final last = next.isEmpty;
-          final total = offset + part.length;
-          final response = await client
-              .put(
-                uri,
-                headers: {
-                  'Content-Type': 'application/octet-stream',
-                  'Content-Range':
-                      'bytes $offset-${total - 1}/${last ? total : '*'}',
-                },
-                body: part,
-              )
-              .timeout(const Duration(minutes: 2));
-          if (response.statusCode != 308 &&
-              response.statusCode != 200 &&
-              response.statusCode != 201) {
-            throw DriveFailure(
-              'Processing upload interrupted (${response.statusCode}). Tap Index to resume.',
-            );
-          }
-          offset = total;
-          indexProgress = 'Uploading ${memory['name']} · ${sizeLabel(offset)}';
-          notifyListeners();
-          part = next;
+        if (raw.length + part.length > 128 * 1024 * 1024) {
+          throw const DriveFailure('File exceeds the 128 MB processing limit.');
         }
-      } finally {
-        await iterator.cancel();
+        raw.add(part);
       }
-      if (offset == 0) {
-        await _catalog(
-          memory,
-          'Empty file; source metadata is available.',
-          needsAttention: false,
-        );
-        return;
+      final response = await client
+          .post(
+            Uri.parse(
+              '$baseUrl/drive-index/files/${Uri.encodeComponent(memory['id'].toString())}',
+            ),
+            headers: {
+              ...await _memoryHeaders(),
+              'Content-Type': 'application/octet-stream',
+              'X-File-Metadata': base64Encode(
+                utf8.encode(
+                  jsonEncode({
+                    ...memory,
+                    'mimeType': form
+                        ? 'application/x-jarvis-form+ndjson'
+                        : exportMime ?? memory['mimeType'],
+                  }),
+                ),
+              ),
+            },
+            body: raw.takeBytes(),
+          )
+          .timeout(const Duration(minutes: 10));
+      if (response.statusCode != 200) {
+        throw DriveFailure('File processing failed (${response.statusCode}).');
       }
-      await _indexRequest(
-        'POST',
-        '/uploads/${upload['job_id']}/complete',
-        body: {
-          'size': offset,
-          'mimeType': form
-              ? 'application/x-jarvis-form+ndjson'
-              : exportMime ?? memory['mimeType'],
-        },
-      );
+      if (email != account || !connected) {
+        throw const DriveFailure('Drive account changed. Retry indexing.');
+      }
+      final parsed = jsonDecode(response.body) as Map;
+      await MobileIndexCatalog.instance.save(memory, parsed);
     } finally {
       client.close();
     }
@@ -1022,47 +1018,134 @@ class GoogleDriveService extends ChangeNotifier {
         .toList();
   }
 
-  Future<String> _folder(String account) async {
-    final saved = await _read('cacheFolder:$account');
+  Future<String> _managedFolder(
+    String account,
+    String key,
+    String name,
+    String parent, {
+    String? legacyName,
+  }) async {
+    const fields = 'id,name,shared,trashed,mimeType,ownedByMe,parents';
+    Map<String, dynamic>? selected;
+    final saved = await _read('$key:$account');
     if (saved is String) {
-      final folder = await _json(
-        'GET',
-        '/drive/v3/files/$saved',
-        query: {'fields': 'id,shared,trashed,mimeType'},
-      );
-      if (folder['shared'] == true || folder['trashed'] == true) {
+      try {
+        selected = await _json(
+          'GET',
+          '/drive/v3/files/$saved',
+          query: {'fields': fields},
+        );
+      } on DriveFailure catch (failure) {
+        if (failure.statusCode != 404) rethrow;
+      }
+      if (selected?['trashed'] == true) selected = null;
+      if (selected != null &&
+          (selected['shared'] != false ||
+              selected['ownedByMe'] != true ||
+              selected['mimeType'] != 'application/vnd.google-apps.folder')) {
         throw const DriveFailure(
-          'The Jarvis Upload Cache folder is shared or trashed. Restore it and make it private in Drive before uploading.',
+          'The Jarvis folder must be private and owned by you. Check its sharing settings in Drive.',
         );
       }
-      return saved;
     }
-    final existing = await _json(
-      'GET',
-      '/drive/v3/files',
-      query: {
-        'q':
-            "trashed=false and 'me' in owners and mimeType='application/vnd.google-apps.folder' and name='$cacheFolderName'",
-        'fields': 'files(id,shared)',
-        'pageSize': '100',
-      },
-    );
-    final files = (existing['files'] as List? ?? [])
-        .where((f) => f['shared'] != true)
-        .toList();
-    final id = files.isNotEmpty
-        ? files.first['id'].toString()
-        : (await _json(
-            'POST',
-            '/drive/v3/files',
-            body: {
-              'name': cacheFolderName,
-              'mimeType': 'application/vnd.google-apps.folder',
-            },
-          ))['id'].toString();
-    await _write('cacheFolder:$account', id);
+    if (selected == null) {
+      final primary = "('$parent' in parents and name='$name')";
+      final match = legacyName == null
+          ? primary
+          : "($primary or ('root' in parents and name='$legacyName'))";
+      final result = await _json(
+        'GET',
+        '/drive/v3/files',
+        query: {
+          'q':
+              "trashed=false and 'me' in owners and mimeType='application/vnd.google-apps.folder' and $match",
+          'fields': 'files($fields)',
+          'pageSize': '100',
+        },
+      );
+      selected = (result['files'] as List? ?? [])
+          .cast<Map>()
+          .where(
+            (file) =>
+                file['shared'] == false &&
+                file['ownedByMe'] == true &&
+                file['trashed'] == false,
+          )
+          .map((file) => Map<String, dynamic>.from(file))
+          .firstOrNull;
+    }
+    if (selected == null) {
+      selected = await _json(
+        'POST',
+        '/drive/v3/files',
+        query: {'fields': fields},
+        body: {
+          'name': name,
+          'mimeType': 'application/vnd.google-apps.folder',
+          'parents': [parent],
+          'appProperties': {'jarvisFolder': name},
+        },
+      );
+    } else {
+      final parents = List<String>.from(selected['parents'] as List? ?? []);
+      final body = <String, dynamic>{
+        if (selected['name'] != name) 'name': name,
+      };
+      final query = <String, String>{
+        'fields': fields,
+        if (!parents.contains(parent)) 'addParents': parent,
+        if (parents.any((value) => value != parent))
+          'removeParents': parents.where((value) => value != parent).join(','),
+      };
+      if (body.isNotEmpty || query.length > 1) {
+        selected = await _json(
+          'PATCH',
+          '/drive/v3/files/${selected['id']}',
+          query: query,
+          body: body,
+        );
+      }
+    }
+    if (selected['shared'] != false ||
+        selected['ownedByMe'] != true ||
+        selected['trashed'] != false ||
+        selected['mimeType'] != 'application/vnd.google-apps.folder') {
+      throw const DriveFailure(
+        'The Jarvis Drive folder could not be verified. Your files were kept.',
+      );
+    }
+    final id = selected['id'].toString();
+    await _write('$key:$account', id);
     return id;
   }
+
+  Future<String> _jarvisRoot(String account) async {
+    final root = await _json(
+      'GET',
+      '/drive/v3/files/root',
+      query: {'fields': 'id'},
+    );
+    return _managedFolder(
+      account,
+      'jarvisRoot',
+      'Jarvis',
+      root['id'].toString(),
+    );
+  }
+
+  Future<String> _folder(String account) async => _managedFolder(
+    account,
+    'cacheFolder',
+    'Upload Cache',
+    await _jarvisRoot(account),
+    legacyName: cacheFolderName,
+  );
+  Future<String> _savedFolder(String account) async => _managedFolder(
+    account,
+    'savedFolder',
+    'Saved Files',
+    await _jarvisRoot(account),
+  );
 
   /// The user's send action authorizes attachment caching; explicit saves use My Drive.
   static bool requestsDriveSave(String text) {
@@ -1084,6 +1167,44 @@ class GoogleDriveService extends ChangeNotifier {
     void Function(double)? progress,
     bool Function()? shouldContinue,
   }) async {
+    if (!saveToDrive) {
+      if (shouldContinue?.call() == false) {
+        throw const DriveFailure('Attachment cancelled.');
+      }
+      final source = File(selected['path'].toString());
+      final size = await source.length();
+      if (size == 0 || size > 128 * 1024 * 1024 || size != selected['size']) {
+        throw const DriveFailure(
+          'Attachment changed or exceeds 128 MB. Select it again.',
+        );
+      }
+      final id =
+          'local_${selected['id'].toString().replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}';
+      final directory = Directory(
+        '${(await getApplicationDocumentsDirectory()).path}/attachments',
+      );
+      await directory.create(recursive: true);
+      final file = await source.copy('${directory.path}/$id');
+      await refresh();
+      final memory = <String, dynamic>{
+        'id': id,
+        'name': selected['name'],
+        'mimeType': selected['mimeType'],
+        'size': size,
+        'caption': caption.substring(0, min(caption.length, 2000)),
+        'path': file.path,
+        'account': 'local',
+        'storage': 'local',
+        'url': 'jarvis-local://file/$id',
+        'source_version': '${await file.lastModified()}:$size',
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      memories = [...memories.where((m) => m['id'] != id), memory];
+      await _write('memories', memories);
+      progress?.call(1);
+      notifyListeners();
+      return memory;
+    }
     await refresh();
     if (!connected) {
       throw const DriveFailure('Connect Google Drive in Settings first.');
@@ -1144,7 +1265,9 @@ class GoogleDriveService extends ChangeNotifier {
     final client = _clientFactory();
     try {
       final storage = record['storage'] ?? 'cache';
-      final folder = storage == 'drive' ? 'root' : await _folder(account);
+      final folder = storage == 'drive'
+          ? await _savedFolder(account)
+          : await _folder(account);
       Uri? upload = record['session'] == null
           ? null
           : Uri.parse(record['session']);
@@ -1309,6 +1432,12 @@ class GoogleDriveService extends ChangeNotifier {
       throw const DriveFailure('Invalid file analysis request.');
     }
     await refresh();
+    final local = memories
+        .where((m) => m['id'] == fileId && m['storage'] == 'local')
+        .firstOrNull;
+    if (local != null) {
+      return _analyzeLocal(local, question, actionId, isActive);
+    }
     final matching = memories
         .where((m) => m['id'] == fileId && m['account'] == email)
         .toList();
@@ -1496,6 +1625,14 @@ class GoogleDriveService extends ChangeNotifier {
               ).replace(queryParameters: {'action_id': actionId}),
             )
             ..headers.addAll(await _memoryHeaders())
+            ..headers['X-File-Metadata'] = base64Encode(
+              utf8.encode(jsonEncode(memory)),
+            )
+            ..headers['X-Mobile-Budget'] = base64Encode(
+              utf8.encode(
+                jsonEncode(await MobileStore.instance.commandContext()),
+              ),
+            )
             ..headers['X-Analysis-Question'] = base64Encode(
               utf8.encode(question),
             )
@@ -1511,6 +1648,7 @@ class GoogleDriveService extends ChangeNotifier {
         );
       }
       final result = Map<String, dynamic>.from(jsonDecode(response.body));
+      await http.acceptMobileChanges(result);
       await _write(receiptKey, {
         'file_id': fileId,
         'question': question,
@@ -1527,6 +1665,13 @@ class GoogleDriveService extends ChangeNotifier {
     required Future<bool> Function() isActive,
   }) async {
     await refresh();
+    final local = memories
+        .where((m) => m['id'] == fileId && m['storage'] == 'local')
+        .firstOrNull;
+    if (local != null) {
+      if (!await isActive()) throw const DriveFailure('Save cancelled.');
+      return save(local, local['caption']?.toString() ?? '', saveToDrive: true);
+    }
     final account = email;
     if (!connected ||
         !memories.any((m) => m['id'] == fileId && m['account'] == account)) {
@@ -1546,11 +1691,7 @@ class GoogleDriveService extends ChangeNotifier {
     if ((file['appProperties'] as Map?)?['jarvisStorage'] == 'drive') {
       return await _remember(file, account);
     }
-    final root = await _json(
-      'GET',
-      '/drive/v3/files/root',
-      query: {'fields': 'id'},
-    );
+    final destination = await _savedFolder(account);
     final parents = List<String>.from(file['parents'] as List? ?? []);
     await refresh();
     if (!connected ||
@@ -1566,9 +1707,10 @@ class GoogleDriveService extends ChangeNotifier {
       '/drive/v3/files/$fileId',
       query: {
         'fields': _fileFields,
-        if (!parents.contains(root['id'])) 'addParents': root['id'].toString(),
-        if (parents.any((p) => p != root['id']))
-          'removeParents': parents.where((p) => p != root['id']).join(','),
+        if (!parents.contains(destination))
+          'addParents': destination.toString(),
+        if (parents.any((p) => p != destination))
+          'removeParents': parents.where((p) => p != destination).join(','),
       },
       body: {
         'appProperties': {'jarvisMemory': 'true', 'jarvisStorage': 'drive'},
@@ -1578,11 +1720,138 @@ class GoogleDriveService extends ChangeNotifier {
   }
 
   Future<void> open(Map<String, dynamic> memory) async {
+    if (memory['storage'] == 'local') {
+      await attachments.invokeMethod('openLocal', {
+        'path': memory['path'],
+        'mimeType': memory['mimeType'],
+      });
+      return;
+    }
     final uri = Uri.parse(memory['url'].toString());
     if (uri.scheme != 'https' || uri.host != 'drive.google.com') {
       throw const DriveFailure('Invalid Drive file URL.');
     }
     await attachments.invokeMethod('open', uri.toString());
+  }
+
+  Future<Map<String, dynamic>> _analyzeLocal(
+    Map<String, dynamic> memory,
+    String question,
+    String actionId,
+    Future<bool> Function() active,
+  ) async {
+    if (!await active()) return {'status': 'cancelled'};
+    final file = File(memory['path'].toString());
+    if (!await file.exists() || await file.length() != memory['size']) {
+      throw const DriveFailure('Local attachment is unavailable or changed.');
+    }
+    final previous = await _read('analysis:$actionId');
+    if (previous is Map) {
+      if (previous['file_id'] != memory['id'] ||
+          previous['question'] != question) {
+        throw const DriveFailure('Analysis receipt mismatch.');
+      }
+      if (previous['result'] is Map) {
+        return Map<String, dynamic>.from(previous['result']);
+      }
+      throw const DriveFailure(
+        'Analysis was already attempted. Ask again to retry.',
+      );
+    }
+    final mime = memory['mimeType'].toString();
+    final native =
+        (mime == 'application/pdf' ||
+            mime.startsWith('image/') ||
+            mime.startsWith('video/')) &&
+        (memory['size'] as num) <= 20 * 1024 * 1024;
+    final metadata = {
+      for (final key in [
+        'id',
+        'name',
+        'mimeType',
+        'size',
+        'caption',
+        'account',
+        'storage',
+        'url',
+        'source_version',
+        'created_at',
+      ])
+        key: memory[key],
+    };
+    final client = _clientFactory();
+    try {
+      final bytes = await file.readAsBytes();
+      if (!await active()) return {'status': 'cancelled'};
+      await _write('analysis:$actionId', {
+        'file_id': memory['id'],
+        'question': question,
+        'started': true,
+      });
+      final response = await client
+          .post(
+            Uri.parse(
+              native
+                  ? '$baseUrl/file-memories/${memory['id']}/analyze?action_id=${Uri.encodeComponent(actionId)}'
+                  : '$baseUrl/drive-index/files/${Uri.encodeComponent(memory['id'].toString())}',
+            ),
+            headers: {
+              ...await _memoryHeaders(),
+              'Content-Type': 'application/octet-stream',
+              'X-File-Metadata': base64Encode(
+                utf8.encode(jsonEncode(metadata)),
+              ),
+              if (native)
+                'X-Mobile-Budget': base64Encode(
+                  utf8.encode(
+                    jsonEncode(await MobileStore.instance.commandContext()),
+                  ),
+                ),
+              if (native)
+                'X-Analysis-Question': base64Encode(utf8.encode(question)),
+              if (!native) 'X-File-Mime': mime,
+              if (!native)
+                'X-File-Name': Uri.encodeComponent(memory['name'].toString()),
+            },
+            body: bytes,
+          )
+          .timeout(Duration(minutes: native ? 3 : 10));
+      if (response.statusCode != 200) {
+        throw DriveFailure('File processing failed (${response.statusCode}).');
+      }
+      final data = Map<String, dynamic>.from(jsonDecode(response.body));
+      await http.acceptMobileChanges(data);
+      late Map<String, dynamic> result;
+      if (native) {
+        result = data;
+      } else {
+        await MobileIndexCatalog.instance.save(memory, data);
+        final evidence = await _indexRequest(
+          'POST',
+          '/evidence',
+          body: {
+            'account': 'local',
+            'file_id': memory['id'],
+            'source_version': memory['source_version'],
+            'query': question,
+          },
+        );
+        result = {
+          'status': 'ok',
+          'file_id': memory['id'],
+          'source_kind': 'retrieved_passages',
+          'answer': jsonEncode(evidence['evidence']),
+        };
+      }
+      await _write('analysis:$actionId', {
+        'file_id': memory['id'],
+        'question': question,
+        'result': result,
+      });
+      return result;
+    } finally {
+      client.close();
+    }
   }
 }
 

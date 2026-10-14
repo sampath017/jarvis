@@ -30,6 +30,9 @@ class CommandExecution:
     approval_dispatch: Callable[[dict], dict] | None = None
 
     def check(self):
+        from ..services.runtime_power import RuntimePower
+        if not RuntimePower().enabled():
+            raise CommandStopped('Jarvis was powered off. Any actions already completed are still saved.')
         if self.cancelled():
             raise CommandStopped('Stopped at your request. Any actions already completed are still saved.')
         if time.monotonic() - self.started >= MAX_COMMAND_SECONDS:
@@ -64,15 +67,17 @@ def report_progress(message):
         current.report(message)
 
 NODE_LABELS = {
+    'agent': 'Working through your request',
     'verify': 'Reading your request',
     'load_context': 'Reading this conversation',
     'intent_router': 'Preparing your request',
-    'tier2_agent': 'Working through your request',
     'persist': 'Saving your response',
 }
 
 def observed_node(name, handler):
     def invoke(state):
+        from ..services.runtime_power import RuntimePower
+        RuntimePower().require_enabled()
         if state.get('request_type') == 'USER_COMMAND':
             report_progress(NODE_LABELS.get(name, 'Checking context'))
         started = time.perf_counter()
@@ -85,6 +90,11 @@ def observed_node(name, handler):
     return invoke
 
 TOOL_LABELS = {
+    'render_chart': 'Preparing your chart',
+    'get_app_usage': 'Reading your screen-time records',
+    'get_health_records': 'Reading your Health Connect records',
+    'search_web': 'Searching the web',
+    'read_webpage': 'Reading the website',
     'analyze_saved_file': 'Reading the attached file',
     'search_file_memories': 'Finding the file',
     'save_file_to_drive': 'Saving the file to My Drive',
@@ -102,6 +112,7 @@ TOOL_LABELS = {
     'delete_all_reminders': 'Moving reminders to Trash',
     'restore_reminder': 'Restoring your reminder',
     'create_note': 'Saving your note',
+    'append_note': 'Adding to your note',
     'list_notes': 'Reading your notes',
     'search_notes': 'Finding your note',
     'delete_note': 'Moving the note to Trash',
