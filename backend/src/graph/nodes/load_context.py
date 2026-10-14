@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timezone
 from ..state import JarvisState
 from ...services.database import DatabaseService
@@ -58,12 +59,12 @@ class LoadContextNode:
             context_history = None
 
             # A Cloud Run request can land on any instance.  Prefer the
-            # uid-scoped Firestore session so journey context survives an
+            # uid-scoped RecordStore session so journey context survives an
             # instance recycle; SQLite remains an offline/local fallback.
             try:
-                from ...services.firestore_service import FirestoreService
+                from ...services.record_store import RecordStore
                 from ...cloud.tier2_agent_tools import is_test_environment
-                fs = FirestoreService()
+                fs = RecordStore()
                 if is_test_environment():
                     fs._db = None
                 if fs.is_available:
@@ -89,7 +90,7 @@ class LoadContextNode:
                     # Only independent remote reads run concurrently. SQLite
                     # hydration happens afterwards, on the requesting thread.
                     with ThreadPoolExecutor(max_workers=len(reads)) as pool:
-                        pending = {name: pool.submit(read) for name, read in reads.items()}
+                        pending = {name: pool.submit(copy_context().run, read) for name, read in reads.items()}
                         for name, future in pending.items():
                             try:
                                 results[name] = future.result()
@@ -107,7 +108,7 @@ class LoadContextNode:
                     context["reminders"] = self.db.list_reminders(uid, status="ACTIVE", limit=15)
                     cloud_context_loaded = True
             except Exception as cloud_err:
-                logger.info("Optional Firestore session hydration skipped: %s", cloud_err)
+                logger.info("Optional RecordStore session hydration skipped: %s", cloud_err)
 
             # Retrieve the latest GPS reading from context events
             latest_gps = None

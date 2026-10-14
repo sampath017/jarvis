@@ -46,6 +46,7 @@ object ReminderAlerts {
             .putExtra("key", key), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
     private fun schedule(c: Context, key: String, at: Long): Boolean {
+        if (!JarvisPower.enabled(c)) return false
         if (Build.VERSION.SDK_INT >= 31 && !alarms(c).canScheduleExactAlarms()) return false
         return runCatching {
             val preview = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java),
@@ -56,6 +57,7 @@ object ReminderAlerts {
 
     /** Full authoritative snapshot; an absent, paused or edited alarm is cancelled. */
     @Synchronized fun reconcile(c: Context, records: JSONArray) {
+        if (!JarvisPower.enabled(c)) return
         val p = prefs(c)
         val old = JSONObject(p.getString("scheduled", "{}")!!)
         val next = JSONObject()
@@ -108,6 +110,7 @@ object ReminderAlerts {
     }
 
     @Synchronized fun restore(c: Context) {
+        if (!JarvisPower.enabled(c)) return
         val p = prefs(c)
         for (bucket in listOf("scheduled", "snoozed")) {
             val records = JSONObject(p.getString(bucket, "{}")!!)
@@ -119,6 +122,7 @@ object ReminderAlerts {
     }
 
     @Synchronized fun fire(c: Context, key: String) {
+        if (!JarvisPower.enabled(c)) return
         val p = prefs(c)
         for (bucket in listOf("snoozed", "scheduled")) {
             val records = JSONObject(p.getString(bucket, "{}")!!)
@@ -135,8 +139,14 @@ object ReminderAlerts {
     fun record(c: Context, key: String): JSONObject? = prefs(c).getString("record:$key", null)?.let { JSONObject(it) }
 
     @Synchronized fun show(c: Context, key: String, title: String, body: String, mode: String, at: Long, reminderId: String = ""): Boolean {
+        if (!JarvisPower.enabled(c)) return false
         val p = prefs(c)
         if (p.contains("seen:$key")) return true
+        if (mode == "notification") {
+            val shown = PushDelivery.show(c,key,title,body,reminderId=reminderId)
+            if(shown) p.edit().putBoolean("seen:$key",true).commit()
+            return shown
+        }
         val nm = manager(c)
         if (!nm.areNotificationsEnabled()) return false
         val call = mode == "in_app_call"
@@ -175,6 +185,12 @@ object ReminderAlerts {
     }
 
     fun dismiss(c: Context, key: String) { manager(c).cancel(key, 1) }
+    @Synchronized fun pause(c: Context) {
+        for (bucket in listOf("scheduled", "snoozed")) {
+            val records = JSONObject(prefs(c).getString(bucket, "{}")!!)
+            for (key in records.keys()) alarms(c).cancel(operation(c, key))
+        }
+    }
     @Synchronized fun snooze(c: Context, key: String): Boolean {
         val r = record(c, key) ?: return false
         if (prefs(c).contains("snoozeOf:$key")) { dismiss(c, key); return true }
@@ -212,6 +228,7 @@ class ReminderAlertActivity : Activity(), TextToSpeech.OnInitListener {
     private var spoken = ""
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        if (!JarvisPower.enabled(this)) { finish(); return }
         if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
         else window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         val key = intent.getStringExtra("key") ?: run { finish(); return }

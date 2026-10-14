@@ -12,7 +12,7 @@ import '../widgets/workspace_widgets.dart';
 /// Dedicated Reminders Screen:
 /// Displays all active and fired reminders directly from offline-first Local Mobile SQLite.
 /// Automatically evaluates and triggers reminders using local GPS/sensors even when offline,
-/// and synchronizes with Google Cloud Firestore in the background.
+/// and synchronizes with the API working cache in the background.
 class RemindersScreen extends StatefulWidget {
   final SensorService sensorService;
 

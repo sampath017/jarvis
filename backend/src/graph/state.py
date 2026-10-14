@@ -17,14 +17,14 @@ class JarvisState(TypedDict, total=False):
     Fields are populated progressively as the graph executes:
     1. ``verify``: validates request schema, generates run_id, and builds context_packet.
     2. ``load_context``: loads active session, reminders, notes, places, chat messages,
-       preferences, and semantic contexts from local DB / Firestore.
+       preferences, and semantic contexts from local DB / RecordStore.
     3. Conditional Execution Branch:
        - USER_COMMAND: ``intent_router`` -> (fast greeting -> ``persist``) OR
          (``tier2_agent`` <-> ``tier2_tools`` ReAct loop -> ``persist``)
        - CONTEXT_EVENT: ``context_gate`` -> (optional ``tier1_agent`` <-> ``tier1_tools`` loop)
          -> ``session_reducer`` -> ``semantic_context`` -> ``persist``
     4. ``persist``: commits updated sessions, chat messages, reminders, audit entries,
-       and semantic memory to local SQLite and Firestore.
+       and semantic memory to local SQLite and RecordStore.
     """
 
     # ── Identity & routing ───────────────────────────────────────────────
@@ -40,7 +40,7 @@ class JarvisState(TypedDict, total=False):
     # ── Context packet (normalised from the request) ─────────────────────
     context_packet: dict[str, Any]
 
-    # ── Firestore-loaded context ─────────────────────────────────────────
+    # ── RecordStore-loaded context ─────────────────────────────────────────
     session: dict[str, Any] | None
     tasks: list[dict[str, Any]]
     reminders: list[dict[str, Any]]
@@ -75,6 +75,7 @@ class JarvisState(TypedDict, total=False):
     # ── Tool execution ───────────────────────────────────────────────────
     tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
+    terminal_tool_error: str
 
     # ── Response ─────────────────────────────────────────────────────────
     needs_user_input: bool

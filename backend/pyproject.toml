@@ -12,6 +12,9 @@ dependencies = [
     "langgraph>=0.4.0",
     "langchain-core>=0.3.0",
     "langchain-openai>=0.3.0",
+    # Google OAuth for optional Drive/Calendar integrations
+    "google-auth>=2.0.0",
+    "requests>=2.0.0",
     # HTTP client
     "httpx>=0.28.0",
     # Data validation & settings
@@ -28,8 +31,6 @@ dependencies = [
     "matplotlib>=3.11.1",
     "scipy>=1.18.1",
     "ipykernel>=7.3.0",
-    "google-cloud-firestore>=2.19.0",
-    "google-cloud-storage>=2.19.0",
     "beautifulsoup4>=4.15.0",
     "chromadb==1.5.9",
     "pymupdf==1.28.2",
@@ -41,12 +42,12 @@ dependencies = [
     "libarchive-c>=5.3",
     "pyaxmlparser>=0.3.31",
     "pefile>=2024.8.26",
+    "cryptography>=45.0.0",
 ]
 
 [project.scripts]
 backend = "src.api.main:run"
 jarvis-api = "src.api.main:run"
-purge-chats = "scripts.purge_chats:purge"
 delete-chats = "scripts.delete_all_chats:main"
 
 [dependency-groups]

@@ -11,6 +11,7 @@ import logging
 import asyncio
 import json
 import time
+import os
 from datetime import datetime, timezone
 from typing import Annotated, cast
 from fastapi import APIRouter, Depends, status, Header, HTTPException
@@ -24,7 +25,7 @@ from langgraph.graph.state import CompiledStateGraph  # type: ignore[import-unty
 
 from ...graph.state import JarvisState
 from ...models.schemas import APIResponse, CommandRequest
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ..auth import get_current_user
 from ..dependencies import get_workflow
 from ..rate_limiter import TokenBudgetGuard
@@ -46,6 +47,7 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
 
     import time
     start_time = time.perf_counter()
+    received_at = datetime.now(timezone.utc).isoformat()
     logger.info(
         "💬 [CHAT_START] Request ID: %s | User: %s | Thread: %s | Query: \"%s\"",
         request.request_id,
@@ -114,9 +116,9 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         if status_str == "ok":
 
-            # Persist chat turn and session directly to Firestore
+            # Persist chat turn and session directly to RecordStore
             try:
-                fs = FirestoreService()
+                fs = RecordStore()
                 if fs.is_available:
                     thread = request.thread_id or "default"
                     # User message
@@ -127,7 +129,7 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
                             "id": request.request_id,
                             "role": "user",
                             "content": request.text,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": received_at,
                         },
                     )
                     # Assistant reply
@@ -156,7 +158,7 @@ def _execute_user_command(request: CommandRequest, uid: str, workflow) -> APIRes
                         },
                     )
             except Exception as fe:
-                logger.warning("Failed to auto-save chat turn to Firestore: %s", fe)
+                logger.warning("Failed to auto-save chat turn to RecordStore: %s", fe)
 
             logger.info(
                 "✅ [CHAT_SUCCESS] Request ID: %s | Latency: %.1f ms | Executed Actions: %s | Response: \"%s\"",
@@ -212,6 +214,38 @@ def _run_owned(store, request, uid, workflow):
         context.approval_dispatch = lambda action: dispatch_device_action(uid, action,
             lambda: store.calendar_action(uid, request.request_id,
                 {'operation': 'approval', **action}, context.check), context.check)
+    # The accepted command stores only the hash of its private device capability.
+    # Bind cloud execution to that same owner; never resolve a grant by fixed UID.
+    from ...services.server_google_auth import ServerGoogleAuth, configured as cloud_google_configured
+    cloud_auth = None
+    cloud_executor = None
+    owner = store.get(uid, request.request_id).get('calendar_key_hash')
+    from ...services.mobile_scope import mobile_only
+    if not mobile_only() and owner and cloud_google_configured() and owner == os.getenv('JARVIS_GOOGLE_OWNER_HASH'):
+        cloud_auth = ServerGoogleAuth()
+        if cloud_auth.status(owner).get('connected'):
+            import hashlib
+            from ...services.server_google_actions import ServerGoogleActions
+            from ...services.scheduled_google_actions import ScheduledGoogleActions
+            cloud_executor = ServerGoogleActions(owner, auth=cloud_auth)
+            def action_id(action):
+                return request.request_id + ':' + hashlib.sha256(json.dumps(action, sort_keys=True).encode()).hexdigest()
+            def cloud_dispatch(action):
+                context.check()
+                return cloud_executor.dispatch({**action, 'default_calendar_id': request.calendar_id}, action_id(action))
+            context.server_google_dispatch = cloud_dispatch
+            schedules = ScheduledGoogleActions(auth=cloud_auth)
+            def schedule_dispatch(action):
+                context.check()
+                if action['operation'] == 'list':
+                    return schedules.list(owner)
+                if action['operation'] == 'cancel':
+                    return schedules.cancel(owner, action['action_id'])
+                saved_action = dict(action['action'])
+                if saved_action.get('operation') in {'create', 'update', 'delete'}:
+                    saved_action['calendar_id'] = saved_action.get('calendar_id') or request.calendar_id
+                return schedules.create(owner, action_id(action), saved_action, action['execute_at'], action['title'], request.thread_id)
+            context.schedule_dispatch = schedule_dispatch
     token = execution.set(context)
     try:
         try:
@@ -220,7 +254,7 @@ def _run_owned(store, request, uid, workflow):
             response = {"status": "error", "error": str(getattr(error, "detail", error)),
                         "changed_records": list(context.changed_records)}
         if response.get('status') == 'error':
-            fs = FirestoreService()
+            fs = RecordStore()
             if fs.is_available:
                 fs.save_chat_message(uid, request.thread_id, {
                     'id': 'err_' + request.request_id, 'role': 'assistant',
@@ -230,18 +264,22 @@ def _run_owned(store, request, uid, workflow):
                 })
         store.finish(uid, request.request_id, response)
         try:
-            PushNotifications().queue_chat(uid, request.request_id, request.thread_id, response)
+            from ...services.mobile_scope import mobile_only
+            if not mobile_only():
+                PushNotifications().queue_chat(uid, request.request_id, request.thread_id, response)
         except Exception:
             logger.exception('Chat push delivery deferred; response is saved')
     finally:
         execution.reset(token)
+        if cloud_executor:
+            cloud_executor.client.close()
+        if cloud_auth:
+            cloud_auth.client.close()
 
 
 async def _start_run(request, uid, workflow, calendar_key=None):
     import os
     dispatcher = BackgroundTasks()
-    if os.getenv('K_SERVICE') and not dispatcher.configured:
-        raise HTTPException(503, 'Background processing is not configured yet. Please retry shortly.')
     store = CommandRunStore()
     if request.calendar_connected or request.device_approvals:
         if not calendar_key or not 64 <= len(calendar_key) <= 128:
@@ -268,23 +306,24 @@ async def _start_run(request, uid, workflow, calendar_key=None):
 
 
 async def _command_events(store, uid, request_id):
+    from ...services.command_updates import command_updates
+    from contextlib import aclosing
     last_sequence = None
     last_emit = 0.0
     last_action_id = None
-    while True:
-        data = await asyncio.to_thread(store.get, uid, request_id)
-        snapshot = store.public(data)
-        if snapshot['status'] == 'complete':
-            yield 'event: result\ndata: ' + json.dumps(snapshot['response']) + '\n\n'
-            return
-        if data.get('calendar_action') and data.get('calendar_result') is None and not data.get('cancel_requested') and data['calendar_action']['action_id'] != last_action_id:
-            yield 'event: calendar_action\ndata: ' + json.dumps(data['calendar_action']) + '\n\n'
-            last_action_id = data['calendar_action']['action_id']
-        sequence = (snapshot['sequence'], snapshot['message'])
-        if sequence != last_sequence or time.monotonic() - last_emit >= 10:
-            yield 'event: progress\ndata: ' + json.dumps(snapshot) + '\n\n'
-            last_sequence, last_emit = sequence, time.monotonic()
-        await asyncio.sleep(1)
+    async with aclosing(command_updates(store, uid, request_id)) as updates:
+        async for data in updates:
+            snapshot = store.public(data)
+            if snapshot['status'] == 'complete':
+                yield 'event: result\ndata: ' + json.dumps(snapshot['response']) + '\n\n'
+                return
+            if data.get('calendar_action') and data.get('calendar_result') is None and not data.get('cancel_requested') and data['calendar_action']['action_id'] != last_action_id:
+                yield 'event: calendar_action\ndata: ' + json.dumps(data['calendar_action']) + '\n\n'
+                last_action_id = data['calendar_action']['action_id']
+            sequence = (snapshot['sequence'], snapshot['message'])
+            if sequence != last_sequence or time.monotonic() - last_emit >= 10:
+                yield 'event: progress\ndata: ' + json.dumps(snapshot) + '\n\n'
+                last_sequence, last_emit = sequence, time.monotonic()
 
 
 @router.post('/commands/stream')
@@ -322,7 +361,7 @@ async def execute_due_reminder(payload: dict, authorization: Annotated[str | Non
     await asyncio.to_thread(verify_task_identity, authorization)
     from ...backend.context_automation import ContextAutomationService
     def deliver_due():
-        fs = FirestoreService()
+        fs = RecordStore()
         reminder = fs._db.collection('reminders').document(payload['reminder_id']).get().to_dict()
         if reminder and reminder.get('uid') == payload['uid']:
             from ...services.database import DatabaseService
@@ -348,20 +387,11 @@ async def deliver_activity_reminder(payload: dict, authorization: Annotated[str 
     def deliver():
         from ...services.activity_reminder_timers import ActivityReminderTimers
         from ...backend.context_automation import ContextAutomationService
-        fs = FirestoreService()
+        fs = RecordStore()
         ActivityReminderTimers(fs).deliver(payload['uid'], payload['reminder_id'], payload['timer_id'],
                                           ContextAutomationService(cloud=fs))
         PushNotifications().deliver(payload['uid'])
     await asyncio.to_thread(deliver)
-    return {'status': 'ok'}
-
-
-@router.post('/devices/push-token')
-async def register_push_token(payload: dict, uid: Annotated[str, Depends(get_current_user)]):
-    token = payload.get('token')
-    if not isinstance(token, str) or not 20 <= len(token) <= 4096:
-        raise HTTPException(422, 'Invalid push token')
-    await asyncio.to_thread(PushNotifications().register, uid, token)
     return {'status': 'ok'}
 
 
@@ -378,7 +408,7 @@ async def command_status(request_id: str, uid: Annotated[str, Depends(get_curren
 
 @router.post('/commands/requests/{request_id}/calendar-result')
 async def calendar_result(request_id: str, payload: dict, uid: Annotated[str, Depends(get_current_user)], x_calendar_session: Annotated[str | None, Header()] = None):
-    if not isinstance(payload.get('result'), dict) or len(json.dumps(payload)) > 150000:
+    if not isinstance(payload.get('result'), dict) or len(json.dumps(payload)) > 8 * 1024 * 1024:
         raise HTTPException(422, 'Invalid calendar result')
     store = CommandRunStore()
     await asyncio.to_thread(store.calendar_result, uid, request_id, payload.get('action_id'), payload['result'], x_calendar_session)
@@ -415,8 +445,8 @@ def delete_chat_session_endpoint(
     session_id: str,
     uid: Annotated[str, Depends(get_current_user)],
 ) -> None:
-    """Delete a chat session and all its messages from Firestore."""
-    fs = FirestoreService()
+    """Delete a chat session and all its messages from RecordStore."""
+    fs = RecordStore()
     if fs.is_available:
         fs.delete_chat_session(session_id)
     return None
@@ -426,8 +456,8 @@ def delete_chat_session_endpoint(
 def delete_all_chat_sessions_endpoint(
     uid: Annotated[str, Depends(get_current_user)],
 ) -> None:
-    """Delete all chat sessions and messages for the user from Firestore."""
-    fs = FirestoreService()
+    """Delete all chat sessions and messages for the user from RecordStore."""
+    fs = RecordStore()
     if fs.is_available:
         fs.delete_all_chat_sessions(uid)
     return None

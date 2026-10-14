@@ -31,6 +31,7 @@ object ContextLocationCapture {
     }.getOrNull()
 
     fun capture(context: Context, events: List<JSONObject>, durationMs: Long): List<JSONObject> {
+        if (!JarvisPower.enabled(context)) return events
         if (events.isEmpty()) return events
         // Wi-Fi and existing connections provide context without waiting for a
         // Bluetooth scan that this phone's background policy repeatedly denies.
@@ -75,6 +76,7 @@ object ContextLocationCapture {
         val now = System.currentTimeMillis()
         if (remaining.any { occurred(it)?.let { at -> abs(now - at) <= MAX_AGE_MS } == true }) {
             val cancellation = CancellationTokenSource()
+            JarvisPower.trackLocation(context, cancellation)
             try {
                 val request = CurrentLocationRequest.Builder()
                     .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
@@ -86,10 +88,11 @@ object ContextLocationCapture {
             } catch (error: Exception) {
                 Log.d("JarvisLocation", "Fresh fix unavailable: ${error.message}")
             } finally {
-                cancellation.cancel()
+                JarvisPower.releaseLocation(cancellation)
             }
         }
         // A recent system fix is a fallback only; always try a new fix first.
+        if (!JarvisPower.enabled(context)) return events
         if (location == null || !location.hasAccuracy() || location.accuracy > 250f) {
             location = runCatching { Tasks.await(client.lastLocation, 1, TimeUnit.SECONDS) }.getOrNull()
         }

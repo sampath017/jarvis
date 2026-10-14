@@ -1,3 +1,5 @@
+> Historical release notes. The Android-only local storage migration supersedes the storage and deployment details below; see [current storage](android-local-storage.md).
+
 # Session fragmentation diagnosis — October 10, 2026
 
 Read-only investigation of the latest stored Jarvis chat, October 9 at 23:51 IST,

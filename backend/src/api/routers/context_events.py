@@ -85,10 +85,10 @@ async def ingest_context_event(
             # Rebuild derived history at boundaries, not on every minute's sample.
             # History queries also rebuild from all durable samples on demand.
             try:
-                from ...services.firestore_service import FirestoreService
+                from ...services.record_store import RecordStore
                 from ...backend.activity_sessions import enriched_history
                 from datetime import timedelta
-                fs = FirestoreService()
+                fs = RecordStore()
                 if fs.is_available:
                     now = datetime.now(timezone.utc)
                     await asyncio.to_thread(enriched_history, fs, uid, now - timedelta(days=1), now, persist=True)

@@ -7,6 +7,9 @@ from ..backend.command_execution import execution
 def calendar_tools():
     def dispatch(operation, **args):
         current = execution.get()
+        if current and current.server_google_dispatch:
+            current.check()
+            return json.dumps(current.server_google_dispatch({'operation': operation, **args}), default=str)
         if not current or not current.calendar_dispatch:
             return json.dumps({"status": "unavailable", "message": "Connect Google Calendar in Settings, then keep Jarvis open while using calendar commands."})
         current.check()
@@ -32,18 +35,19 @@ def calendar_tools():
 
     @tool
     def create_calendar_event(event: dict, calendar_id: str = "") -> str:
-        """Propose creating a Google Calendar event; the phone MUST obtain approval.
+        """Create an explicitly requested Google Calendar event through connected cloud access, or the phone fallback.
         event uses Google event fields: summary, description, location, start, end,
         attendees (email objects), recurrence (RRULE strings). Timed start/end use
         {dateTime: ISO timestamp with offset, timeZone: IANA zone}. All-day use
         {date: YYYY-MM-DD}; end is exclusive. Invitations are sent only after approval.
+        Cloud access executes the user's requested action without a phone preview; fallback requires phone approval.
         A declined proposal is NOT executed. Never claim success without status=ok.
         """
         return dispatch("create", calendar_id=calendar_id, event=event)
 
     @tool
     def update_calendar_event(event_id: str, changes: dict, calendar_id: str = "", whole_series: bool = False) -> str:
-        """Propose editing a Google Calendar event, requiring approval on the phone.
+        """Edit an explicitly requested Google Calendar event; cloud access executes directly, phone fallback requires approval.
         Search first and clarify ambiguous matches. changes contains only fields to
         change, using Google's event format. whole_series=true ONLY if the user
         explicitly requested the whole recurring series; otherwise use an instance ID.
@@ -52,7 +56,7 @@ def calendar_tools():
 
     @tool
     def delete_calendar_event(event_id: str, calendar_id: str = "", whole_series: bool = False) -> str:
-        """Propose deleting a Google Calendar event; requires approval on the phone.
+        """Delete an explicitly requested Google Calendar event; cloud access executes directly, phone fallback requires approval.
         Search first. Ask which event if ambiguous. whole_series=true only when the
         user explicitly requested the entire recurring series; otherwise use an instance.
         Cancellation notices to guests must be disclosed in the approval preview.

@@ -1,4 +1,10 @@
+> Historical release notes. The Android-only local storage migration supersedes the storage and deployment details below; see [current storage](../android-local-storage.md).
+
 # Jarvis: full architecture and current deployment
+
+Later changes on 13 October: [server-side Google actions](../server-side-google-actions-2026-10-13.md)
+and [persistent phone/cloud power control](../runtime-power-2026-10-13.md).
+The original diagrams below describe the earlier inspection snapshot.
 
 Reviewed 13 October 2026. This report combines the current working tree with read-only cloud inspection. Existing uncommitted work was preserved. No application, account, infrastructure or user-data changes were made for this report.
 

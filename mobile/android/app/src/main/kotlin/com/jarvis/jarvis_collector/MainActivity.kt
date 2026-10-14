@@ -21,6 +21,7 @@ class MainActivity : FlutterFragmentActivity() {
         @Volatile var isVisible = false
         @Volatile var visibleThreadId = ""
         var chatUpdateListener: ((String) -> Unit)? = null
+        private val localWork = java.util.concurrent.Executors.newSingleThreadExecutor()
     }
     private var usageChannel: MethodChannel? = null
     private var chatChannel: MethodChannel? = null
@@ -35,7 +36,17 @@ class MainActivity : FlutterFragmentActivity() {
         attachmentPicker?.onActivityResult(requestCode, resultCode, data)
     }
 
-    override fun onResume() { super.onResume(); isVisible = true; UsageReporting.schedule(applicationContext); ReminderAlerts.restore(applicationContext) }
+    override fun onResume() {
+        super.onResume()
+        isVisible = true
+        val app = applicationContext
+        localWork.execute {
+            runCatching {
+                UsageReporting.schedule(app)
+                ReminderAlerts.restore(app)
+            }.onFailure { Log.w("JarvisStartup", "Could not restore scheduled alerts") }
+        }
+    }
     override fun onPause() { isVisible = false; super.onPause() }
     override fun onDestroy() { chatUpdateListener = null; chatChannel = null; super.onDestroy() }
     override fun onNewIntent(intent: Intent) {
@@ -57,6 +68,16 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jarvis/power").setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "status" -> result.success(JarvisPower.status(applicationContext))
+                    "setEnabled" -> { JarvisPower.setEnabled(applicationContext, call.arguments as Boolean); result.success(true) }
+                    "setCloudConfirmed" -> { JarvisPower.cloudConfirmed(applicationContext, call.arguments as Boolean); result.success(true) }
+                    else -> result.notImplemented()
+                }
+            } catch (error: Exception) { result.error("power_failed", "Could not update phone power", null) }
+        }
         calendarAuthorization = GoogleAccountAuthorization(this, flutterEngine.dartExecutor.binaryMessenger)
         driveAuthorization = GoogleAccountAuthorization(this, flutterEngine.dartExecutor.binaryMessenger, "drive")
         attachmentPicker = ChatAttachmentPicker(this, flutterEngine.dartExecutor.binaryMessenger)
@@ -104,9 +125,6 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
         chatUpdateListener = { thread -> runOnUiThread { chatChannel?.invokeMethod("chatUpdated", thread) } }
-        com.google.firebase.messaging.FirebaseMessaging.getInstance().token
-            .addOnSuccessListener { PushDelivery.register(applicationContext, it) }
-            .addOnFailureListener { Log.w(TAG, "Push registration deferred", it) }
 
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
         ActivityTransitionReceiver.sampleListener = { activity, confidence ->
@@ -129,6 +147,10 @@ class MainActivity : FlutterFragmentActivity() {
         }
 
         channel.setMethodCallHandler { call, result ->
+            if (!JarvisPower.enabled(applicationContext) && call.method in setOf("startService", "startTripwire", "showNotification", "requestContextPermissions")) {
+                result.error("powered_off", "Jarvis is powered off", null)
+                return@setMethodCallHandler
+            }
             when (call.method) {
                 "contextLocationStatus" -> {
                     val foreground = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -264,9 +286,30 @@ class MainActivity : FlutterFragmentActivity() {
                         call.argument<String>("delivery_mode") ?: "notification", call.argument<String>("reminder_id") ?: "",
                         call.argument<String>("alarm_due_at") ?: "", call.argument<String>("occurred_at") ?: ""))
                 }
+                "mobileContext" -> {
+                    val app = applicationContext
+                    val payload = call.arguments as String
+                    localWork.execute {
+                        try {
+                            val context = MobileRecords.context(app, org.json.JSONObject(payload)).toString()
+                            runOnUiThread { result.success(context) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("local_storage", "Local context is unavailable", null) }
+                        }
+                    }
+                }
                 "syncRingingReminders" -> {
-                    ReminderAlerts.reconcile(this, org.json.JSONArray(call.arguments as? String ?: "[]"))
-                    result.success(ReminderAlerts.status(this))
+                    val app = applicationContext
+                    val payload = call.arguments as? String ?: "[]"
+                    localWork.execute {
+                        try {
+                            ReminderAlerts.reconcile(app, org.json.JSONArray(payload))
+                            val status = ReminderAlerts.status(app)
+                            runOnUiThread { result.success(status) }
+                        } catch (e: Exception) {
+                            runOnUiThread { result.error("local_storage", "Could not refresh reminders", null) }
+                        }
+                    }
                 }
                 "ringingStatus" -> result.success(ReminderAlerts.status(this))
                 "openFullScreenAlerts" -> {

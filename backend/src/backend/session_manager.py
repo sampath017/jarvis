@@ -4,8 +4,8 @@ Deterministic Journey Session State Machine
 Maintains journey continuity across park → walk → shop → return transitions.
 Uses a deterministic state machine with configurable TTL.
 
-In production, session state is persisted to Firestore. This module contains
-the pure state-transition logic; Firestore I/O is handled by the graph nodes.
+In production, session state is persisted to RecordStore. This module contains
+the pure state-transition logic; RecordStore I/O is handled by the graph nodes.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class SessionManager:
         """
         Process a context packet through the state machine.
 
-        Takes the current session (loaded from Firestore) and returns
+        Takes the current session (loaded from RecordStore) and returns
         the updated session, a newly created session, or None.
         """
         now = packet.timestamp

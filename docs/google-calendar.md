@@ -1,3 +1,5 @@
+> Historical release notes. The Android-only local storage migration supersedes the storage and deployment details below; see [current storage](android-local-storage.md).
+
 # Google Calendar in Jarvis
 
 Open **Settings → Google Calendar → Connect Google account**, choose your account,

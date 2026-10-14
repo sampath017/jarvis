@@ -1,9 +1,11 @@
+import 'mobile_store.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'power_state.dart';
 import 'file_read_batch.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:http/http.dart' as http;
+import 'power_http.dart' as http;
 import 'local_db_service.dart';
 import 'location_result.dart';
 import 'command_client.dart';
@@ -24,7 +26,6 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   static const _channel = MethodChannel('com.jarvis/foreground_service');
-  final Set<String> _dispatchedNotificationIds = {};
   final Map<String, DateTime> _recentNotificationTimestamps = {};
   Timer? _notificationPollTimer;
   bool _flushingContext = false;
@@ -48,11 +49,12 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
   List<Map<String, dynamic>> _notes = [];
   List<Map<String, dynamic>> get notes => _notes;
 
-  List<Map<String, dynamic>> _notifications = [];
+  final List<Map<String, dynamic>> _notifications = [];
   List<Map<String, dynamic>> get notifications => _notifications;
 
   void _startNotificationPoll() {
     _notificationPollTimer?.cancel();
+    if (!PowerState.enabled.value) return;
     if (WidgetsBinding.instance.lifecycleState != null &&
         WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
       return;
@@ -65,6 +67,7 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!PowerState.enabled.value) return;
     if (state == AppLifecycleState.resumed) {
       _startNotificationPoll();
       unawaited(fetchNotifications());
@@ -74,6 +77,15 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
       _notificationPollTimer = null;
     }
   }
+
+  void pauseForPowerOff() {
+    _notificationPollTimer?.cancel();
+    _notificationPollTimer = null;
+    _isOnline = false;
+    notifyListeners();
+  }
+
+  void resumeAfterPowerOn() => _startNotificationPoll();
 
   @override
   void dispose() {
@@ -155,7 +167,10 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
             .post(
               Uri.parse('$_baseUrl/context-events'),
               headers: _headers,
-              body: jsonEncode(event),
+              body: jsonEncode({
+                ...event,
+                '_mobile_state': await MobileStore.instance.eventContext(event),
+              }),
             )
             .timeout(const Duration(seconds: 60));
         if (res.statusCode != 200 && res.statusCode != 202) break;
@@ -207,6 +222,7 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     final payload = <String, dynamic>{
+      '_mobile_state': await MobileStore.instance.commandContext(),
       'request_id': requestId ?? 'cmd_${DateTime.now().millisecondsSinceEpoch}',
       'thread_id': threadId ?? 'default_thread',
       'text': text,
@@ -310,7 +326,24 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     if (!_actionResults.containsKey(id)) {
-      if (action['operation'] == 'file_read_batch') {
+      if (action['operation'] == 'local_read') {
+        if (!await active()) return;
+        try {
+          _actionResults[id] = {
+            'status': 'ok',
+            'state': await MobileStore.instance.readForTool(
+              action['tool'].toString(),
+              Map<String, dynamic>.from(action['arguments'] as Map? ?? {}),
+            ),
+          };
+        } catch (_) {
+          _actionResults[id] = {
+            'status': 'failed',
+            'message':
+                'The requested local records could not be read. Narrow the request and try again.',
+          };
+        }
+      } else if (action['operation'] == 'file_read_batch') {
         final actions = List<Map<String, dynamic>>.from(
           action['actions'] as List? ?? [],
         );
@@ -453,98 +486,19 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Fetch active reminders from Cloud Run (/reminders)
   Future<List<Map<String, dynamic>>> fetchReminders() async {
-    try {
-      final res = await http
-          .get(Uri.parse('$_baseUrl/reminders'), headers: _headers)
-          .timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        _isOnline = true;
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _reminders = List<Map<String, dynamic>>.from(data['records'] ?? []);
-        await LocalDbService().reconcileRemoteRecords(
-          remoteReminders: _reminders,
-        );
-        await _channel.invokeMethod(
-          'syncRingingReminders',
-          jsonEncode(await LocalDbService().getReminders()),
-        );
-        try {
-          await _channel.invokeMethod(
-            'setDynamicMonitoring',
-            _reminders.any(
-              (r) => r['status'] == 'ACTIVE' && r['dynamic_policy'] != null,
-            ),
-          );
-        } catch (_) {}
-        notifyListeners();
-        return _reminders;
-      }
-    } catch (_) {}
+    _reminders = await LocalDbService().getReminders();
+    notifyListeners();
     return _reminders;
   }
 
-  /// Fetch saved notes from Cloud Run (/notes)
   Future<List<Map<String, dynamic>>> fetchNotes() async {
-    try {
-      final res = await http
-          .get(Uri.parse('$_baseUrl/notes'), headers: _headers)
-          .timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        _isOnline = true;
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _notes = List<Map<String, dynamic>>.from(data['records'] ?? []);
-        notifyListeners();
-        return _notes;
-      }
-    } catch (_) {}
+    _notes = await LocalDbService().getNotes();
+    notifyListeners();
     return _notes;
   }
 
-  /// Fetch notifications from Cloud Run (/notifications) and dispatch to phone system tray
-  Future<List<Map<String, dynamic>>> fetchNotifications() async {
-    try {
-      final res = await http
-          .get(Uri.parse('$_baseUrl/notifications'), headers: _headers)
-          .timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _notifications = List<Map<String, dynamic>>.from(data['records'] ?? []);
-
-        // Deliver any pending reminder alerts directly to Android phone notification tray
-        for (final n in _notifications) {
-          final id = n['id']?.toString() ?? '';
-          final reminderId = n['reminder_id']?.toString() ?? '';
-          final status = n['status']?.toString().toUpperCase();
-          if (status == 'PENDING' && !_dispatchedNotificationIds.contains(id)) {
-            final shown = await _channel
-                .invokeMethod<bool>('showCloudNotification', {
-                  'id': id,
-                  'title': n['title']?.toString() ?? 'Jarvis',
-                  'body': n['body']?.toString() ?? '',
-                  'thread_id': n['thread_id']?.toString() ?? '',
-                  'kind': n['kind']?.toString() ?? '',
-                  'delivery_mode':
-                      n['payload']?['delivery_mode'] ?? 'notification',
-                  'reminder_id': reminderId,
-                  'alarm_due_at': n['payload']?['alarm_due_at'] ?? '',
-                  'occurred_at': n['payload']?['occurred_at'] ?? '',
-                });
-            if (shown == true) {
-              _dispatchedNotificationIds.add(id);
-              if (reminderId.isNotEmpty) {
-                _dispatchedNotificationIds.add(reminderId);
-              }
-              unawaited(acknowledgeNotification(id));
-            }
-          }
-        }
-
-        notifyListeners();
-        return _notifications;
-      }
-    } catch (_) {}
-    return _notifications;
-  }
+  Future<List<Map<String, dynamic>>> fetchNotifications() async =>
+      _notifications;
 
   /// Dispatch a high-priority system tray notification on the Android device
   void showSystemNotification({
@@ -578,17 +532,7 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Acknowledge a notification on Cloud Run (/notifications/{id}/acknowledge)
-  Future<bool> acknowledgeNotification(String id) async {
-    try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl/notifications/$id/acknowledge'),
-        headers: _headers,
-      );
-      return res.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
-  }
+  Future<bool> acknowledgeNotification(String id) async => true;
 
   /// Create a new reminder directly via Cloud Run (/reminders)
   Future<bool> createReminder({
@@ -613,100 +557,38 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
       'one_shot': true,
     };
 
-    try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl/reminders'),
-        headers: _headers,
-        body: jsonEncode(payload),
-      );
-      if (res.statusCode == 201 || res.statusCode == 200) {
-        await fetchReminders();
-        return true;
-      }
-    } catch (e) {
-      debugPrint('[ApiService] Error creating reminder: $e');
-    }
-    return false;
+    payload.remove('one_shot');
+    payload['id'] = 'rem_${DateTime.now().microsecondsSinceEpoch}';
+    await LocalDbService().saveReminder(payload);
+    await fetchReminders();
+    return true;
   }
 
-  /// Delete a reminder from Cloud Run (/reminders/{id})
   Future<bool> deleteReminder(String id) async {
-    try {
-      final res = await http.delete(
-        Uri.parse('$_baseUrl/reminders/$id'),
-        headers: _headers,
-      );
-      if (res.statusCode == 204 || res.statusCode == 200) {
-        await fetchReminders();
-        return true;
-      }
-    } catch (_) {}
-    return false;
+    await LocalDbService().deleteReminder(id);
+    await fetchReminders();
+    return true;
   }
 
-  /// Delete a chat session from Cloud Run / Firestore (/chat-sessions/{id})
-  Future<bool> deleteChatSession(String id) async {
-    try {
-      final res = await http
-          .delete(Uri.parse('$_baseUrl/chat-sessions/$id'), headers: _headers)
-          .timeout(const Duration(seconds: 12));
-      return res.statusCode == 204 ||
-          res.statusCode == 200 ||
-          res.statusCode == 404;
-    } catch (e) {
-      debugPrint('[ApiService] Error deleting chat session $id: $e');
-    }
-    return false;
-  }
-
-  /// Delete all chat sessions and messages from Cloud Run / Firestore (/chat-sessions)
-  Future<bool> deleteAllChatSessions() async {
-    try {
-      final res = await http
-          .delete(Uri.parse('$_baseUrl/chat-sessions'), headers: _headers)
-          .timeout(const Duration(seconds: 15));
-      return res.statusCode == 204 ||
-          res.statusCode == 200 ||
-          res.statusCode == 404;
-    } catch (e) {
-      debugPrint('[ApiService] Error deleting all chat sessions: $e');
-    }
-    return false;
-  }
+  /// Delete a chat session from Cloud Run / the API cache (/chat-sessions/{id})
+  Future<bool> deleteChatSession(String id) async => true;
+  Future<bool> deleteAllChatSessions() async => true;
 
   /// Create a new note directly via Cloud Run (/notes)
   Future<bool> createNote({required String content, String? place}) async {
-    final payload = {'content': content, 'place': place};
-
-    try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl/notes'),
-        headers: _headers,
-        body: jsonEncode(payload),
-      );
-      if (res.statusCode == 201 || res.statusCode == 200) {
-        await fetchNotes();
-        return true;
-      }
-    } catch (e) {
-      debugPrint('[ApiService] Error creating note: $e');
-    }
-    return false;
+    await LocalDbService().saveNote({
+      'id': 'note_${DateTime.now().microsecondsSinceEpoch}',
+      'content': content,
+      'place': place ?? '',
+    });
+    await fetchNotes();
+    return true;
   }
 
-  /// Delete a note from Cloud Run (/notes/{id})
   Future<bool> deleteNote(String id) async {
-    try {
-      final res = await http.delete(
-        Uri.parse('$_baseUrl/notes/$id'),
-        headers: _headers,
-      );
-      if (res.statusCode == 204 || res.statusCode == 200) {
-        await fetchNotes();
-        return true;
-      }
-    } catch (_) {}
-    return false;
+    await LocalDbService().deleteNote(id);
+    await fetchNotes();
+    return true;
   }
 
   /// Automatically check if any active reminder needs triggering based on GPS or activity

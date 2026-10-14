@@ -4,7 +4,7 @@ from uuid import uuid4
 import time
 
 from .push_notifications import PushNotifications
-from .firestore_service import FirestoreService
+from .record_store import RecordStore
 
 
 def dispatch_device_action(uid, action, fallback, check):
@@ -21,7 +21,7 @@ def dispatch_device_action(uid, action, fallback, check):
 
 class DeviceContext:
     def __init__(self):
-        self.fs = FirestoreService()
+        self.fs = RecordStore()
 
     def request(self, uid):
         now = datetime.now(timezone.utc)

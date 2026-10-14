@@ -54,6 +54,7 @@ object ContextEventQueue {
 
     @Synchronized
     fun add(context: Context, event: JSONObject, deferCapture: Boolean = false) {
+        if (!JarvisPower.enabled(context)) return
         if (!event.has("telemetry_diagnostics") && event.optString("occurred_at") == event.optString("timestamp") &&
             event.optString("event_type") !in setOf("ACTIVITY_ENTER", "ACTIVITY_EXIT", "ACTIVITY_SAMPLE", "CONTEXT_CHECKPOINT")) {
             EventTiming.mark(context, event)
@@ -106,6 +107,7 @@ object ContextEventQueue {
     }
 
     fun scheduleLocationCapture(context: Context, delaySeconds: Long = 0) {
+        if (!JarvisPower.enabled(context)) return
         val builder = OneTimeWorkRequestBuilder<ContextLocationWorker>()
         if (Build.VERSION.SDK_INT >= 31 && delaySeconds == 0L) {
             builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
@@ -150,6 +152,7 @@ object ContextEventQueue {
     }
 
     fun scheduleFlush(context: Context) {
+        if (!JarvisPower.enabled(context)) return
         val request = OneTimeWorkRequestBuilder<ContextUploadWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
@@ -159,6 +162,7 @@ object ContextEventQueue {
     }
 
     fun schedulePeriodic(context: Context) {
+        if (!JarvisPower.enabled(context)) return
         val request = PeriodicWorkRequestBuilder<ContextUploadWorker>(15, TimeUnit.MINUTES)
             .setInputData(workDataOf("context_checkpoint" to true))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -167,6 +171,7 @@ object ContextEventQueue {
     }
 
     fun scheduleDwell(context: Context, activity: String) {
+        if (!JarvisPower.enabled(context)) return
         val request = OneTimeWorkRequestBuilder<ContextUploadWorker>()
             .setInputData(workDataOf("dwell_activity" to activity))
             .setInitialDelay(100, TimeUnit.SECONDS)

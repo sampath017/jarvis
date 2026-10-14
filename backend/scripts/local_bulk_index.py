@@ -64,7 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('manifest', type=Path)
     parser.add_argument('--embedding-url', default='http://127.0.0.1:8080')
-    parser.add_argument('--apply', action='store_true', help='Compute locally and upsert cloud vectors')
+    parser.add_argument('--apply', action='store_true', help='Compute embeddings and save the local vector index')
     args = parser.parse_args()
     url = local_url(args.embedding_url)
     entries = load_manifest(args.manifest.resolve(strict=True))
@@ -74,7 +74,7 @@ def main():
         return
     os.environ['EMBEDDING_URL'] = url
     if not drive_index.configured():
-        raise ValueError('Set CHROMA_API_KEY, CHROMA_TENANT and CHROMA_DATABASE')
+        raise ValueError('Set EMBEDDING_URL')
     check_model(url)
     for owner, memory, source in entries:
         result = drive_index.put_file(owner, memory, source)

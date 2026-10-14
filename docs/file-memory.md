@@ -1,3 +1,5 @@
+> Historical release notes. The Android-only local storage migration supersedes the storage and deployment details below; see [current storage](android-local-storage.md).
+
 # File memory and native analysis
 
 ## Drive content index
@@ -20,7 +22,7 @@ Deploy the embedding service with `python -m scripts.deploy_embedding`, then the
 
 The Chroma collection `jarvis-drive-eg2-768-v1` is scoped by the random phone capability and Google account. Partially indexed versions are excluded from search. Successful versions replace stale chunks. The phone rechecks Drive access and version before returning matches or indexed passages for Office, archives, text, Forms, binary information and large files. Passages carry locators and coverage and are untrusted data, never instructions. Selected passages are not a complete-file inspection. Updating the model or preprocessing requires a versioned index and re-embedding. Scale-to-zero removes idle compute after shutdown; storage remains billed and cold-start/large-media latency is not guaranteed to stay below 30 seconds.
 
-Google connections default to **sampathkovvali@gmail.com** on this phone. Attach a PDF, image or video in chat; Google consent opens if connection is needed. The text you send is remembered as your description. The user's send action authorizes the upload, and file questions authorize native analysis. Neither operation asks for an additional Jarvis confirmation.
+Google connections use the account configured on the phone. Attach a PDF, image or video in chat; Google consent opens if connection is needed. The text you send is remembered as your description. The user's send action authorizes the upload, and file questions authorize native analysis. Neither operation asks for an additional Jarvis confirmation.
 
 Settings keeps a collapsed **Connected accounts** entry for account status, calendar choice and disconnect controls. Healthy accounts do not show a reconnect button. At app startup, missing local connections attempt to reuse an existing Google grant silently, then verify API access before saving the connection. No consent dialog opens automatically. An explicit disconnect disables this restoration until the user connects again. App updates retain preferences; after a full reinstall, restoration depends on the Google account/grant and Android's restored data. When consent is required, Connect/Reconnect remains available. Tokens stay in memory on the phone.
 

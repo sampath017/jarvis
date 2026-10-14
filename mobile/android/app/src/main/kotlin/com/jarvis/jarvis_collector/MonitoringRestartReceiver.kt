@@ -11,6 +11,7 @@ import android.util.Log
 /** Re-registers Play Services transitions after reboot or package replacement. */
 class MonitoringRestartReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (!JarvisPower.enabled(context)) return
         if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
             intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         if (!ActivityRecognitionRegistrar.isEnabled(context)) return

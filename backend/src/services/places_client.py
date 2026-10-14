@@ -19,7 +19,7 @@ from ..models.schemas import POICandidate
 logger = logging.getLogger(__name__)
 
 # Simple in-memory budget tracker (per-instance).
-# For multi-instance Cloud Run, move to Firestore counters.
+# For multi-instance Cloud Run, move to RecordStore counters.
 _daily_budgets: dict[str, int] = {}
 
 

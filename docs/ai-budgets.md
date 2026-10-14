@@ -1,3 +1,5 @@
+> Historical release notes. The Android-only local storage migration supersedes the storage and deployment details below; see [current storage](android-local-storage.md).
+
 # AI spending allowance
 
 Production uses one **Rs 50/day AI allowance** (raised from Rs 20 on 2026-10-11), reset at midnight IST. There is no daily token or model-call ceiling. The per-minute guard remains 15 requests/minute. Local testing retains finite token/call guardrails but uses the same spending allowance.

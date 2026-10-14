@@ -289,8 +289,8 @@ class FunctionRegistry:
             if operation == CRUDOperation.CREATE:
                 record = self._crud.create(entity, call.arguments)
                 try:
-                    from ..services.firestore_service import FirestoreService
-                    fs = FirestoreService()
+                    from ..services.record_store import RecordStore
+                    fs = RecordStore()
                     if entity == CRUDEntity.REMINDER:
                         fs.save_reminder(record.get("id", ""), record)
                     elif entity == CRUDEntity.NOTE:
@@ -312,8 +312,8 @@ class FunctionRegistry:
                 record = self._crud.update(entity, record_id, update_data)
                 if record:
                     try:
-                        from ..services.firestore_service import FirestoreService
-                        fs = FirestoreService()
+                        from ..services.record_store import RecordStore
+                        fs = RecordStore()
                         if entity == CRUDEntity.REMINDER:
                             fs.save_reminder(record.get("id", ""), record)
                         elif entity == CRUDEntity.NOTE:
@@ -328,8 +328,8 @@ class FunctionRegistry:
                 deleted = self._crud.delete(entity, record_id)
                 if deleted:
                     try:
-                        from ..services.firestore_service import FirestoreService
-                        fs = FirestoreService()
+                        from ..services.record_store import RecordStore
+                        fs = RecordStore()
                         if entity == CRUDEntity.REMINDER:
                             fs.delete_reminder(record_id)
                         elif entity == CRUDEntity.NOTE:

@@ -43,6 +43,10 @@ class DatabaseService(
     """Native SQL database operations for Jarvis."""
 
     def __init__(self, db_path: Path | str | None = None) -> None:
+        from ..mobile_scope import mobile_only
+        if db_path is None and mobile_only():
+            self._db_path = None
+            return
         self._db_path: Path = Path(db_path) if db_path else get_db_path()
         init_database(self._db_path)
 
@@ -53,6 +57,19 @@ class DatabaseService(
         Explicitly closing here avoids locked database files and keeps
         concurrency reliable under async workloads.
         """
+        from ..mobile_scope import current
+        scope = current.get()
+        if scope is not None and self._db_path is None:
+            with scope.connection() as conn:
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            return
+        if self._db_path is None:
+            raise RuntimeError('Android request context is required')
         conn = sqlite3.connect(self._db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:

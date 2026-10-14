@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothDevice
 /** Phone-call and Bluetooth connection changes share the durable event outbox. */
 class SituationChangeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (!JarvisPower.enabled(context)) return
         if (!ActivityRecognitionRegistrar.isEnabled(context)) return
         val type = if (intent.action == TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
             val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return

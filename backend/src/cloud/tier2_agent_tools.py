@@ -3,7 +3,7 @@ Tier 2 LangChain Agent Tools.
 
 Provides callable LangChain @tool wrappers around Jarvis database CRUD operations,
 allowing the Tier 2 ReAct agent to autonomously create, read, update, delete, and search
-reminders, notes, tasks, and places with automatic Firestore cloud synchronization.
+reminders, notes, tasks, and places with local SQLite persistence and Android synchronization.
 """
 
 from __future__ import annotations
@@ -14,18 +14,20 @@ import re
 import sys
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
-from typing import Any
-from langchain_core.tools import tool
+from typing import Annotated, Any
+from langchain_core.tools import InjectedToolArg, tool
 
 from ..services.database import DatabaseService
-from ..services.firestore_service import FirestoreService
+from ..services.record_store import RecordStore
+from ..backend.reminder_tool_contract import reminder_input_error
 
 logger = logging.getLogger(__name__)
 
 
 def is_test_environment() -> bool:
     """Return True if executing inside automated unit/integration tests."""
-    return "pytest" in sys.modules or os.getenv("ENVIRONMENT") == "testing"
+    from ..services.mobile_scope import current
+    return current.get() is None and ("pytest" in sys.modules or os.getenv("ENVIRONMENT") == "testing")
 
 
 def normalize_due_at(due_at: str) -> str:
@@ -248,8 +250,8 @@ def _resolve_location_and_coords(
         places = db.list_places(uid)
         if not places and not is_test_environment():
             try:
-                from ..services.firestore_service import FirestoreService
-                fs = FirestoreService()
+                from ..services.record_store import RecordStore
+                fs = RecordStore()
                 if fs.is_available:
                     for p in fs.get_places(uid):
                         db.create_place(uid, p)
@@ -273,7 +275,7 @@ def _resolve_location_and_coords(
             if not candidates:
                 return None
             # A generic name such as "gym" may refer to more than one saved
-            # place. Do not silently choose the first Firestore result.
+            # place. Do not silently choose the first RecordStore result.
             coordinates = {(p.get("latitude"), p.get("longitude")) for p in candidates}
             if len(coordinates) > 1:
                 return loc_clean, None, None
@@ -344,9 +346,9 @@ def _resolve_location_and_coords(
 
 def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
     """Build a list of LangChain tools bound to the authenticated user's database scope."""
-    fs = FirestoreService()
+    fs = RecordStore()
     if is_test_environment():
-        # Tool tests must never read or write a live user's Firestore records.
+        # Tool tests must never read or write a live user's RecordStore records.
         fs._db = None
 
     def move_reminder_to_trash(record: dict[str, Any]) -> None:
@@ -361,9 +363,10 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
     def move_note_to_trash(record: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
         data = {**record, "uid": uid, "deleted_at": now, "updated_at": now}
-        db.create_note(uid, data)
         if fs.is_available and not is_test_environment():
-            fs.save_note(record["id"], data)
+            if not fs.save_note(record["id"], data):
+                raise RuntimeError('Cloud storage is unavailable; the note was not deleted. Please retry.')
+        db.create_note(uid, data)
 
     # ── Reminders ────────────────────────────────────────────────────────────
 
@@ -376,7 +379,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         due_at: str = "",
         latitude: float | None = None,
         longitude: float | None = None,
-        confirmed: bool = False,
+        confirmed: Annotated[bool, InjectedToolArg] = False,
         place_category: str = "",
         journey_origin: str = "",
         journey_destination: str = "",
@@ -384,7 +387,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         activity_delay_seconds: int = 0,
         delivery_mode: str = "notification",
     ) -> str:
-        """Create a new context-aware reminder for the user.
+        """Create a requested reminder without asking for additional approval.
         Args:
             title: The reminder text (e.g. 'Refuel at Indian Oil', 'Check tire pressure').
             delivery_mode: notification (default), alarm (ringing alarm), or in_app_call (free ringing screen; Answer reads the reminder). Use alarm or in_app_call only when explicitly requested. These are Android alerts, not telephone calls. Exact timing and full-screen display require phone permissions; context alerts require connectivity. Only one-shot alarms are supported.
@@ -396,11 +399,9 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
             latitude: Optional GPS latitude coordinate.
             longitude: Optional GPS longitude coordinate.
             place_category: Dynamic Google Places primary type, e.g. gas_station, pharmacy, supermarket, restaurant, hospital. Use for ANY matching place as the user travels, not a fixed coordinate.
-            journey_origin: Optional saved/resolvable place the user must visit then leave before this reminder can fire, e.g. Gym.
+            journey_origin: Saved place to leave, e.g. Gym. Without place_category or journey_destination, fires on leaving this place alone. No nearby shop is required.
             journey_destination: Optional saved/resolvable destination that ends the journey, e.g. Home. Without an origin, requires movement toward this destination.
             nearby_radius_m: Dynamic alert distance, 100 to 500 metres. Default 350.
-            confirmed: Deprecated compatibility argument. A clear user request
-                with a resolvable trigger does not need a separate confirmation.
         """
         try:
             if delivery_mode not in {'notification', 'alarm', 'in_app_call'}:
@@ -410,7 +411,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 try:
                     datetime.fromisoformat(parsed_due.replace('Z', '+00:00'))
                 except ValueError:
-                    return "CONFIRMATION_REQUIRED: Ask for an unambiguous reminder time. Nothing was saved."
+                    return reminder_input_error("invalid_time", "due_at", "The reminder time is missing or invalid; supply an ISO timestamp or a relative duration such as in 10 seconds.")
             # Tier 2 is responsible for interpreting the chat and emitting a
             # structured policy.  Keep execution deterministic by storing its
             # canonical conditions in the existing activity field.
@@ -422,7 +423,8 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                         norm_activity not in {'WALKING','RUNNING','IN_VEHICLE','ON_BICYCLE','STILL'} or place_category):
                     return 'Not saved: an activity timer needs one physical activity, 1–86400 seconds, and no dynamic place category.'
                 from ..services.background_tasks import BackgroundTasks
-                if not is_test_environment() and not BackgroundTasks().configured:
+                from ..services.mobile_scope import mobile_only
+                if not mobile_only() and not is_test_environment() and not BackgroundTasks().configured:
                     return 'Not saved: durable background timer delivery is unavailable.'
 
             # Legacy/direct-call fallback.  The agent path supplies activity
@@ -434,20 +436,36 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                         norm_activity = cand_act
                         break
 
+            if journey_origin and not place_category and not journey_destination:
+                label, lat, lon = _resolve_location_and_coords(db, uid, journey_origin, None, None)
+                if lat is None or lon is None:
+                    return reminder_input_error('unresolved_place', 'journey_origin', 'Choose the specific saved place to leave.')
+                policy = {'version': 1, 'trigger': 'exit', 'radius_m': 200,
+                          'origin': {'name': label, 'latitude': lat, 'longitude': lon}}
+                data = {'title': title, 'location_name': 'After leaving ' + str(label),
+                        'dynamic_policy': policy, 'activity': norm_activity, 'due_at': parsed_due,
+                        'status': 'ACTIVE', 'one_shot': True, 'delivery_mode': delivery_mode}
+                saved = db.create_reminder(uid, data)
+                if fs.is_available and not is_test_environment():
+                    if not fs.save_reminder(saved['id'], saved):
+                        db.update_reminder(uid, saved['id'], {'status': 'PAUSED'})
+                        return 'Not saved: cloud storage is unavailable; the local reminder is paused.'
+                return f"Saved departure reminder (ID: {saved['id']}): {title}; on leaving {label}; delivery_mode={delivery_mode}. No nearby shop or destination is required. Requires a fresh observed inside-to-outside transition."
+
             if place_category:
                 from ..backend.dynamic_reminders import SUPPORTED_CATEGORIES
                 if place_category not in SUPPORTED_CATEGORIES:
-                    return "CONFIRMATION_REQUIRED: This place category is not supported yet. Choose a supported category or a named place. Nothing was saved."
+                    return reminder_input_error("unsupported_place_category", "place_category", "Choose a supported place category or a named place.")
                 if not re.fullmatch(r"[a-z][a-z_]{2,60}", place_category):
-                    return "CONFIRMATION_REQUIRED: Choose a valid place category. Nothing was saved."
+                    return reminder_input_error("invalid_place_category", "place_category", "Choose a valid place category.")
                 if (activity or context_states) and not norm_activity:
-                    return "CONFIRMATION_REQUIRED: This activity is not detectable. Nothing was saved."
+                    return reminder_input_error("unsupported_activity", "activity", "Choose a supported detectable activity.")
                 policy = {'version': 1, 'category': place_category, 'radius_m': min(500, max(100, nearby_radius_m))}
                 for key, name in [('origin', journey_origin), ('destination', journey_destination)]:
                     if name:
                         label, lat, lon = _resolve_location_and_coords(db, uid, name, None, None)
                         if lat is None or lon is None:
-                            return f"CONFIRMATION_REQUIRED: Resolve the journey {key} '{name}' before saving. Nothing was saved."
+                            return reminder_input_error("unresolved_journey_place", "journey_" + key, f"Resolve the journey {key} before saving.")
                         policy[key] = {'name': label, 'latitude': lat, 'longitude': lon}
                 description = 'Any nearby ' + place_category.replace('_', ' ')
                 if journey_origin: description += f' after leaving {journey_origin}'
@@ -458,7 +476,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 if fs.is_available and not is_test_environment(): fs.save_reminder(saved['id'], saved)
                 return f"Saved dynamic reminder (ID: {saved['id']}): {description}; activity={norm_activity}; alerts once within {policy['radius_m']}m of a verified matching place during the observed journey. Requires fresh background location."
             if journey_origin or journey_destination or re.search(r"\b(route|along the way|on the way|any (?:petrol|fuel|gas))\b", location_name, re.I):
-                return "CONFIRMATION_REQUIRED: Use place_category and journey_origin/journey_destination for a dynamic journey, not a fixed midpoint. Nothing was saved."
+                return reminder_input_error("invalid_journey", "place_category", "Use place_category and journey_origin/journey_destination for a dynamic journey.")
 
             # Auto-detect relative location cues from title if location_name is omitted
             if not location_name:
@@ -484,35 +502,29 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
             has_location_request = bool(location_name.strip() or latitude is not None or longitude is not None)
             has_resolved_geofence = res_lat is not None and res_lon is not None
             if (activity or context_states) and not norm_activity:
-                return "CONFIRMATION_REQUIRED: That activity cannot be detected. Ask for a supported activity or a time."
+                return reminder_input_error("unsupported_activity", "activity", "Choose a supported detectable activity or a reminder time.")
             if not (norm_activity or parsed_due or has_resolved_geofence):
-                return "CONFIRMATION_REQUIRED: Ask when or where the user wants this reminder. Nothing was saved."
+                return reminder_input_error("missing_trigger", "due_at", "Supply a reminder time, supported activity, or resolved place from the user request.")
             if parsed_due:
                 try:
                     datetime.fromisoformat(parsed_due.replace("Z", "+00:00"))
                 except ValueError:
-                    return "CONFIRMATION_REQUIRED: Ask for an unambiguous reminder time. Nothing was saved."
+                    return reminder_input_error("invalid_time", "due_at", "The reminder time is missing or invalid; supply an ISO timestamp or a relative duration such as in 10 seconds.")
 
             # Do not silently turn a conversational guess into an automation.
             # Semantic states are deliberately place-bound: Android emits
             # physical activities, while the backend derives dwell/parked
             # transitions from a verified session at a known location.
             if has_location_request and not has_resolved_geofence:
-                return (
-                    "CONFIRMATION_REQUIRED: I could not resolve the requested place to a GPS location. "
-                    "Ask the user to choose or save the place before creating this reminder."
-                )
+                return reminder_input_error("unresolved_place", "location_name", "The requested place could not be resolved. Choose or save the specific place.")
             if has_semantic_state and not has_resolved_geofence:
-                return (
-                    "CONFIRMATION_REQUIRED: A semantic reminder such as DWELLING, PARKED, or IN_SHOP "
-                    "must be tied to a resolved place. Ask the user which place they mean."
-                )
+                return reminder_input_error("unresolved_semantic_place", "location_name", "A DWELLING, PARKED, or IN_SHOP reminder needs a specific resolved place.")
             if fs.is_available and not is_test_environment():
                 try:
                     for r in fs.get_reminders(uid):
                         db.create_reminder(uid, r)
                 except Exception as fe:
-                    logger.debug("Firestore create_reminder sync note: %s", fe)
+                    logger.debug("RecordStore create_reminder sync note: %s", fe)
 
             # Digest existing active reminders: check if an existing reminder for the same task/errand exists to consolidate
             existing_rems = db.list_reminders(uid, status="ACTIVE", limit=50)
@@ -606,11 +618,12 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         context_states: str = "",
         due_at: str = "",
         status: str = "",
-        confirmed: bool = False,
+        confirmed: Annotated[bool, InjectedToolArg] = False,
         activity_delay_seconds: int | None = None,
         delivery_mode: str | None = None,
+        journey_origin: str | None = None,
     ) -> str:
-        """Update an existing reminder's conditions, title, location, activity, or status.
+        """Apply requested reminder edits without asking for additional approval.
         Args:
             reminder_id: The ID or title of the reminder to update.
             delivery_mode: Optional notification, alarm, or in_app_call. The latter rings inside Jarvis and reads the reminder when answered; it does not place a telephone call.
@@ -621,8 +634,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
             due_at: Optional updated ISO timestamp or relative duration.
             activity_delay_seconds: Optional one-shot timer delay after activity start, 0–86400 seconds. Zero removes the delay. This measures elapsed time after the start, not uninterrupted activity.
             status: Optional updated status: 'ACTIVE', 'PAUSED', 'COMPLETED'.
-            confirmed: Deprecated compatibility argument. Clear updates do not
-                need a separate confirmation.
+            journey_origin: Set to a saved place to replace a shop/journey condition with leaving that place alone. Originals need not be deleted.
         """
         try:
             target_id = reminder_id
@@ -638,6 +650,14 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                 return f"Could not find reminder matching '{reminder_id}' to update."
 
             patch: dict[str, Any] = {}
+            if journey_origin is not None:
+                label, lat, lon = _resolve_location_and_coords(db, uid, journey_origin, None, None)
+                if not journey_origin or lat is None or lon is None:
+                    return reminder_input_error('unresolved_place', 'journey_origin', 'Choose the specific saved place to leave.')
+                patch.update(dynamic_policy={'version': 1, 'trigger': 'exit', 'radius_m': 200,
+                    'origin': {'name': label, 'latitude': lat, 'longitude': lon}},
+                    location_name='After leaving ' + str(label), latitude=None, longitude=None, activity=None,
+                    activity_delay_seconds=0)
             if delivery_mode is not None:
                 if delivery_mode not in {'notification', 'alarm', 'in_app_call'}:
                     return 'Not changed: choose notification, alarm, or in_app_call.'
@@ -647,7 +667,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
             if location_name:
                 resolved_loc, loc_lat, loc_lon = _resolve_location_and_coords(db, uid, location_name)
                 if loc_lat is None or loc_lon is None:
-                    return "CONFIRMATION_REQUIRED: Choose or save the requested place first. Nothing was changed."
+                    return reminder_input_error("unresolved_place", "location_name", "Choose or save the specific requested place before changing this reminder.")
                 patch["location_name"] = resolved_loc
                 if loc_lat is not None:
                     patch["latitude"] = loc_lat
@@ -657,7 +677,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     ", ".join(part for part in (activity, context_states) if part)
                 ) or None
                 if not patch["activity"]:
-                    return "CONFIRMATION_REQUIRED: That activity cannot be detected. Nothing was changed."
+                    return reminder_input_error("unsupported_activity", "activity", "Choose a supported detectable activity.")
             if due_at:
                 patch["due_at"] = normalize_due_at(due_at) or None
             if status:
@@ -673,21 +693,23 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     return 'Not changed: activity timers require one physical activity and a one-shot reminder without a dynamic place category.'
             if candidate.get("status") == "ACTIVE":
                 acts = set((candidate.get("activity") or "").replace(" ", "").split(","))
-                if (candidate.get("location_name") or acts & {"DWELLING", "PARKED", "IN_SHOP"}) and (
+                if not candidate.get('dynamic_policy') and (candidate.get("location_name") or acts & {"DWELLING", "PARKED", "IN_SHOP"}) and (
                     candidate.get("latitude") is None or candidate.get("longitude") is None
                 ):
-                    return "CONFIRMATION_REQUIRED: This reminder needs a resolved place. Nothing was changed."
-                if not (candidate.get("activity") or candidate.get("due_at") or candidate.get("latitude") is not None):
-                    return "CONFIRMATION_REQUIRED: Specify when or where to remind you. Nothing was changed."
+                    return reminder_input_error("unresolved_place", "location_name", "This reminder needs a specific resolved place.")
+                if not (candidate.get("activity") or candidate.get("due_at") or candidate.get("latitude") is not None or candidate.get('dynamic_policy')):
+                    return reminder_input_error("missing_trigger", "due_at", "Supply a reminder time, supported activity, or resolved place from the user request.")
             if due_at:
                 try:
                     datetime.fromisoformat(str(patch["due_at"]).replace("Z", "+00:00"))
                 except ValueError:
-                    return "CONFIRMATION_REQUIRED: Specify an unambiguous time. Nothing was changed."
+                    return reminder_input_error("invalid_time", "due_at", "Supply an ISO timestamp or a relative duration such as in 10 seconds.")
 
             res = db.update_reminder(uid, target_id, patch)
             if fs.is_available and not is_test_environment():
-                fs.save_reminder(target_id, {**existing, **patch, "id": target_id, "uid": uid})
+                if not fs.save_reminder(target_id, {**existing, **patch, "id": target_id, "uid": uid}):
+                    db.update_reminder(uid, target_id, {key: existing.get(key) for key in patch})
+                    return 'Not changed: cloud storage is unavailable; the previous reminder was kept.'
             return f"Successfully updated reminder (ID: {target_id}); verified saved record: {db.get_reminder(uid, target_id)}"
         except Exception as e:
             return f"Error updating reminder: {e}"
@@ -706,7 +728,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     for r in fs.get_reminders(uid):
                         db.create_reminder(uid, r)
                 except Exception as fe:
-                    logger.debug("Firestore consolidate_reminders sync note: %s", fe)
+                    logger.debug("RecordStore consolidate_reminders sync note: %s", fe)
 
             active_rems = db.list_reminders(uid, status="ACTIVE", limit=50)
             if not active_rems:
@@ -842,7 +864,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     for r in fs.get_reminders(uid):
                         db.create_reminder(uid, r)
                 except Exception as fe:
-                    logger.debug("Firestore list_reminders pull note: %s", fe)
+                    logger.debug("RecordStore list_reminders pull note: %s", fe)
 
             stat_arg = None if status.upper() == "ALL" else status.upper()
             records = db.list_reminders(uid, status=stat_arg, limit=20)
@@ -879,6 +901,8 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
     @tool
     def delete_reminder(reminder_id: str) -> str:
         """Move a reminder to recoverable Trash using its exact ID or title match.
+        Only for a request to delete the reminder itself. To change its policy,
+        trigger, time or delivery, use update_reminder and preserve the same ID.
         Args:
             reminder_id: The exact ID of the reminder, or the title of the reminder to delete.
         """
@@ -949,6 +973,62 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         except Exception as e:
             return f"Error creating note: {e}"
 
+    def exact_active_note(note_id: str) -> dict[str, Any] | None:
+        # Refresh only the selected document, never a collection-wide scan.
+        if fs.is_available and not is_test_environment():
+            snapshot = fs._db.collection('notes').document(note_id).get()
+            record = snapshot.to_dict() if snapshot.exists else None
+            if not record or record.get('uid') != uid or record.get('deleted_at'):
+                return None
+            record = {**record, 'id': note_id}
+            db.create_note(uid, record)
+            return record
+        record = db.get_note(uid, note_id)
+        return record if record and not record.get('deleted_at') else None
+
+    @tool
+    def update_note(note_id: str, title: str | None = None, text: str | None = None,
+                    place: str | None = None) -> str:
+        """Edit a requested note by exact ID. Does not delete or trash notes."""
+        record = exact_active_note(note_id)
+        if not record:
+            return 'Note not found. Use list_notes or search_notes to choose an active note.'
+        patch = {key: value for key, value in {'title': title, 'content': text, 'place': place}.items() if value is not None}
+        if not patch:
+            return 'No changes requested.'
+        data = {**record, **patch, 'updated_at': datetime.now(timezone.utc).isoformat()}
+        if not str(data.get('title') or '').strip() and not str(data.get('content') or '').strip():
+            return 'Not saved: a note needs a title or content.'
+        if fs.is_available and not is_test_environment() and not fs.save_note(note_id, data):
+            return 'Not saved: cloud storage is unavailable. Please retry.'
+        db.create_note(uid, data)
+        return f'Updated note (ID: {note_id}).'
+
+    @tool
+    def merge_notes(note_ids: list[str], title: str) -> str:
+        """Create a combined note from two or more exact note IDs, preserving full source text.
+        Once the combined note is created and verified, call delete_note on the original source
+        note IDs to clean up duplicates.
+        """
+        ids = list(dict.fromkeys(note_ids))
+        if not 2 <= len(ids) <= 20 or not title.strip():
+            return 'Choose 2 to 20 distinct notes and a title for the combined note.'
+        records = [exact_active_note(note_id) for note_id in ids]
+        if any(record is None for record in records):
+            return 'Not merged: one of the selected notes is missing or in Trash. Refresh the selection.'
+        parts = []
+        for record in records:
+            heading = record.get('title') or 'Untitled note'
+            place = record.get('place') or ''
+            parts.append(f"{heading}\n" + (f"Place: {place}\n" if place else '') + str(record.get('content') or record.get('text') or ''))
+        now = datetime.now(timezone.utc).isoformat()
+        data = {'id': str(uuid4()), 'uid': uid, 'title': title.strip(),
+                'content': '\n\n---\n\n'.join(parts), 'created_at': now, 'updated_at': now}
+        if fs.is_available and not is_test_environment() and not fs.save_note(data['id'], data):
+            return 'Not merged: cloud storage is unavailable. Originals are unchanged.'
+        db.create_note(uid, data)
+        return f"Created combined note '{title.strip()}' (ID: {data['id']}). Originals are unchanged until verified and cleaned up with delete_note."
+
     @tool
     def list_notes(limit: int = 10) -> str:
         """List the user's recent notes.
@@ -961,7 +1041,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     for n in fs.get_notes(uid):
                         db.create_note(uid, n)
                 except Exception as fe:
-                    logger.debug("Firestore list_notes pull note: %s", fe)
+                    logger.debug("RecordStore list_notes pull note: %s", fe)
 
             records = db.list_notes(uid, limit=limit)
             if not records:
@@ -992,22 +1072,15 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
 
     @tool
     def delete_note(note_id: str) -> str:
-        """Move a note to recoverable Trash using its ID or partial content match.
+        """Move a note to recoverable Trash using its exact ID.
         Args:
-            note_id: The ID of the note to delete, or text snippet.
+            note_id: The exact ID returned by list_notes or search_notes.
         """
         try:
-            recs = db.list_notes(uid, limit=50)
-            if fs.is_available and not is_test_environment():
-                recs.extend(fs.get_notes(uid))
-            for n in recs:
-                if n.get("id") == note_id and not n.get("deleted_at"):
-                    move_note_to_trash(n)
-                    return f"Moved note to Trash (ID: {note_id}). It can be restored."
-            for n in recs:
-                if not n.get("deleted_at") and (note_id.lower() in str(n.get("text", "")).lower() or note_id.lower() in str(n.get("title", "")).lower() or note_id.lower() in str(n.get("content", "")).lower()):
-                    move_note_to_trash(n)
-                    return f"Moved note to Trash (ID: {n['id']}). It can be restored."
+            record = exact_active_note(note_id)
+            if record:
+                move_note_to_trash(record)
+                return f"Moved note to Trash (ID: {note_id}). It can be restored."
             return f"Could not find note matching '{note_id}' to delete."
         except Exception as e:
             return f"Error deleting note: {e}"
@@ -1169,7 +1242,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
                     for p in fs.get_places(uid):
                         db.create_place(uid, p)
                 except Exception as fe:
-                    logger.debug("Firestore list_saved_places pull note: %s", fe)
+                    logger.debug("RecordStore list_saved_places pull note: %s", fe)
 
             records = db.list_places(uid)
             if not records:
@@ -1382,7 +1455,7 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
 
     @tool
     def recall_context_history(lookback_minutes: int = 2880, start_at: str = "", end_at: str = "") -> str:
-        """Recall a time window of Firebase activity, parking, stops and nearby places.
+        """Recall a time window of recorded activity, parking, stops and nearby places.
 
         For last 10 minutes use lookback_minutes=10; last 2 days use 2880.
         For calendar dates use start_at/end_at ISO timestamps with timezone offsets.
@@ -1427,7 +1500,9 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
 
     from .calendar_tools import calendar_tools
     from .file_memory_tools import file_memory_tools
-    return calendar_tools() + file_memory_tools() + [
+    from .scheduled_google_tools import scheduled_google_tools
+    from ..services.mobile_scope import mobile_only
+    return calendar_tools() + file_memory_tools() + ([] if mobile_only() else scheduled_google_tools()) + [
         create_reminder,
         update_reminder,
         consolidate_reminders,
@@ -1437,6 +1512,8 @@ def build_tier2_tools(db: DatabaseService, uid: str) -> list[Any]:
         delete_all_reminders,
         restore_reminder,
         create_note,
+        update_note,
+        merge_notes,
         list_notes,
         search_notes,
         delete_note,

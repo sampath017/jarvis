@@ -33,7 +33,8 @@ class DynamicReminders:
 
     def match(self, uid, reminder, event, now):
         policy = policy_dict(reminder.get('dynamic_policy'))
-        if policy.get('version') != 1 or not policy.get('category'):
+        departure = policy.get('trigger') == 'exit' and bool(policy.get('origin'))
+        if policy.get('version') != 1 or not (policy.get('category') or departure):
             return None
         loc = event.get('location') or event.get('gps') or {}
         if loc.get('latitude') is None or loc.get('longitude') is None or float(loc.get('accuracy_m', 999)) > 100:
@@ -50,6 +51,23 @@ class DynamicReminders:
         state.update(at=now.isoformat(), location=loc)
         distance = lambda point: _haversine_m(loc['latitude'], loc['longitude'], point['latitude'], point['longitude'])
         origin, destination = policy.get('origin'), policy.get('destination')
+        if departure:
+            # An observed exit is sufficient. Do not require a destination,
+            # nearby shop, movement class, or another model interpretation.
+            signature = json.dumps(origin, sort_keys=True)
+            if state.get('origin_signature') != signature:
+                state = {'at': now.isoformat(), 'location': loc, 'origin_signature': signature}
+            radius = float(policy.get('radius_m', 200))
+            accuracy = max(0, float(loc.get('accuracy_m', 0)))
+            if distance(origin) + accuracy <= radius:
+                state['origin_seen'] = now.isoformat()
+            seen = state.get('origin_seen')
+            exited = bool(seen and 0 <= (now - datetime.fromisoformat(seen)).total_seconds() <= 8 * 3600
+                          and distance(origin) - accuracy > radius + 50)
+            self._save(uid, reminder['id'], state)
+            if exited:
+                return {'name': origin.get('name', 'the saved place'), 'trigger': 'exit'}
+            return None
         if origin and distance(origin) <= 200:
             state.update(origin_seen=now.isoformat(), journey_started=None)
         if destination and distance(destination) <= 150:

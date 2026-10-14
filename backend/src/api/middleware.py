@@ -30,6 +30,7 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         "/notifications",
         "/sync/pull",
         "/sync/push",
+        "/sync/changes",
     }
 
     @override
@@ -39,12 +40,11 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         if content_length:
             try:
                 size = int(content_length)
-                limit = (20 * 1024 * 1024 if request.method == "POST" and
-                         request.url.path.startswith("/file-memories/") and request.url.path.endswith("/analyze") else 128 * 1024 * 1024 if request.method == "PUT" and
-                         request.url.path.startswith("/session-library/recordings/") and
-                         "/files/" in request.url.path else 1024 * 1024 if request.method == 'POST' and
+                limit = (128 * 1024 * 1024 if (request.url.path == "/mobile/parse-file" or request.url.path.startswith("/drive-index/files/")) else 8 * 1024 * 1024 if request.method == "POST" and request.url.path in ("/commands/stream", "/commands", "/context-events", "/mobile/activity-history", "/sync/push") else 8 * 1024 * 1024 if request.method == "PUT" and request.url.path.startswith("/drive-index/uploads/") and request.url.path.endswith("/content") else 20 * 1024 * 1024 if request.method == "POST" and
+                         request.url.path.startswith("/file-memories/") and request.url.path.endswith("/analyze") else 8 * 1024 * 1024 if request.method == 'POST' and
                          request.url.path.startswith('/commands/requests/') and
-                         request.url.path.endswith('/calendar-result') else MAX_REQUEST_SIZE_BYTES)
+                         request.url.path.endswith('/calendar-result') else 8 * 1024 * 1024 if request.method == 'POST' and
+                         request.url.path.startswith('/chat-archives/') and request.url.path.endswith('/backup') else MAX_REQUEST_SIZE_BYTES)
                 if size > limit:
                     return JSONResponse(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -57,9 +57,9 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         # Bulk indexing submits small control messages for every source. It
         # must not consume chat's request allowance; route capability checks
-        # still authorize each call, and source bytes go directly to storage.
+        # still authorize each call, and local source uploads enforce their own bounded byte ranges.
         index_control = (path in {'/drive-index/status', '/drive-index/jobs', '/drive-index/results', '/drive-index/uploads', '/drive-index/catalog'} or
-            (path.startswith('/drive-index/uploads/') and path.endswith('/complete')))
+            (path.startswith('/drive-index/uploads/') and path.endswith(('/complete', '/content'))))
         if path in self.EXEMPT_PATHS or index_control:
             return await call_next(request)
 

@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from google.cloud.firestore_v1.base_query import FieldFilter
+from src.services.sqlite_documents import FieldFilter
 
 from ...models.telemetry import MotionDiagnosticBatch
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ...backend.context_history import utc_time
 from ..auth import get_current_user
 from ..rate_limiter import TokenBudgetGuard
@@ -15,7 +15,7 @@ router = APIRouter(tags=['motion-diagnostics'])
 
 
 def collection(uid):
-    fs = FirestoreService()
+    fs = RecordStore()
     if not fs.is_available:
         raise HTTPException(503, 'Motion diagnostics temporarily unavailable')
     return fs._db.collection('users').document(uid).collection('motion_diagnostics')

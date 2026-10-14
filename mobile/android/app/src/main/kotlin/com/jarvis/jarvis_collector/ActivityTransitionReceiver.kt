@@ -27,6 +27,7 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        if (!JarvisPower.enabled(context)) return
         if (!ActivityRecognitionRegistrar.isEnabled(context)) return
         if (ActivityRecognitionResult.hasResult(intent)) {
             val event = recordSample(context, ActivityRecognitionResult.extractResult(intent) ?: return) ?: return

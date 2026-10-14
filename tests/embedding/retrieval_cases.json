@@ -1,0 +1,15 @@
+{
+  "description": "Real checked-in Jarvis documentation, read from the current checkout. No personal chats or external corpus downloads.",
+  "documents": [
+    {"id": "bulk-embedding", "path": "embedding/README.md"},
+    {"id": "notes-workspace", "path": "docs/notes-workspace.md"},
+    {"id": "google-calendar", "path": "docs/google-calendar.md"},
+    {"id": "runtime-power", "path": "docs/runtime-power-2026-10-13.md"}
+  ],
+  "queries": [
+    {"id": "bulk-import", "text": "Where should I run embedding inference for a large file import before uploading vectors to Chroma?", "expected": "bulk-embedding"},
+    {"id": "note-merge", "text": "When merging notes, are the original notes preserved and does deleting them later require human approval?", "expected": "notes-workspace"},
+    {"id": "calendar-connect", "text": "How do I connect my Google account and choose the default calendar to reschedule meetings?", "expected": "google-calendar"},
+    {"id": "power-persistence", "text": "Does switching Jarvis power Off persist across phone restarts and retain saved data and Google permissions?", "expected": "runtime-power"}
+  ]
+}

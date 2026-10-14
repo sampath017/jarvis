@@ -27,14 +27,8 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
     }
 
     override fun doWork(): Result {
+        if (!JarvisPower.enabled(applicationContext)) return Result.success()
         try {
-            if (AmbientContextCapture.needsCloudIdentity(applicationContext)) {
-                runCatching {
-                    val response = request("GET", "$BASE_URL/context-identity", timeoutMs = 2500)
-                    if (response.first in 200..299) AmbientContextCapture.restoreCloudIdentity(
-                        applicationContext, JSONObject(response.second).optString("fingerprint_salt"))
-                }
-            }
             val dwellActivity = inputData.getString("dwell_activity")
             if (dwellActivity != null) {
                 if (ContextEventQueue.currentActivity(applicationContext) == dwellActivity) {
@@ -52,6 +46,9 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
                 ContextEventQueue.update(applicationContext, ready)
             }
             for (queued in ContextEventQueue.pending(applicationContext)) {
+                if(MobileRecords.applied(applicationContext,queued.getString("event_id"))){
+                    ContextEventQueue.acknowledge(applicationContext,queued.getString("event_id"));continue
+                }
                 val event = JSONObject(queued.toString())
                 val timing = event.optJSONObject("telemetry_diagnostics")
                 if (timing != null && timing.optInt("boot_count", -1) == EventTiming.boot(applicationContext)) {
@@ -63,30 +60,22 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
                     ContextEventQueue.scheduleLocationCapture(applicationContext)
                     return Result.success()
                 }
+                event.put("_mobile_state", MobileRecords.context(applicationContext, event))
                 val response = request("POST", "$BASE_URL/context-events", event.toString())
                 if (response.first !in 200..299 || JSONObject(response.second).optString("status") != "ok") {
-                    Log.w(TAG, "Event ${event.optString("event_id")} rejected: HTTP ${response.first}, ${response.second.take(300)}")
+                    Log.w(TAG, "Context processing rejected: HTTP ${response.first}")
                     return Result.retry()
                 }
+                MobileRecords.apply(applicationContext, JSONObject(response.second).getJSONObject("_mobile_changes"))
                 ContextEventQueue.acknowledge(applicationContext, event.getString("event_id"))
             }
-            uploadMotionDiagnostics()
+
             if (inputData.getBoolean("context_checkpoint", false)) {
                 val activity = ContextEventQueue.currentActivity(applicationContext).ifEmpty { "UNKNOWN" }
                 ContextEventQueue.add(applicationContext,
                     ContextEventQueue.newEvent("CONTEXT_CHECKPOINT", activity, "ENTER"))
             }
-            deliverNotifications()
-            val reminders = request("GET", "$BASE_URL/reminders")
-            if (reminders.first in 200..299) {
-                val records = JSONObject(reminders.second).optJSONArray("records")
-                if (records != null) ReminderAlerts.reconcile(applicationContext, records)
-                val dynamic = records != null && (0 until records.length()).any {
-                    val r = records.getJSONObject(it)
-                    r.optString("status") == "ACTIVE" && !r.isNull("dynamic_policy")
-                }
-                ActivityRecognitionRegistrar.setDynamicMonitoring(applicationContext, dynamic)
-            }
+            MobileRecords.deliver(applicationContext)
             return Result.success()
         } catch (error: Exception) {
             Log.w(TAG, "Context upload retained for retry", error)
@@ -94,48 +83,9 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
         }
     }
 
-    private fun uploadMotionDiagnostics() {
-        // An older backend may not yet implement this endpoint; retain local data.
-        runCatching {
-            val history = TelemetryHistory.get(applicationContext)
-            val records = history.pending()
-            if (records.isEmpty()) return
-            records.forEach { record ->
-                if (record.optInt("boot_count", -1) == EventTiming.boot(applicationContext)) {
-                    val now = android.os.SystemClock.elapsedRealtime()
-                    record.put("upload_elapsed_ms", now)
-                    if (now >= record.getLong("received_elapsed_ms")) record.put("upload_delay_ms", now-record.getLong("received_elapsed_ms"))
-                }
-            }
-            val response = request("POST", "$BASE_URL/motion-diagnostics", JSONObject().apply {
-                put("records", org.json.JSONArray(records))
-            }.toString(), timeoutMs = 10_000)
-            if (response.first in 200..299) {
-                val accepted = JSONObject(response.second).optJSONArray("accepted_ids") ?: return
-                history.acknowledge((0 until accepted.length()).map { accepted.getString(it) })
-            }
-        }.onFailure { Log.d(TAG, "Motion diagnostics retained locally: ${it.javaClass.simpleName}") }
-    }
-
-    private fun deliverNotifications() {
-        val response = request("GET", "$BASE_URL/notifications?status=PENDING")
-        if (response.first !in 200..299) throw IllegalStateException("Notification fetch: ${response.first}")
-        val records = JSONObject(response.second).optJSONArray("records") ?: return
-        for (index in 0 until records.length()) {
-            val record = records.getJSONObject(index)
-            if (record.optString("status").uppercase() != "PENDING") continue
-            val id = record.optString("id")
-            if (id.isEmpty()) continue
-            PushDelivery.show(applicationContext, id, record.optString("title", "Jarvis"),
-                record.optString("body"), record.optString("thread_id"), record.optString("kind"),
-                record.optJSONObject("payload")?.optString("delivery_mode") ?: "notification",
-                record.optString("reminder_id"), record.optJSONObject("payload")?.optString("alarm_due_at") ?: "",
-                record.optJSONObject("payload")?.optString("occurred_at") ?: "")
-        }
-    }
-
     private fun request(method: String, url: String, body: String? = null, timeoutMs: Int = 60_000): Pair<Int, String> {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        check(JarvisPower.enabled(applicationContext) && !isStopped) { "Jarvis is powered off" }
+        val connection = (URL(url).openConnection() as HttpURLConnection).also { JarvisPower.track(applicationContext, it) }.apply {
             requestMethod = method
             connectTimeout = minOf(10_000, timeoutMs)
             readTimeout = timeoutMs
@@ -151,7 +101,7 @@ class ContextUploadWorker(context: Context, params: WorkerParameters) : Worker(c
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             status to (stream?.bufferedReader()?.use { it.readText() } ?: "")
         } finally {
-            connection.disconnect()
+            JarvisPower.release(connection)
         }
     }
 }

@@ -1,19 +1,24 @@
-"""Durable request IDs keep reconnects from repeating tool side effects."""
+"""Local request receipts deduplicate reconnects while the API database exists."""
 import hashlib
 import json
 import secrets
 import time
 from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException
-from google.cloud import firestore
-from .firestore_service import FirestoreService
+from src.services import sqlite_documents as documents
+from .record_store import RecordStore
 from ..backend.command_execution import MAX_COMMAND_SECONDS
 
 RUN_LEASE_SECONDS = MAX_COMMAND_SECONDS + 180
 
 class CommandRunStore:
     def __init__(self):
-        self.db = FirestoreService()._db
+        from .mobile_scope import mobile_only
+        if mobile_only():
+            from .mobile_runs import database
+            self.db = database()
+            return
+        self.db = RecordStore()._db
         if self.db is None:
             raise HTTPException(503, 'Cannot safely start a request while request storage is unavailable.')
 
@@ -29,7 +34,7 @@ class CommandRunStore:
         key_hash = hashlib.sha256(calendar_key.encode()).hexdigest() if calendar_key else None
         fingerprint = hashlib.sha256((json.dumps(request.model_dump(mode='json'), sort_keys=True) + str(key_hash)).encode()).hexdigest()
         now = datetime.now(timezone.utc)
-        @firestore.transactional
+        @documents.transactional
         def claim(transaction):
             existing = ref.get(transaction=transaction).to_dict()
             active = control.get(transaction=transaction).to_dict() or {}
@@ -49,7 +54,12 @@ class CommandRunStore:
             })
             transaction.set(control, {'request_id': request.request_id, 'until': now + timedelta(seconds=RUN_LEASE_SECONDS)})
             return True
-        return claim(self.db.transaction())
+        fresh = claim(self.db.transaction())
+        from .mobile_scope import mobile_only
+        if fresh and mobile_only():
+            from .mobile_runs import accept
+            accept(uid, request.request_id)
+        return fresh
 
     @staticmethod
     def authorize(data, key):
@@ -75,7 +85,7 @@ class CommandRunStore:
 
     def calendar_result(self, uid, request_id, action_id, result, key):
         ref = self.ref(uid, request_id)
-        @firestore.transactional
+        @documents.transactional
         def save(transaction):
             data = ref.get(transaction=transaction).to_dict() or {}
             self.authorize(data, key)
@@ -92,7 +102,7 @@ class CommandRunStore:
 
     def start_execution(self, uid, request_id):
         ref = self.ref(uid, request_id)
-        @firestore.transactional
+        @documents.transactional
         def start(transaction):
             data = ref.get(transaction=transaction).to_dict()
             if not data or data['status'] == 'complete': return None
@@ -120,7 +130,7 @@ class CommandRunStore:
 
     def progress(self, uid, request_id, message):
         ref = self.ref(uid, request_id)
-        @firestore.transactional
+        @documents.transactional
         def update(transaction):
             data = ref.get(transaction=transaction).to_dict()
             if not data or data['status'] not in ('queued', 'running'): return
@@ -136,8 +146,12 @@ class CommandRunStore:
         self.ref(uid, request_id).update({'cancel_requested': True})
 
     def finish(self, uid, request_id, response):
+        from .mobile_scope import mobile_only
+        if mobile_only():
+            from . import mobile_runs
+            response = {**response, '_mobile_changes': mobile_runs.changes(uid, request_id)}
         ref, control = self.ref(uid, request_id), self.control(uid)
-        @firestore.transactional
+        @documents.transactional
         def finish(transaction):
             active = control.get(transaction=transaction).to_dict() or {}
             transaction.update(ref, {'status': 'complete', 'response': response,
@@ -145,6 +159,8 @@ class CommandRunStore:
             if active.get('request_id') == request_id:
                 transaction.delete(control)
         finish(self.db.transaction())
+        if mobile_only():
+            mobile_runs.finish(uid, request_id)
 
     @staticmethod
     def public(data):

@@ -1,3 +1,5 @@
+> Historical release notes. The Android-only local storage migration supersedes the storage and deployment details below; see [current storage](android-local-storage.md).
+
 # Conversation recall, file-context performance, and daily allowance
 
 The daily AI allowance is Rs 50, reset at midnight Asia/Kolkata. Existing usage and in-flight reservations remain in the same Firestore ledger. Health metadata, rejection messages, and startup logging use the same configured amount. See `ai-budgets.md` for conversion and billing scope.

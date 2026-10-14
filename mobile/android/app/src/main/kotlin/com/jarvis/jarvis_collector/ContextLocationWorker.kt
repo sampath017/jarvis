@@ -8,6 +8,7 @@ import androidx.work.WorkerParameters
 /** Durable fallback if immediate broadcast capture is interrupted or unavailable. */
 class ContextLocationWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
+        if (!JarvisPower.enabled(applicationContext)) return Result.success()
         return try {
             val pending = ContextEventQueue.pending(applicationContext)
                 .filter { it.optBoolean("location_pending") }

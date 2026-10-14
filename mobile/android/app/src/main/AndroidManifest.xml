@@ -28,9 +28,16 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Jarvis"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher">
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.localfiles" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/local_file_paths" />
+        </provider>
         <activity android:name=".ReminderAlertActivity" android:exported="false" android:excludeFromRecents="true" android:theme="@android:style/Theme.Material.NoActionBar" />
         <receiver android:name=".ReminderAlertReceiver" android:exported="false">
             <intent-filter>
@@ -71,9 +78,6 @@
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
-        <service android:name=".JarvisMessagingService" android:exported="false">
-            <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter>
-        </service>
         <service
             android:name=".MonitoringService"
             android:foregroundServiceType="location"

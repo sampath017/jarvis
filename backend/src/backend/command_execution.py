@@ -28,8 +28,13 @@ class CommandExecution:
     changed_records: list[str] = field(default_factory=list)
     calendar_dispatch: Callable[[dict], dict] | None = None
     approval_dispatch: Callable[[dict], dict] | None = None
+    server_google_dispatch: Callable[[dict], dict] | None = None
+    schedule_dispatch: Callable[[dict], dict] | None = None
 
     def check(self):
+        from ..services.runtime_power import RuntimePower
+        if not RuntimePower().enabled():
+            raise CommandStopped('Jarvis was powered off. Any actions already completed are still saved.')
         if self.cancelled():
             raise CommandStopped('Stopped at your request. Any actions already completed are still saved.')
         if time.monotonic() - self.started >= MAX_COMMAND_SECONDS:
@@ -73,6 +78,8 @@ NODE_LABELS = {
 
 def observed_node(name, handler):
     def invoke(state):
+        from ..services.runtime_power import RuntimePower
+        RuntimePower().require_enabled()
         if state.get('request_type') == 'USER_COMMAND':
             report_progress(NODE_LABELS.get(name, 'Checking context'))
         started = time.perf_counter()

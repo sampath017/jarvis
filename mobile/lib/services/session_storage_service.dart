@@ -1,12 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 import '../models/feature_vector.dart';
 import '../models/recording_session.dart';
 import '../models/sensor_sample.dart';
 
-/// Handles saving, streaming, listing, and exporting real sensor telemetry data.
+/// Handles saving, streaming, and listing real sensor telemetry data.
 class SessionStorageService {
   static const String folderName = 'JarvisTelemetry';
   static Directory? _cachedDir;
@@ -170,26 +169,4 @@ class SessionStorageService {
     } catch (_) {}
   }
 
-  /// Share CSV or JSON using Android's system share sheet.
-  static Future<void> shareSession(RecordingSession session) async {
-    final filesToShare = <XFile>[];
-    if (await File(session.csvFilePath).exists()) {
-      filesToShare.add(XFile(session.csvFilePath, name: '${session.id}.csv'));
-    }
-    if (await File(session.jsonFilePath).exists()) {
-      filesToShare
-          .add(XFile(session.jsonFilePath, name: '${session.id}_summary.json'));
-    }
-
-    if (filesToShare.isNotEmpty) {
-      await SharePlus.instance.share(
-        ShareParams(
-          files: filesToShare,
-          subject: 'Jarvis Telemetry: ${session.label} (${session.id})',
-          text:
-              'Recorded ${session.sampleCount} samples of ${session.label} on ${session.roadCondition}.',
-        ),
-      );
-    }
-  }
 }

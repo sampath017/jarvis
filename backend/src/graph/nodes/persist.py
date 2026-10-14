@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from ..state import JarvisState
 from ...services.database import DatabaseService
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ...backend.audit_log import audit_from_state
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class PersistNode:
                     # session copy authoritative for cross-instance parking,
                     # dwell, and return-trip continuity; SQLite remains a
                     # short-lived local cache/fallback.
-                    fs = FirestoreService()
+                    fs = RecordStore()
                     if fs.is_available:
                         if not fs.save_mobility_session(uid, session_id, session):
                             raise RuntimeError("Could not persist cloud session")
@@ -72,7 +72,7 @@ class PersistNode:
                 packet = state.get("context_packet")
                 if event_id and packet:
                     self.db.create_event_idempotent(uid, event_id, packet)
-                    fs = FirestoreService()
+                    fs = RecordStore()
                     if fs.is_available:
                         memory = {
                             "source": "phone_observation",

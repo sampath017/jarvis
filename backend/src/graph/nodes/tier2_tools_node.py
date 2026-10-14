@@ -17,6 +17,8 @@ from ...cloud.tier2_agent_tools import build_tier2_tools
 from ...backend.audit_log import audit_from_state
 from ..state import JarvisState
 from ...backend.command_execution import execution, report_progress, TOOL_LABELS, CommandStopped
+from ...backend.tool_approval import approved_tool_call, approval_key
+from ...backend.reminder_tool_contract import ground_relative_call, outcome, repeated_reminder_failure, reminder_edit_requested, reminder_input_error
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +31,15 @@ PARALLEL_READ_TOOLS = frozenset({
 })
 DEVICE_FILE_READ_TOOLS = {'search_file_memories': 'file_memory_search', 'analyze_saved_file': 'file_analyze'}
 
-# The user's clear request authorizes these reversible personal actions. Keep
-# unknown writes, deletion and bulk consolidation behind device approval.
+# The user's clear request authorizes these reversible personal actions (including
+# deleting reminders and notes to recoverable Trash without asking permission).
+# Keep unknown writes and bulk consolidation behind device approval.
 ROUTINE_WRITE_TOOLS = frozenset({
-    'create_note', 'create_task', 'update_task', 'update_task_status',
-    'create_reminder', 'update_reminder', 'save_place',
-    'restore_note', 'restore_reminder', 'save_file_to_drive',
+    'create_note', 'update_note', 'delete_note', 'delete_all_notes', 'merge_notes',
+    'create_task', 'update_task', 'update_task_status',
+    'create_reminder', 'update_reminder', 'delete_reminder', 'delete_all_reminders',
+    'save_place', 'restore_note', 'restore_reminder', 'save_file_to_drive',
+    'schedule_google_action', 'cancel_scheduled_google_action',
 })
 
 
@@ -54,31 +59,65 @@ class Tier2ToolsNode:
             return {}
 
         last_msg = agent_messages[-1]
-        tool_calls = getattr(last_msg, "tool_calls", [])
+        tool_calls = list(getattr(last_msg, "tool_calls", []))
         if not tool_calls:
             return {}
+
+        request = state.get('raw_request') or {}
+        for index, call in enumerate(tool_calls):
+            if call.get('name') in {'create_reminder', 'update_reminder'}:
+                # This compatibility flag has no authorization meaning. Changes
+                # to it must not bypass idempotency or the failed-retry guard.
+                call = {**call, 'args': {k: v for k, v in call.get('args', {}).items() if k != 'confirmed'}}
+                tool_calls[index] = call
+            if call.get('name') == 'create_reminder' and not request.get('attached_file_ids'):
+                arguments = ground_relative_call(request.get('text') or '', call.get('args', {}))
+                tool_calls[index] = {**call, 'args': arguments}
 
         tools = build_tier2_tools(self.db, uid)
         tool_map = {t.name: t for t in tools}
 
         tool_messages: list[ToolMessage] = []
         changed_records = list(state.get("changed_records", []))
+        terminal_failure = None
 
         def invoke_tool(call):
             started = time.perf_counter()
             name = call.get("name", "")
             t = tool_map.get(name)
+            approval_token = None
             try:
                 if not t:
                     return f"Error: Tool '{name}' is not an allow-listed tool."
                 context = execution.get()
-                is_write = name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_'))
-                if (context and context.approval_dispatch and is_write
-                        and 'calendar_event' not in name and name not in ROUTINE_WRITE_TOOLS):
+                if name in {'delete_reminder', 'delete_all_reminders'} and reminder_edit_requested(request):
+                    return reminder_input_error('edit_in_place', 'reminder_id',
+                        'The user requested a policy edit. Use update_reminder on the existing ID; preserve the record and update its conditions or delivery. Do not delete or ask for deletion approval.')
+                is_merged_note = False
+                if name == 'delete_note' and context:
+                    note_id = call.get('args', {}).get('note_id')
+                    for k, v in context.writes.items():
+                        if k.startswith('merge_notes:') and ('Created combined note' in str(v) or 'ID:' in str(v)):
+                            try:
+                                import json
+                                parsed = json.loads(k[len('merge_notes:'):])
+                                if note_id and note_id in parsed.get('note_ids', []):
+                                    is_merged_note = True
+                                    break
+                            except Exception:
+                                pass
+
+                is_write = name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_', 'merge_', 'schedule_', 'cancel_'))
+                if (is_write and 'calendar_event' not in name and (name not in ROUTINE_WRITE_TOOLS and not is_merged_note)):
+                    if not context or not context.approval_dispatch:
+                        return 'Not executed: Human approval is required. Open Jarvis with device approvals connected and try again.'
                     approved = context.approval_dispatch({'tool': name, 'arguments': call.get('args', {})})
                     context.check()
-                    if approved.get('status') != 'approved':
+                    if not isinstance(approved, dict) or approved.get('status') != 'approved':
                         return 'Not executed: You did not approve this change. Do not claim it was saved.'
+                    approval_token = approved_tool_call.set(approval_key(name, call.get('args', {})))
+                elif is_merged_note:
+                    approval_token = approved_tool_call.set(approval_key(name, call.get('args', {})))
                 return str(t.invoke(call.get("args", {})))
             except CommandStopped:
                 raise
@@ -86,18 +125,24 @@ class Tier2ToolsNode:
                 logger.error("Tool execution failed: %s: %s", name, exc)
                 return f"Error executing {name}: {exc}"
             finally:
+                if approval_token is not None:
+                    approved_tool_call.reset(approval_token)
                 logger.info("Tool timing run=%s tool=%s latency_ms=%.1f",
                             state.get("run_id", ""), name, (time.perf_counter() - started) * 1000)
 
-        def finish_call(call, key, res_content):
+        def finish_call(call, key, res_content, cached=False):
+            nonlocal terminal_failure
             tool_name = call.get("name", "")
             tool_args = call.get("args", {})
             call_id = call.get("id", tool_name)
             context = execution.get()
-            is_write = tool_name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_'))
+            is_write = tool_name.startswith(('create_', 'update_', 'delete_', 'save_', 'restore_', 'consolidate_', 'merge_', 'schedule_', 'cancel_'))
+            result_status, result_code = outcome(res_content)
             if context and is_write:
                 context.writes[key] = res_content
-            if is_write and "ID:" in res_content:
+            if cached and result_status != 'success' and tool_name in {'create_reminder', 'update_reminder'}:
+                terminal_failure = repeated_reminder_failure(tool_name, res_content)
+            if is_write and result_status == 'success' and "ID:" in res_content:
                 import re
                 m = re.search(r"ID:\s*([a-zA-Z0-9_-]+)", res_content)
                 if m:
@@ -112,7 +157,22 @@ class Tier2ToolsNode:
                 event_id=event_id,
                 input_summary={"args": tool_args},
                 output_summary={"result": res_content[:200]},
+                execution_result='success' if result_status == 'success' else 'error',
+                error_detail=None if result_status == 'success' else result_code,
             )
+
+            # Deliberately exclude titles, note bodies, coordinates and file IDs.
+            # The bounded scheduling values explain bad model arguments without
+            # copying unrelated personal data into cloud diagnostics.
+            details = {'fields': sorted(tool_args), 'cached': cached}
+            if tool_name in {'create_reminder', 'update_reminder'}:
+                details.update({field: str(tool_args.get(field, ''))[:80]
+                                for field in ('due_at', 'delivery_mode', 'activity', 'context_states')})
+                details['has_location'] = bool(tool_args.get('location_name') or tool_args.get('latitude') is not None)
+            log = logger.info if result_status == 'success' else logger.warning
+            log('Tool outcome run=%s tool=%s status=%s code=%s details=%s',
+                state.get('run_id', ''), tool_name, result_status, result_code,
+                json.dumps(details, sort_keys=True))
 
             tool_messages.append(
                 ToolMessage(content=res_content, tool_call_id=call_id, name=tool_name)
@@ -123,13 +183,25 @@ class Tier2ToolsNode:
             name = call.get("name", "")
             key = context.tool_key(name, call.get("args", {})) if context else ''
             report_progress(TOOL_LABELS.get(name, 'Checking the next step'))
+            from ...services.mobile_scope import current, mobile_only
+            scope = current.get()
+            local_tools = {'list_notes','search_notes','update_note','merge_notes','delete_note','delete_all_notes','restore_note',
+                'create_reminder','list_reminders','search_reminders','update_reminder','consolidate_reminders','delete_reminder','delete_all_reminders','restore_reminder',
+                'list_saved_places','save_place','delete_place','recall_context_history','list_tasks','update_task','update_task_status','delete_task'}
+            if mobile_only() and scope is not None and name in local_tools:
+                if not context or not context.approval_dispatch:
+                    raise RuntimeError('The phone must remain connected to read local records')
+                result=context.approval_dispatch({'operation':'local_read','tool':name,'arguments':call.get('args',{})})
+                if result.get('status')!='ok':
+                    raise RuntimeError('Local records could not be read from the phone')
+                scope.import_read(result.get('state',{}), uid)
             return key
 
         index = 0
         while index < len(tool_calls):
             call = tool_calls[index]
             context = execution.get()
-            if (context and context.approval_dispatch and call.get('name') in DEVICE_FILE_READ_TOOLS
+            if (context and context.approval_dispatch and not context.server_google_dispatch and call.get('name') in DEVICE_FILE_READ_TOOLS
                     and index + 1 < len(tool_calls) and tool_calls[index + 1].get('name') in DEVICE_FILE_READ_TOOLS):
                 # One device action holds independent reads; never batch writes.
                 batch = [(tool_calls[index + n], prepare(tool_calls[index + n])) for n in range(2)]
@@ -169,16 +241,24 @@ class Tier2ToolsNode:
             else:
                 key = prepare(call)
                 context = execution.get()
-                if context and key in context.writes:
+                cached = bool(context and key in context.writes)
+                if cached:
                     res_content = context.writes[key]
                 else:
                     res_content = invoke_tool(call)
-                finish_call(call, key, res_content)
+                finish_call(call, key, res_content, cached=cached)
                 index += 1
+                if terminal_failure:
+                    # Leave the graph with a specific failure before the generic
+                    # repeated-step breaker can discard the useful tool error.
+                    break
 
         updated_messages = agent_messages + tool_messages
 
-        return {
+        result = {
             "agent_messages": updated_messages,
             "changed_records": changed_records,
         }
+        if terminal_failure:
+            result['terminal_tool_error'] = terminal_failure
+        return result

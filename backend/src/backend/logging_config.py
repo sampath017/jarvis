@@ -82,6 +82,18 @@ def configure_logging(base_dir: Path | None = None) -> None:
     - Info logs: logs/info/info_<DD-MM-YYYY>.log
     - Critical logs: logs/critical/critical_<DD-MM-YYYY>.log
     """
+    from ..services.mobile_scope import mobile_only
+    if mobile_only():
+        # User content must not be retained in Cloud Logging or server log files.
+        class InfrastructureOnly(logging.Filter):
+            def filter(self, record):
+                return record.name == 'src.api.main' and not record.exc_info
+        handler = logging.StreamHandler(sys.stdout)
+        handler.addFilter(InfrastructureOnly())
+        logging.getLogger().handlers[:] = [handler]
+        logging.getLogger().setLevel(logging.INFO)
+        return
+
     info_dir, critical_dir = get_log_directories(base_dir)
 
     today_str = datetime.now(IST_TZ).strftime("%d-%m-%Y")

@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/chat_session.dart';
-import 'api_service.dart';
 import 'local_db_service.dart';
 import 'sync_service.dart';
 
@@ -26,7 +25,9 @@ class ChatStorageService {
           if (decoded is List) {
             final db = LocalDbService();
             for (final item in decoded) {
-              final session = ChatSession.fromJson(item as Map<String, dynamic>);
+              final session = ChatSession.fromJson(
+                item as Map<String, dynamic>,
+              );
               await db.saveChatSession(session, markPending: false);
             }
           }
@@ -38,41 +39,48 @@ class ChatStorageService {
   }
 
   /// Load all stored chat sessions from local SQLite, sorted most recent first.
-  static Future<List<ChatSession>> loadSessions() async {
+  static Future<List<ChatSession>> loadSessions({
+    bool summariesOnly = false,
+    String? loadThreadId,
+    int? messageLimit,
+  }) async {
     await _checkMigration();
-    return await LocalDbService().loadChatSessions();
+    return await LocalDbService().loadChatSessions(
+      summariesOnly: summariesOnly,
+      loadThreadId: loadThreadId,
+      messageLimit: messageLimit,
+    );
+  }
+
+  static Future<ChatSession?> loadSession(
+    String id, {
+    int? messageLimit,
+  }) async {
+    await _checkMigration();
+    final rows = await LocalDbService().loadChatSessions(
+      onlyThreadId: id,
+      messageLimit: messageLimit,
+    );
+    return rows.firstOrNull;
   }
 
   /// Save or update an individual chat session into local SQLite.
   static Future<void> saveSession(ChatSession session) async {
     await LocalDbService().saveChatSession(session);
-    SyncService().syncNow();
+    // The saved data is already local. Downloading every remote message here
+    // makes each new message's read cost grow with the entire chat archive.
+    SyncService().syncNow(pullRemote: false);
   }
 
-
-  /// Delete a chat session by ID from local SQLite and Cloud Firestore.
+  /// Delete a chat session by ID from local SQLite and the API working cache.
   static Future<void> deleteSession(String sessionId) async {
-    // 1. Delete locally and queue tombstone into pending_deletions table
-    await LocalDbService().deleteChatSession(sessionId, queueDeletion: true);
-
-    // 2. Always attempt immediate cloud deletion without relying on isOnline flag
-    try {
-      final success = await ApiService().deleteChatSession(sessionId);
-      if (success) {
-        // Confirmed deleted in Firestore -> clear tombstone
-        await LocalDbService().removePendingDeletion(sessionId);
-      }
-    } catch (e) {
-      debugPrint('[ChatStorageService] Cloud deletion failed, queued for retry: $e');
-    }
+    await LocalDbService().deleteChatSession(sessionId);
   }
 
   /// Rename a chat session.
   static Future<void> renameSession(String sessionId, String newTitle) async {
-    final list = await loadSessions();
-    final index = list.indexWhere((s) => s.id == sessionId);
-    if (index >= 0) {
-      final session = list[index];
+    final session = await loadSession(sessionId);
+    if (session != null) {
       session.title = newTitle;
       session.updatedAt = DateTime.now();
       await LocalDbService().saveChatSession(session);

@@ -23,7 +23,7 @@ def ready():
 
 @router.get('/status')
 def status(uid: Annotated[str, Depends(owner)]):
-    return {'configured': service.configured(), 'background': bool(__import__('os').getenv('INDEX_STAGING_BUCKET')),
+    return {'configured': service.configured(), 'background': False, 'storage': 'chroma',
         'reader_version': 2, 'supported': ['documents', 'spreadsheets', 'presentations', 'archives', 'media', 'forms', 'shortcuts', 'binary metadata and strings']}
 
 
@@ -31,6 +31,51 @@ def status(uid: Annotated[str, Depends(owner)]):
 def begin_upload(memory: FileMemory, uid: Annotated[str, Depends(owner)]):
     ready()
     return queue.begin(uid, memory.model_dump())
+
+
+@router.put('/uploads/{job_id}/content')
+async def upload_content(job_id: str, request: Request, uid: Annotated[str, Depends(owner)]):
+    import re
+    from fastapi.responses import Response
+    ready()
+    if not re.fullmatch(r'[0-9a-f]{64}', job_id):
+        raise HTTPException(422, 'Invalid upload identifier')
+    content_range = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+|\*)', request.headers.get('content-range', ''))
+    if not content_range:
+        raise HTTPException(422, 'A valid content range is required')
+    start, end = int(content_range[1]), int(content_range[2])
+    if end < start or end - start + 1 > 8 * 1024 * 1024 or end >= 128 * 1024 * 1024:
+        raise HTTPException(413, 'Index upload exceeds the local processing limit')
+    raw = bytearray()
+    async for part in request.stream():
+        raw.extend(part)
+        if len(raw) > 128 * 1024 * 1024:
+            raise HTTPException(413, 'File exceeds the 128 MB processing limit')
+        if len(raw) > end - start + 1:
+            raise HTTPException(422, 'Upload range length does not match')
+    if len(raw) != end - start + 1:
+        raise HTTPException(422, 'Upload range length does not match')
+    @queue.documents.transactional
+    def save(tx):
+        record = queue.jobs().document(job_id).get(transaction=tx).to_dict() or {}
+        if record.get('owner') != uid or record.get('status') != 'uploading':
+            raise HTTPException(404, 'Upload not found')
+        target = queue.bucket().blob(record['object']).path
+        size = target.stat().st_size
+        with target.open('r+b') as output:
+            if size == start:
+                output.seek(start)
+                output.write(raw)
+            elif size == end + 1:
+                output.seek(start)
+                if output.read(len(raw)) != raw:
+                    raise HTTPException(409, 'Upload retry contains different bytes')
+            else:
+                raise HTTPException(409, 'Upload offset does not match; restart this file')
+        return end + 1
+    size = await run_in_threadpool(save, queue.db().transaction())
+    return Response(status_code=200 if content_range[3] == str(size) else 308,
+                    headers={'Range': f'bytes=0-{size - 1}'})
 
 
 class FinishedUpload(BaseModel):
@@ -131,6 +176,8 @@ async def put_stream(file_id: str, request: Request, uid: str):
     raw = bytearray()
     async for part in request.stream():
         raw.extend(part)
+        if len(raw) > 128 * 1024 * 1024:
+            raise HTTPException(413, 'File exceeds the 128 MB processing limit')
     try:
         return await run_in_threadpool(service.put_file, uid, memory, bytes(raw))
     except ValueError as exc:

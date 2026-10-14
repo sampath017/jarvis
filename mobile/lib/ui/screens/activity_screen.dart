@@ -106,7 +106,7 @@ class _ActivityScreenState extends State<ActivityScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Could not save to Firebase. Check your connection and retry.',
+              'Could not save on this phone. Please retry.',
             ),
           ),
         );

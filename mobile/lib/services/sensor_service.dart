@@ -12,6 +12,7 @@ import '../models/feature_vector.dart';
 import '../models/recording_session.dart';
 import '../models/sensor_sample.dart';
 import 'api_service.dart';
+import 'power_state.dart';
 import 'feature_extractor.dart';
 import 'local_db_service.dart';
 import 'location_result.dart';
@@ -139,18 +140,21 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _liveUiTicker;
 
   // ── Lifecycle & Initialization ─────────────────────────────────────────────
-  Future<void> initialize() async {
+  Future<void> initialize({bool startMonitoring = true}) async {
+    if (!PowerState.enabled.value) return;
     WidgetsBinding.instance.addObserver(this);
     // Register native method channel callbacks (e.g. Activity Recognition transitions)
     _channel.setMethodCallHandler(_handleNativeCall);
     // Only check permissions on launch.
     // Sensors remain completely DORMANT to prevent battery drain when not recording.
     await _requestPermissions();
+    if (!PowerState.enabled.value || !startMonitoring) return;
     await _channel.invokeMethod('requestContextPermissions');
-    await startTripwire();
+    if (PowerState.enabled.value) await startTripwire();
   }
 
   Future<void> _handleNativeCall(MethodCall call) async {
+    if (!PowerState.enabled.value) return;
     if (call.method == 'onActivityTransition') {
       final args = Map<String, dynamic>.from(call.arguments ?? {});
       final activity = (args['activity']?.toString() ?? 'UNKNOWN')
@@ -229,6 +233,7 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> startTripwire() async {
+    if (!PowerState.enabled.value) return;
     _contextAwarenessRequested = true;
     try {
       await _channel.invokeMethod('startTripwire');
@@ -261,10 +266,12 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Executes Stage 2 Bounded 10s IMU Burst and offloads Low Telemetry to Cloud Run.
   Future<RecordingSession?> executeStage2Burst() async {
+    if (!PowerState.enabled.value) return null;
     if (_isRecording) return null;
     debugPrint('[SensorService] Starting Stage 2 Bounded 10s IMU Burst...');
     await startRecording();
     await Future.delayed(const Duration(seconds: 10));
+    if (!PowerState.enabled.value) return null;
     final session = await stopRecording();
     debugPrint(
       '[SensorService] Stage 2 Bounded Burst complete: ${session?.sampleCount} samples.',
@@ -313,6 +320,7 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
     bool preferCached = false,
     bool reportFailure = false,
   }) async {
+    if (!PowerState.enabled.value) return null;
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -648,6 +656,7 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> startRecording() async {
+    if (!PowerState.enabled.value) return;
     if (_isRecording) return;
 
     final now = DateTime.now();
@@ -698,6 +707,12 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
     _currentCsvFile = handles.csvFile;
     _currentJsonFile = handles.jsonFile;
     _currentCsvSink = handles.csvSink;
+
+    if (!PowerState.enabled.value) {
+      await _currentCsvSink?.close();
+      await WakelockPlus.disable();
+      return;
+    }
 
     _isRecording = true;
 
@@ -807,5 +822,15 @@ class SensorService extends ChangeNotifier with WidgetsBindingObserver {
     _stopSensorStreams();
     WakelockPlus.disable();
     super.dispose();
+  }
+
+  Future<void> suspendForPowerOff() async {
+    _contextAwarenessRequested = false;
+    _isTripwireActive = false;
+    WidgetsBinding.instance.removeObserver(this);
+    _stopSensorStreams();
+    await stopRecording();
+    await WakelockPlus.disable();
+    notifyListeners();
   }
 }

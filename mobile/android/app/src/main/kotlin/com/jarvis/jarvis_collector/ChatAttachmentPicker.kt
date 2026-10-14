@@ -16,6 +16,17 @@ class ChatAttachmentPicker(private val activity: MainActivity, messenger: Binary
     init {
         MethodChannel(messenger, "com.jarvis/attachments").setMethodCallHandler { call, result ->
             when (call.method) {
+                "openLocal" -> {
+                    try {
+                        val args=call.arguments as Map<*,*>
+                        val file=File(args["path"].toString()).canonicalFile
+                        val allowed=File(activity.applicationInfo.dataDir,"app_flutter/attachments").canonicalFile
+                        require(file.parentFile==allowed && file.isFile)
+                        val uri=androidx.core.content.FileProvider.getUriForFile(activity,"${activity.packageName}.localfiles",file)
+                        activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,args["mimeType"].toString()).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                        result.success(true)
+                    } catch (_:Exception) {result.error("OPEN","No viewer could open this local attachment.",null)}
+                }
                 "open" -> {
                     val uri = Uri.parse(call.arguments.toString())
                     if (uri.scheme != "https" || uri.host != "drive.google.com") result.error("URL", "Invalid Google Drive link.", null)

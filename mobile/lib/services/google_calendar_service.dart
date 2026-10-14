@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
+import 'power_http.dart' as http;
 import 'calendar_executor.dart';
 import 'google_connection_restore.dart';
 
@@ -157,7 +157,7 @@ class GoogleCalendarService extends ChangeNotifier {
     CalendarApproval? approve,
     required Future<bool> Function() isActive,
   }) async {
-    final client = http.Client();
+    final client = http.powerClient();
     try {
       await refresh();
       final binding = await _read('request_$requestId');

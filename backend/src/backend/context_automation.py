@@ -26,10 +26,10 @@ class ContextAutomationService:
     def __init__(self, db: DatabaseService | None = None, cloud=None) -> None:
         self.db = db or DatabaseService()
         import sys
-        from ..services.firestore_service import FirestoreService
+        from ..services.record_store import RecordStore
         self.cloud = cloud
         if self.cloud is None and "pytest" not in sys.modules:
-            service = FirestoreService()
+            service = RecordStore()
             self.cloud = service if service.is_available else None
 
     def process_context_event(self, uid: str, event: dict[str, Any]) -> list[str]:
@@ -124,6 +124,11 @@ class ContextAutomationService:
                 return None
             place = DynamicReminders(self.db, self.cloud).match(uid, reminder, event, occurred_at)
             if not place: return None
+            if place.get('trigger') == 'exit':
+                if reminder.get('activity') and not self._activity_or_session_state_entered(uid, event, str(reminder['activity']), occurred_at):
+                    return None
+                reminder['body'] = f"You left {place['name']}. {reminder['title']}"
+                return 'GEOFENCE_EXIT'
             reminder['body'] = f"{place['name']} is nearby. {reminder['title']}"
             return 'DYNAMIC_PLACE_NEARBY'
 

@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'package:flutter/services.dart';
 import '../../models/chat_session.dart';
 import '../../utils/ist_time.dart';
 import '../../services/api_service.dart';
 import '../../services/chat_storage_service.dart';
+import '../../services/local_chat_archive_service.dart';
 import '../../services/sensor_service.dart';
 import '../../services/health_service.dart';
 import '../../services/usage_service.dart';
@@ -17,6 +18,10 @@ import '../../services/local_db_service.dart';
 import '../widgets/chat_progress_bubble.dart';
 import '../widgets/workspace_widgets.dart';
 import '../widgets/action_approval_dialog.dart';
+import '../widgets/chat_history_list.dart';
+import '../widgets/chat_archive_confirmation.dart';
+import '../widgets/chat_welcome.dart';
+import '../widgets/chat_message_content.dart';
 import '../../services/google_drive_service.dart';
 
 /// ChatGPT-like Conversational Agent Screen:
@@ -34,18 +39,28 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _recoveryTimer;
   Timer? _historyRefreshTimer;
+  Timer? _historySearchTimer;
+  Set<String>? _historyMatches;
+  int _selectionVersion = 0;
+  Future<void>? _selectionTask;
+  bool _loadingOlder = false;
   int _historyRefreshVersion = 0;
   bool _userSelectedChat = false;
   bool _checkingRecovery = false;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final ApiService _apiService = ApiService();
   final TextEditingController _inputController = TextEditingController();
+  final TextEditingController _historyController = TextEditingController();
   final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
   bool _scrollScheduled = false;
+  bool _historyVisible = true;
   late bool _lastOnline;
 
   bool _isSending = false;
+  String? _restoringHistoryId;
+  String? _archivingSessionId;
+  Completer<void>? _restoreCompletion;
   bool _uploading = false;
   bool _cancelUpload = false;
   final List<Map<String, dynamic>> _pendingAttachments = [];
@@ -59,6 +74,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   List<ChatSession> _sessions = [];
   ChatSession? _currentSession;
+  String? _sessionLoadError;
 
   @override
   void initState() {
@@ -69,17 +85,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     LocalDbService().addListener(_onLocalHistoryChanged);
     ChatNotificationService.openThread.addListener(_openNotification);
     ChatNotificationService.updatedThread.addListener(_refreshNotification);
-    ChatNotificationService.chatVisible.addListener(_updateVisibleThread);
+    ChatNotificationService.chatVisible.addListener(_onChatVisibilityChanged);
     UsageService.openReport.addListener(_openUsageReport);
     _initChat();
   }
 
   Future<void> _initChat() async {
-    await _loadSessions();
+    try {
+      await _loadSessions();
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _sessionLoadError = 'Could not load chats. Please retry.',
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    final selected = _currentSession?.id;
+    if (selected != null) await _restoreArchivedHistory(selected);
     if (ChatNotificationService.openThread.value != null) {
       await _reloadThread(
         ChatNotificationService.openThread.value!,
         select: true,
+        recordUse: true,
       );
     }
     _updateVisibleThread();
@@ -93,7 +122,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && !_isSending) {
       final id = _currentSession?.id;
-      if (id != null) _reloadThread(id).then((_) => _recoverRequest());
+      if (id != null) {
+        _reloadThread(id, recordUse: true).then((_) => _recoverRequest());
+      }
     }
   }
 
@@ -154,6 +185,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     ChatNotificationService.chatVisible.value ? _currentSession?.id : null,
   );
 
+  void _recordChatUse({String? threadId}) {
+    final id = threadId ?? _currentSession?.id;
+    if (id != null && ChatNotificationService.chatVisible.value) {}
+  }
+
+  void _onChatVisibilityChanged() {
+    _updateVisibleThread();
+    _recordChatUse();
+  }
+
   Future<void> _openUsageReport() async {
     final day = UsageService.openReport.value;
     if (day == null) return;
@@ -186,7 +227,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _openNotification() {
     final id = ChatNotificationService.openThread.value;
-    if (id != null) _reloadThread(id, select: true);
+    if (id != null) _reloadThread(id, select: true, recordUse: true);
   }
 
   void _refreshNotification() {
@@ -194,10 +235,72 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (id != null) _reloadThread(id);
   }
 
-  Future<void> _reloadThread(String id, {bool select = false}) async {
-    await SyncService().syncNow();
-    final loaded = await ChatStorageService.loadSessions();
-    if (!mounted) return;
+  Future<void> _restoreArchivedHistory(String id) async {
+    if (!mounted || _isSending) return;
+    final inFlight = _restoreCompletion;
+    if (inFlight != null) {
+      await inFlight.future;
+      if (mounted) await _restoreArchivedHistory(id);
+      return;
+    }
+    final backup = LocalChatArchiveService();
+    if (!await backup.needsRestore(id) || !mounted) return;
+    // The SQLite lookup above yields; recheck in case another selection won.
+    if (_restoreCompletion != null) return _restoreArchivedHistory(id);
+    final completion = Completer<void>();
+    _restoreCompletion = completion;
+    setState(() => _restoringHistoryId = id);
+    try {
+      await backup.restoreHistory(id);
+      final loaded = await _loadVisibleSessions();
+      if (mounted) {
+        setState(() {
+          _sessions = loaded;
+          _currentSession =
+              loaded.where((s) => s.id == _currentSession?.id).firstOrNull ??
+              _currentSession;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Older history could not be restored. Reconnect cloud Google access and reopen this chat.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _restoringHistoryId = null);
+      _restoreCompletion = null;
+      completion.complete();
+    }
+  }
+
+  Future<List<ChatSession>> _loadVisibleSessions({String? selectedId}) {
+    final length = _currentSession?.messages.length ?? 0;
+    return ChatStorageService.loadSessions(
+      summariesOnly: true,
+      loadThreadId: selectedId ?? _currentSession?.id,
+      messageLimit: length < 60 ? 60 : length,
+    );
+  }
+
+  Future<void> _reloadThread(
+    String id, {
+    bool select = false,
+    bool sync = true,
+    bool recordUse = false,
+  }) async {
+    final version = select ? ++_selectionVersion : _selectionVersion;
+    if (recordUse) _recordChatUse(threadId: id);
+    if (sync) await SyncService().syncNow();
+    await _restoreArchivedHistory(id);
+    final loaded = await _loadVisibleSessions(
+      selectedId: select ? id : _currentSession?.id,
+    );
+    if (!mounted || version != _selectionVersion) return;
     // The streaming request retains its original session object until completion.
     final active = _sessions.where((s) => s.id == _activeSessionId).firstOrNull;
     final selected = select ? id : _currentSession?.id;
@@ -216,6 +319,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _onServiceUpdate() {
     if (mounted && _lastOnline != _apiService.isOnline) {
       setState(() => _lastOnline = _apiService.isOnline);
+      if (_apiService.isOnline) _recordChatUse();
     }
   }
 
@@ -223,8 +327,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final version = ++_historyRefreshVersion;
     _historyRefreshTimer?.cancel();
     _historyRefreshTimer = Timer(const Duration(milliseconds: 150), () async {
-      final loaded = await ChatStorageService.loadSessions();
-      if (!mounted || _isLoadingSessions || version != _historyRefreshVersion) {
+      final selectionVersion = _selectionVersion;
+      final loaded = await _loadVisibleSessions();
+      if (!mounted ||
+          _isLoadingSessions ||
+          version != _historyRefreshVersion ||
+          selectionVersion != _selectionVersion) {
         return;
       }
       final changed =
@@ -236,6 +344,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             if (current == null ||
                 current.title != saved.title ||
                 current.lastActivityAt != saved.lastActivityAt ||
+                current.messageCount != saved.messageCount ||
+                current.isArchived != saved.isArchived ||
+                current.hasArchive != saved.hasArchive ||
                 current.messages.length != saved.messages.length) {
               return true;
             }
@@ -266,11 +377,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             _inputController.text.isEmpty &&
             (_currentSession?.messages.isEmpty ?? true)) {
           _currentSession =
-              _sessions.where((s) => s.messages.isNotEmpty).firstOrNull ??
+              _sessions.where((s) => s.hasMessages).firstOrNull ??
               _currentSession;
         }
       });
       _updateVisibleThread();
+      if (_currentSession?.id != selected && _currentSession != null) {
+        _selectionTask = _reloadThread(
+          _currentSession!.id,
+          select: true,
+          sync: false,
+          recordUse: true,
+        );
+      }
       if (_currentSession?.id != selected || nearBottom) _scrollToBottom();
     });
   }
@@ -281,13 +400,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _apiService.removeListener(_onServiceUpdate);
     LocalDbService().removeListener(_onLocalHistoryChanged);
     _historyRefreshTimer?.cancel();
+    _historySearchTimer?.cancel();
     ChatNotificationService.openThread.removeListener(_openNotification);
     ChatNotificationService.updatedThread.removeListener(_refreshNotification);
-    ChatNotificationService.chatVisible.removeListener(_updateVisibleThread);
+    ChatNotificationService.chatVisible.removeListener(
+      _onChatVisibilityChanged,
+    );
     ChatNotificationService.setVisibleThread(null);
     WidgetsBinding.instance.removeObserver(this);
     _recoveryTimer?.cancel();
     _inputController.dispose();
+    _historyController.dispose();
     _inputFocus.dispose();
     _scrollController.dispose();
     _progress.dispose();
@@ -295,10 +418,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _loadSessions() async {
-    var loaded = await ChatStorageService.loadSessions();
+    var loaded = await _loadVisibleSessions();
     if (loaded.isEmpty) {
       await SyncService().syncNow();
-      loaded = await ChatStorageService.loadSessions();
+      loaded = await _loadVisibleSessions();
     }
     if (!mounted) return;
     if (loaded.isEmpty) {
@@ -309,14 +432,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     } else {
       _sessions = loaded;
       _currentSession =
-          loaded.where((s) => s.messages.isNotEmpty).firstOrNull ??
-          loaded.first;
+          loaded.where((s) => s.hasMessages).firstOrNull ?? loaded.first;
+      final chosen = await ChatStorageService.loadSession(
+        _currentSession!.id,
+        messageLimit: 60,
+      );
+      if (!mounted) return;
+      if (chosen != null) {
+        _currentSession = chosen;
+        _sessions = _sessions
+            .map((s) => s.id == chosen.id ? chosen : s)
+            .toList();
+      }
     }
     if (mounted) {
       setState(() {
         _isLoadingSessions = false;
       });
       _scrollToBottom();
+      _recordChatUse();
     }
   }
 
@@ -330,6 +464,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _startNewChat() async {
+    ++_selectionVersion;
+    _selectionTask = null;
     _userSelectedChat = true;
     final newSession = ChatSession(
       title: 'New Chat',
@@ -358,6 +494,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _currentSession = session;
     });
+    _selectionTask = _reloadThread(
+      session.id,
+      select: true,
+      sync: false,
+      recordUse: true,
+    );
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       _scaffoldKey.currentState?.closeDrawer();
     }
@@ -431,7 +573,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppTheme.primary,
-                foregroundColor: Colors.black,
+                foregroundColor: AppTheme.background,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -609,11 +751,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _handleSendMessage(String text) async {
+    final selectedId = _currentSession?.id;
+    await _selectionTask;
+    if (!mounted || _currentSession?.id != selectedId) return;
     final query = text.trim().isEmpty && _pendingAttachments.isNotEmpty
         ? 'Keep these attachments available for this conversation.'
         : text.trim();
+    final selectedSession = _currentSession;
+    if (query.isEmpty ||
+        selectedSession == null ||
+        _isSending ||
+        _archivingSessionId == selectedSession.id ||
+        _restoringHistoryId != null) {
+      return;
+    }
+    if (await LocalChatArchiveService().needsRestore(selectedSession.id)) {
+      await _restoreArchivedHistory(selectedSession.id);
+      if (!mounted ||
+          await LocalChatArchiveService().needsRestore(selectedSession.id)) {
+        return;
+      }
+    }
     final session = _currentSession;
-    if (query.isEmpty || session == null || _isSending) return;
+    if (session == null || session.id != selectedSession.id || _isSending) {
+      return;
+    }
+    _recordChatUse();
     _userSelectedChat = true;
     final historyList = session.messages
         .where((m) => !m.id.startsWith('err_') && !m.isInternalAttachmentNotice)
@@ -646,6 +809,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         ),
       );
       session.updatedAt = DateTime.now();
+      session.isArchived = false;
       _isSending = true;
       _activeSessionId = session.id;
       _activeRequestId = userMsgId;
@@ -763,6 +927,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (_currentSession?.id == session.id) _scrollToBottom();
     }
     await ChatStorageService.saveSession(session);
+    final visible = _currentSession?.id;
+    if (mounted && visible != null && visible != session.id) {
+      unawaited(_restoreArchivedHistory(visible));
+    }
   }
 
   Future<bool> _approveAction(Map<String, dynamic> preview) async {
@@ -785,249 +953,403 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         <ChatMessage>[];
     final showingProgress =
         _isSending && _currentSession?.id == _activeSessionId;
+    final hasOlder =
+        (_currentSession?.messageCount ?? 0) >
+        (_currentSession?.messages.length ?? 0);
 
-    return Scaffold(
-      key: _scaffoldKey,
-      backgroundColor: AppTheme.background,
-      drawer: _buildHistoryDrawer(),
-      appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.menu_rounded, color: AppTheme.textPrimary),
-          tooltip: 'Conversation history',
-          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-        ),
-        title: Row(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final dockHistory = constraints.maxWidth >= 980;
+        return Row(
           children: [
-            const JarvisMark(),
-            const SizedBox(width: 12),
-            Flexible(
-              child: GestureDetector(
-                onTap: _currentSession != null
-                    ? () => _showRenameDialog(_currentSession!)
-                    : null,
-                behavior: HitTestBehavior.opaque,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      (_currentSession?.messages.isEmpty ?? true)
-                          ? 'Jarvis'
-                          : currentTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontFamily: 'Roboto',
-                        fontWeight: FontWeight.w600,
-                        fontSize: 17,
+            if (dockHistory && _historyVisible) ...[
+              SizedBox(width: 264, child: _buildHistoryPanel()),
+              const VerticalDivider(width: 1),
+            ],
+            Expanded(
+              child: Scaffold(
+                key: _scaffoldKey,
+                backgroundColor: AppTheme.background,
+                drawer: dockHistory
+                    ? null
+                    : Drawer(
+                        backgroundColor: AppTheme.sidebar,
+                        child: _buildHistoryPanel(),
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _apiService.isOnline
-                          ? 'Personal assistant · Connected'
-                          : 'Personal assistant · Offline',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontFamily: 'Roboto',
-                        color: AppTheme.textSecondary,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w400,
+                appBar: AppBar(
+                  titleSpacing: 4,
+                  shape: const Border(
+                    bottom: BorderSide(color: AppTheme.border, width: 0.5),
+                  ),
+                  leading: IconButton(
+                    icon: const Icon(Icons.view_sidebar_outlined, size: 21),
+                    tooltip: 'Conversation history',
+                    onPressed: () {
+                      if (dockHistory) {
+                        setState(() => _historyVisible = !_historyVisible);
+                      } else {
+                        _scaffoldKey.currentState?.openDrawer();
+                      }
+                    },
+                  ),
+                  title: Row(
+                    children: [
+                      Flexible(
+                        child: GestureDetector(
+                          onTap: _currentSession != null
+                              ? () => _showRenameDialog(_currentSession!)
+                              : null,
+                          behavior: HitTestBehavior.opaque,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                (_currentSession?.messages.isEmpty ?? true)
+                                    ? 'Jarvis'
+                                    : currentTitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontFamily: 'Roboto',
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 17,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 5,
+                                    height: 5,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: _apiService.isOnline
+                                          ? AppTheme.green
+                                          : AppTheme.amber,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    _apiService.isOnline
+                                        ? 'Connected'
+                                        : 'Offline',
+                                    style: const TextStyle(
+                                      color: AppTheme.textSecondary,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w400,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
+                    ],
+                  ),
+                  actions: [
+                    IconButton(
+                      icon: const Icon(
+                        Icons.edit_outlined,
+                        color: AppTheme.textPrimary,
+                        size: 21,
+                      ),
+                      tooltip: 'New Chat',
+                      onPressed: _isLoadingSessions ? null : _startNewChat,
                     ),
                   ],
                 ),
+                body: _isLoadingSessions
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_sessionLoadError == null)
+                              const CircularProgressIndicator(
+                                color: AppTheme.primary,
+                              ),
+                            const SizedBox(height: 16),
+                            Text(_sessionLoadError ?? 'Loading recent chats…'),
+                            if (_sessionLoadError != null)
+                              TextButton(
+                                onPressed: () {
+                                  setState(() => _sessionLoadError = null);
+                                  _initChat();
+                                },
+                                child: const Text('Retry'),
+                              ),
+                          ],
+                        ),
+                      )
+                    : WorkspaceBody(
+                        child: Column(
+                          children: [
+                            if (_currentSession?.isArchived ?? false)
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 10,
+                                ),
+                                color: AppTheme.amber.withValues(alpha: 0.1),
+                                child: const Row(
+                                  children: [
+                                    Icon(
+                                      Icons.archive_outlined,
+                                      size: 18,
+                                      color: AppTheme.amber,
+                                    ),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        'Archived on this phone. Send a message to continue.',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: AppTheme.amber,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            // ── Chat conversation list ────────────────────────────────────────
+                            Expanded(
+                              child:
+                                  visibleMessages.isEmpty &&
+                                      (_currentSession?.hasMessages ?? false)
+                                  ? Center(
+                                      child: _restoringHistoryId != null
+                                          ? const CircularProgressIndicator()
+                                          : TextButton(
+                                              onPressed: () => _reloadThread(
+                                                _currentSession!.id,
+                                                sync: false,
+                                              ),
+                                              child: const Text(
+                                                'Load saved conversation history',
+                                              ),
+                                            ),
+                                    )
+                                  : visibleMessages.isEmpty
+                                  ? _buildWelcome()
+                                  : ListView.builder(
+                                      controller: _scrollController,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 20,
+                                        vertical: 24,
+                                      ),
+                                      keyboardDismissBehavior:
+                                          ScrollViewKeyboardDismissBehavior
+                                              .onDrag,
+                                      itemCount:
+                                          visibleMessages.length +
+                                          (showingProgress ? 1 : 0) +
+                                          (hasOlder ? 1 : 0),
+                                      itemBuilder: (ctx, i) {
+                                        if (hasOlder && i == 0) {
+                                          return TextButton.icon(
+                                            onPressed: _loadingOlder
+                                                ? null
+                                                : _loadOlderMessages,
+                                            icon: const Icon(
+                                              Icons.history_rounded,
+                                            ),
+                                            label: Text(
+                                              _loadingOlder
+                                                  ? 'Loading older messages…'
+                                                  : 'Load older messages',
+                                            ),
+                                          );
+                                        }
+                                        final messageIndex =
+                                            i - (hasOlder ? 1 : 0);
+                                        if (messageIndex ==
+                                            visibleMessages.length) {
+                                          return ValueListenableBuilder<
+                                            CommandProgress
+                                          >(
+                                            valueListenable: _progress,
+                                            builder:
+                                                (context, progress, child) =>
+                                                    ChatProgressBubble(
+                                                      key: ValueKey(
+                                                        _activeRequestId,
+                                                      ),
+                                                      progress: progress,
+                                                      onStop: progress.canStop
+                                                          ? _stopRequest
+                                                          : null,
+                                                    ),
+                                          );
+                                        }
+                                        final msg =
+                                            visibleMessages[messageIndex];
+                                        return _buildMessageBubble(msg);
+                                      },
+                                    ),
+                            ),
+
+                            // ── Bottom Input Bar ───────────────────────────────────────────────
+                            _buildInputBar(),
+                          ],
+                        ),
+                      ),
               ),
             ),
           ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(
-              Icons.edit_outlined,
-              color: AppTheme.textPrimary,
-              size: 21,
-            ),
-            tooltip: 'New Chat',
-            onPressed: _startNewChat,
-          ),
-        ],
-      ),
-      body: _isLoadingSessions
-          ? const Center(
-              child: CircularProgressIndicator(color: AppTheme.primary),
-            )
-          : WorkspaceBody(
-              child: Column(
-                children: [
-                  // ── Chat conversation list ────────────────────────────────────────
-                  Expanded(
-                    child: visibleMessages.isEmpty
-                        ? _buildWelcome()
-                        : ListView.builder(
-                            controller: _scrollController,
-                            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
-                            keyboardDismissBehavior:
-                                ScrollViewKeyboardDismissBehavior.onDrag,
-                            itemCount:
-                                visibleMessages.length +
-                                (showingProgress ? 1 : 0),
-                            itemBuilder: (ctx, i) {
-                              if (i == visibleMessages.length) {
-                                return ValueListenableBuilder<CommandProgress>(
-                                  valueListenable: _progress,
-                                  builder: (context, progress, child) =>
-                                      ChatProgressBubble(
-                                        key: ValueKey(_activeRequestId),
-                                        progress: progress,
-                                        onStop: progress.canStop
-                                            ? _stopRequest
-                                            : null,
-                                      ),
-                                );
-                              }
-                              final msg = visibleMessages[i];
-                              return _buildMessageBubble(msg);
-                            },
-                          ),
-                  ),
-
-                  // ── Bottom Input Bar ───────────────────────────────────────────────
-                  _buildInputBar(),
-                ],
-              ),
-            ),
+        );
+      },
     );
   }
 
-  Widget _buildWelcome() => LayoutBuilder(
-    builder: (context, constraints) => SingleChildScrollView(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(minHeight: constraints.maxHeight),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const JarvisMark(size: 48),
-              const SizedBox(height: 24),
-              Text(
-                'How can I help today?',
-                style: Theme.of(context).textTheme.headlineLarge,
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Keep track of what matters, with an assistant that understands your day.',
-                style: TextStyle(
-                  fontSize: 15,
-                  height: 1.6,
-                  color: AppTheme.textSecondary,
-                ),
-              ),
-              const SizedBox(height: 28),
-              _buildSuggestion(
-                Icons.alarm_outlined,
-                'Set a reminder',
-                'Stay on top of your next task',
-                'Remind me to ',
-              ),
-              const SizedBox(height: 8),
-              _buildSuggestion(
-                Icons.route_outlined,
-                'Review my activity',
-                'Look back at your recent day',
-                'What did I do in the last 10 minutes?',
-              ),
-              const SizedBox(height: 8),
-              _buildSuggestion(
-                Icons.note_alt_outlined,
-                'Save a note',
-                'Keep a thought for later',
-                'Remember that ',
-              ),
-            ],
+  Widget _buildWelcome() => ChatWelcome(
+    onPrompt: (prompt) {
+      _inputController.text = prompt;
+      _inputController.selection = TextSelection.collapsed(
+        offset: prompt.length,
+      );
+      _inputFocus.requestFocus();
+    },
+  );
+
+  void _searchHistory(String value) {
+    _historySearchTimer?.cancel();
+    setState(() {
+      _historyQuery = value;
+      _historyMatches = null;
+    });
+    if (value.trim().isEmpty) return;
+    _historySearchTimer = Timer(const Duration(milliseconds: 200), () async {
+      final matches = await LocalDbService().searchChatIds(value);
+      if (mounted && _historyQuery == value) {
+        setState(() => _historyMatches = matches);
+      }
+    });
+  }
+
+  Future<void> _loadOlderMessages() async {
+    final session = _currentSession;
+    if (_loadingOlder || session == null || session.messages.isEmpty) return;
+    setState(() => _loadingOlder = true);
+    final beforeExtent = _scrollController.hasClients
+        ? _scrollController.position.maxScrollExtent
+        : 0.0;
+    final beforeOffset = _scrollController.hasClients
+        ? _scrollController.offset
+        : 0.0;
+    try {
+      final older = await LocalDbService().loadChatMessages(
+        session.id,
+        limit: 60,
+        before: session.messages.first,
+      );
+      if (!mounted || _currentSession?.id != session.id) return;
+      final ids = session.messages.map((m) => m.id).toSet();
+      setState(
+        () => session.messages.insertAll(
+          0,
+          older.where((m) => !ids.contains(m.id)),
+        ),
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            _currentSession?.id == session.id &&
+            _scrollController.hasClients) {
+          final position = _scrollController.position;
+          _scrollController.jumpTo(
+            (beforeOffset + position.maxScrollExtent - beforeExtent).clamp(
+              position.minScrollExtent,
+              position.maxScrollExtent,
+            ),
+          );
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _loadingOlder = false);
+    }
+  }
+
+  Future<void> _archiveSession(ChatSession session) async {
+    if (_archivingSessionId != null ||
+        (_isSending && _activeSessionId == session.id)) {
+      return;
+    }
+    setState(() => _archivingSessionId = session.id);
+    try {
+      if (!await confirmChatArchive(context, session) || !mounted) return;
+      // Recheck after confirmation in case a command was recovered meanwhile.
+      if (_isSending && _activeSessionId == session.id) {
+        throw StateError(
+          'Wait for Jarvis to finish this chat before archiving it.',
+        );
+      }
+      await LocalChatArchiveService().archiveStoredConversation(session.id);
+      final loaded = await _loadVisibleSessions();
+      if (!mounted) return;
+      setState(() {
+        final active = _sessions
+            .where((s) => s.id == _activeSessionId)
+            .firstOrNull;
+        _sessions = loaded
+            .map((s) => _isSending && s.id == active?.id ? active! : s)
+            .toList();
+        _currentSession =
+            _sessions.where((s) => s.id == _currentSession?.id).firstOrNull ??
+            _currentSession;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Chat archived on this phone. Open Archived beside Recents to see it.',
           ),
         ),
-      ),
-    ),
-  );
-
-  Widget _buildSuggestion(
-    IconData icon,
-    String label,
-    String description,
-    String prompt,
-  ) => Material(
-    color: AppTheme.surface,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(AppTheme.radius),
-      side: const BorderSide(color: AppTheme.border),
-    ),
-    clipBehavior: Clip.antiAlias,
-    child: ListTile(
-      leading: Icon(icon, color: AppTheme.primaryLight),
-      title: Text(label),
-      subtitle: Text(description),
-      trailing: const Icon(Icons.arrow_forward_rounded, size: 18),
-      onTap: () {
-        setState(() => _inputController.text = prompt);
-        _inputController.selection = TextSelection.collapsed(
-          offset: prompt.length,
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not archive this chat. ${error.toString().replaceFirst('Exception: ', '').replaceFirst('Bad state: ', '')}',
+            ),
+          ),
         );
-        _inputFocus.requestFocus();
-      },
-    ),
-  );
-
-  Widget _buildHistoryDrawer() {
-    final sessions =
-        _sessions
-            .where(
-              (session) =>
-                  session.title.toLowerCase().contains(
-                    _historyQuery.toLowerCase(),
-                  ) ||
-                  session.messages.any(
-                    (m) => m.text.toLowerCase().contains(
-                      _historyQuery.toLowerCase(),
-                    ),
-                  ),
-            )
-            .toList()
-          ..sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
-    String dayLabel(DateTime date) {
-      final today = IstTime.display(DateTime.now());
-      final days = DateTime(
-        today.year,
-        today.month,
-        today.day,
-      ).difference(DateTime(date.year, date.month, date.day)).inDays;
-      return days == 0
-          ? 'Today'
-          : days == 1
-          ? 'Yesterday'
-          : DateFormat('MMMM d').format(date);
+      }
+    } finally {
+      if (mounted) setState(() => _archivingSessionId = null);
     }
+  }
 
-    return Drawer(
-      backgroundColor: AppTheme.background,
+  Widget _buildHistoryPanel() {
+    final sessions = _sessions
+        .where(
+          (session) =>
+              session.title.toLowerCase().contains(
+                _historyQuery.toLowerCase(),
+              ) ||
+              (_historyMatches?.contains(session.id) ?? false) ||
+              session.messages.any(
+                (m) =>
+                    m.text.toLowerCase().contains(_historyQuery.toLowerCase()),
+              ),
+        )
+        .toList();
+    return ColoredBox(
+      color: AppTheme.sidebar,
       child: SafeArea(
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
+              padding: const EdgeInsets.fromLTRB(16, 22, 16, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Row(
                     children: [
-                      JarvisMark(),
-                      SizedBox(width: 12),
                       Text(
-                        'Your chats',
+                        'Conversations',
                         style: TextStyle(
-                          fontSize: 23,
+                          fontSize: 17,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1035,16 +1357,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Pick up where you left off',
+                    'Long-press a chat for options',
                     style: TextStyle(
                       color: AppTheme.textSecondary,
                       fontSize: 13,
                     ),
                   ),
-                  const SizedBox(height: 22),
+                  const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,
-                    child: FilledButton.icon(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.textPrimary,
+                        minimumSize: const Size(0, 48),
+                        side: const BorderSide(color: AppTheme.border),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
                       onPressed: _startNewChat,
                       icon: const Icon(Icons.add_rounded),
                       label: const Text('New conversation'),
@@ -1052,7 +1382,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 16),
                   TextField(
-                    onChanged: (value) => setState(() => _historyQuery = value),
+                    controller: _historyController,
+                    onChanged: _searchHistory,
                     decoration: InputDecoration(
                       hintText: 'Search conversations',
                       prefixIcon: const Icon(Icons.search_rounded, size: 20),
@@ -1068,133 +1399,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               ),
             ),
             Expanded(
-              child: sessions.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'No conversations found',
-                        style: TextStyle(color: AppTheme.textSecondary),
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-                      itemCount: sessions.length,
-                      itemBuilder: (context, index) {
-                        final session = sessions[index];
-                        final selected = session.id == _currentSession?.id;
-                        final label = dayLabel(
-                          IstTime.display(session.lastActivityAt),
-                        );
-                        final showLabel =
-                            index == 0 ||
-                            dayLabel(
-                                  IstTime.display(
-                                    sessions[index - 1].lastActivityAt,
-                                  ),
-                                ) !=
-                                label;
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (showLabel)
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  12,
-                                  16,
-                                  12,
-                                  8,
-                                ),
-                                child: Text(
-                                  label,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppTheme.textSecondary,
-                                  ),
-                                ),
-                              ),
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Material(
-                                color: selected
-                                    ? AppTheme.primary.withValues(alpha: 0.13)
-                                    : Colors.transparent,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                  side: BorderSide(
-                                    color: selected
-                                        ? AppTheme.primary.withValues(
-                                            alpha: 0.25,
-                                          )
-                                        : Colors.transparent,
-                                  ),
-                                ),
-                                clipBehavior: Clip.antiAlias,
-                                child: ListTile(
-                                  contentPadding: const EdgeInsets.only(
-                                    left: 12,
-                                    right: 2,
-                                  ),
-                                  title: Text(
-                                    session.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: selected
-                                          ? FontWeight.w600
-                                          : FontWeight.w400,
-                                    ),
-                                  ),
-                                  subtitle: Padding(
-                                    padding: const EdgeInsets.only(top: 4),
-                                    child: Text(
-                                      _isSending &&
-                                              _activeSessionId == session.id
-                                          ? 'Jarvis is working on this request'
-                                          : session.messages.isEmpty
-                                          ? 'Start a conversation'
-                                          : session.messages.last.text,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        height: 1.4,
-                                        color: AppTheme.textSecondary,
-                                      ),
-                                    ),
-                                  ),
-                                  trailing: PopupMenuButton<String>(
-                                    tooltip: 'Chat options',
-                                    icon: const Icon(
-                                      Icons.more_horiz,
-                                      size: 20,
-                                    ),
-                                    onSelected: (value) {
-                                      if (value == 'rename') {
-                                        _showRenameDialog(session);
-                                      } else {
-                                        _confirmDeleteSession(session);
-                                      }
-                                    },
-                                    itemBuilder: (_) => const [
-                                      PopupMenuItem(
-                                        value: 'rename',
-                                        child: Text('Rename'),
-                                      ),
-                                      PopupMenuItem(
-                                        value: 'delete',
-                                        child: Text('Delete'),
-                                      ),
-                                    ],
-                                  ),
-                                  onTap: () => _selectSession(session),
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
+              child: ChatHistoryList(
+                sessions: sessions,
+                selectedId: _currentSession?.id,
+                workingId: _isSending ? _activeSessionId : null,
+                archivingId: _archivingSessionId,
+                onSelect: _selectSession,
+                onRename: _showRenameDialog,
+                onDelete: _confirmDeleteSession,
+                onArchive: _archiveSession,
+              ),
             ),
           ],
         ),
@@ -1204,69 +1418,93 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Widget _buildMessageBubble(ChatMessage msg) {
     final isUser = msg.isUser;
-    final timeStr = IstTime.clock(msg.timestamp);
-
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        mainAxisAlignment: isUser
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Column(
+        crossAxisAlignment: isUser
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           if (!isUser) ...[
-            const Padding(
-              padding: EdgeInsets.only(right: 12, top: 2),
-              child: JarvisMark(size: 28),
+            const Row(
+              children: [
+                JarvisMark(size: 24),
+                SizedBox(width: 9),
+                Text(
+                  'Jarvis',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ],
             ),
+            const SizedBox(height: 10),
           ],
-          Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                color: isUser ? AppTheme.primarySurface : Colors.transparent,
-                borderRadius: BorderRadius.circular(14),
+          Container(
+            constraints: isUser
+                ? BoxConstraints(
+                    maxWidth: MediaQuery.sizeOf(context).width * 0.78,
+                  )
+                : null,
+            padding: isUser
+                ? const EdgeInsets.symmetric(horizontal: 18, vertical: 12)
+                : EdgeInsets.zero,
+            decoration: isUser
+                ? BoxDecoration(
+                    color: AppTheme.surfaceBright,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(18),
+                      topRight: Radius.circular(18),
+                      bottomLeft: Radius.circular(18),
+                      bottomRight: Radius.circular(6),
+                    ),
+                  )
+                : null,
+            child: ChatMessageContent(text: msg.text, isUser: isUser),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: isUser
+                ? MainAxisAlignment.end
+                : MainAxisAlignment.start,
+            children: [
+              Text(
+                IstTime.clock(msg.timestamp),
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppTheme.textSecondary,
+                ),
               ),
-              child: Column(
-                crossAxisAlignment: isUser
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start,
-                children: [
-                  _buildFormattedMessageText(msg.text, isUser),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        timeStr,
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: isUser
-                              ? Colors.white70
-                              : AppTheme.textSecondary,
-                        ),
-                      ),
-                      if (!isUser && msg.durationMs != null) ...[
-                        const SizedBox(width: 8),
-                        const Icon(
-                          Icons.timer_outlined,
-                          size: 12,
-                          color: AppTheme.textSecondary,
-                        ),
-                        const SizedBox(width: 3),
-                        Text(
-                          _formatReplyDuration(msg.durationMs!),
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: AppTheme.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ],
+              if (!isUser && msg.durationMs != null) ...[
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '·',
+                    style: TextStyle(color: AppTheme.textSecondary),
                   ),
-                ],
-              ),
-            ),
+                ),
+                Text(
+                  _formatReplyDuration(msg.durationMs!),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+              if (!isUser) ...[
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Copy response',
+                  icon: const Icon(Icons.copy_outlined, size: 16),
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: msg.text));
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Response copied')),
+                      );
+                    }
+                  },
+                ),
+              ],
+            ],
           ),
         ],
       ),
@@ -1286,113 +1524,156 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildInputBar() {
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(16, 6, 8, 8),
-          decoration: BoxDecoration(
-            color: AppTheme.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppTheme.border),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_pendingAttachments.isNotEmpty)
-                SizedBox(
-                  height: 42,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
-                    children: [
-                      for (final file in _pendingAttachments)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: InputChip(
-                            label: SizedBox(
-                              width: 140,
-                              child: Text(
-                                file['name'].toString(),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            onDeleted: _isSending
-                                ? null
-                                : () async {
-                                    await GoogleDriveService.instance
-                                        .removeCached(file);
-                                    if (mounted) {
-                                      setState(
-                                        () => _pendingAttachments.remove(file),
-                                      );
-                                    }
-                                  },
-                          ),
-                        ),
-                    ],
-                  ),
+    void submit() {
+      if (!_isSending &&
+          _archivingSessionId != _currentSession?.id &&
+          _restoringHistoryId == null &&
+          (_inputController.text.trim().isNotEmpty ||
+              _pendingAttachments.isNotEmpty)) {
+        _handleSendMessage(_inputController.text);
+      }
+    }
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): submit,
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true): submit,
+      },
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: ListenableBuilder(
+            listenable: _inputFocus,
+            builder: (context, child) => AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              padding: const EdgeInsets.fromLTRB(18, 6, 8, 8),
+              decoration: BoxDecoration(
+                color: AppTheme.surface,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: _inputFocus.hasFocus
+                      ? AppTheme.primaryLight.withValues(alpha: 0.7)
+                      : AppTheme.border,
                 ),
-              TextField(
-                controller: _inputController,
-                focusNode: _inputFocus,
-                minLines: 1,
-                maxLines: 5,
-                textCapitalization: TextCapitalization.sentences,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                style: const TextStyle(
-                  color: AppTheme.textPrimary,
-                  fontSize: 15,
-                  height: 1.5,
-                ),
-                decoration: const InputDecoration(
-                  hintText: 'Message Jarvis…',
-                  filled: false,
-                  hintStyle: TextStyle(color: AppTheme.textSecondary),
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-              Row(
-                children: [
-                  IconButton(
-                    tooltip: 'Attach PDF, image or video',
-                    onPressed: _isSending ? null : _pickAttachment,
-                    icon: const Icon(Icons.attach_file, size: 19),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _isSending
-                          ? 'You can keep writing while Jarvis works'
-                          : 'Ask, plan, or remember something',
-                      style: const TextStyle(
-                        color: AppTheme.textSecondary,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  ValueListenableBuilder<TextEditingValue>(
-                    valueListenable: _inputController,
-                    builder: (context, value, child) => IconButton.filled(
-                      tooltip: 'Send message',
-                      onPressed:
-                          _isSending ||
-                              (value.text.trim().isEmpty &&
-                                  _pendingAttachments.isEmpty)
-                          ? null
-                          : () => _handleSendMessage(_inputController.text),
-                      icon: child!,
-                    ),
-                    child: const Icon(Icons.arrow_upward_rounded, size: 21),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.12),
+                    blurRadius: 20,
+                    offset: const Offset(0, 4),
                   ),
                 ],
               ),
-            ],
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_pendingAttachments.isNotEmpty)
+                    SizedBox(
+                      height: 42,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          for (final file in _pendingAttachments)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: InputChip(
+                                label: SizedBox(
+                                  width: 140,
+                                  child: Text(
+                                    file['name'].toString(),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                onDeleted: _isSending
+                                    ? null
+                                    : () async {
+                                        await GoogleDriveService.instance
+                                            .removeCached(file);
+                                        if (mounted) {
+                                          setState(
+                                            () => _pendingAttachments.remove(
+                                              file,
+                                            ),
+                                          );
+                                        }
+                                      },
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  TextField(
+                    controller: _inputController,
+                    focusNode: _inputFocus,
+                    minLines: 2,
+                    maxLines: 5,
+                    textCapitalization: TextCapitalization.sentences,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
+                    style: const TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 15,
+                      height: 1.5,
+                    ),
+                    decoration: const InputDecoration(
+                      hintText: 'Message Jarvis…',
+                      filled: false,
+                      hintStyle: TextStyle(color: AppTheme.textSecondary),
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      IconButton(
+                        tooltip: 'Attach PDF, image or video',
+                        onPressed: _isSending ? null : _pickAttachment,
+                        icon: const Icon(Icons.add_rounded, size: 21),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _restoringHistoryId != null
+                              ? 'Restoring older messages…'
+                              : _isSending
+                              ? 'Working on your request…'
+                              : 'Your personal assistant',
+                          style: const TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ValueListenableBuilder<TextEditingValue>(
+                        valueListenable: _inputController,
+                        builder: (context, value, child) => IconButton.filled(
+                          tooltip: 'Send message',
+                          onPressed:
+                              _isSending ||
+                                  _archivingSessionId == _currentSession?.id ||
+                                  _restoringHistoryId != null ||
+                                  (value.text.trim().isEmpty &&
+                                      _pendingAttachments.isEmpty)
+                              ? null
+                              : submit,
+                          style: IconButton.styleFrom(
+                            backgroundColor: AppTheme.primaryLight,
+                            foregroundColor: AppTheme.sidebar,
+                            disabledBackgroundColor: AppTheme.surfaceBright,
+                            disabledForegroundColor: AppTheme.textSecondary,
+                          ),
+                          icon: child!,
+                        ),
+                        child: const Icon(Icons.arrow_upward_rounded, size: 21),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -1427,65 +1708,5 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
     }
-  }
-
-  Widget _buildFormattedMessageText(String text, bool isUser) {
-    final baseStyle = TextStyle(
-      fontSize: 15,
-      color: isUser ? Colors.white : AppTheme.textPrimary,
-      height: 1.45,
-    );
-
-    if (!text.contains('**') && !text.contains('*') && !text.contains('`')) {
-      return SelectableText(text, style: baseStyle);
-    }
-
-    final spans = <InlineSpan>[];
-    final pattern = RegExp(r'(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`)');
-    int lastIndex = 0;
-
-    for (final match in pattern.allMatches(text)) {
-      if (match.start > lastIndex) {
-        spans.add(TextSpan(text: text.substring(lastIndex, match.start)));
-      }
-      if (match.group(2) != null) {
-        // **bold**
-        spans.add(
-          TextSpan(
-            text: match.group(2),
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-        );
-      } else if (match.group(3) != null) {
-        // *italic*
-        spans.add(
-          TextSpan(
-            text: match.group(3),
-            style: const TextStyle(fontStyle: FontStyle.italic),
-          ),
-        );
-      } else if (match.group(4) != null) {
-        // `code`
-        spans.add(
-          TextSpan(
-            text: match.group(4),
-            style: TextStyle(
-              fontFamily: 'monospace',
-              backgroundColor: AppTheme.surface.withAlpha(120),
-              fontSize: 12,
-            ),
-          ),
-        );
-      }
-      lastIndex = match.end;
-    }
-
-    if (lastIndex < text.length) {
-      spans.add(TextSpan(text: text.substring(lastIndex)));
-    }
-
-    return RichText(
-      text: TextSpan(style: baseStyle, children: spans),
-    );
   }
 }

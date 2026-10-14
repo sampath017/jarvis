@@ -1,4 +1,4 @@
-"""Durable background indexing, private resumable staging, no stored Drive tokens."""
+"""Instance-local indexing and resumable staging; originals remain on Android/Drive."""
 import hashlib
 import os
 import secrets
@@ -6,16 +6,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from google.cloud import firestore, storage
-from .firestore_service import FirestoreService
-
-PROJECT = 'jarvis-agent-61947'
-REGION = 'asia-south1'
-JOB = 'jarvis-drive-indexer'
+from src.services import sqlite_documents as documents
+from .local_files import LocalSources, source_root
+import threading
+from .record_store import RecordStore
 
 
 def db():
-    return FirestoreService()._db
+    return RecordStore()._db
 
 
 def jobs():
@@ -23,7 +21,7 @@ def jobs():
 
 
 def bucket():
-    return storage.Client(project=PROJECT).bucket(os.environ['INDEX_STAGING_BUCKET'])
+    return LocalSources()
 
 
 def identity(owner, memory):
@@ -51,8 +49,8 @@ def begin(owner, memory):
     object_name = f'sources/{owner}/{job_id}-{secrets.token_hex(8)}'
     ref.set({'owner': owner, 'memory': memory, 'object': object_name,
         'status': 'uploading', 'updated_at': datetime.now(timezone.utc)})
-    session = bucket().blob(object_name).create_resumable_upload_session(content_type='application/octet-stream',
-        size=None, timeout=30)
+    bucket().blob(object_name).upload_from_string(b'')
+    session = f'/drive-index/uploads/{job_id}/content'
     return {'job_id': job_id, 'upload_required': True, 'upload_url': session}
 
 
@@ -91,11 +89,14 @@ def finish(owner, job_id, size, mime):
 
 def kick():
     """Reserve one drain execution across all backend instances."""
+    from .runtime_power import RuntimePower
+    if not RuntimePower().enabled(fresh=True):
+        return
     lease = db().collection('drive_index_control').document('worker')
     nonce = secrets.token_hex(16)
     now = datetime.now(timezone.utc)
 
-    @firestore.transactional
+    @documents.transactional
     def reserve(transaction):
         value = lease.get(transaction=transaction).to_dict() or {}
         if value.get('expires_at', now) > now:
@@ -104,25 +105,17 @@ def kick():
         return True
     if not reserve(db().transaction()):
         return
-    try:
-        import google.auth
-        from google.auth.transport.requests import AuthorizedSession
-        credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
-        response = AuthorizedSession(credentials).post(
-            f'https://run.googleapis.com/v2/projects/{PROJECT}/locations/{REGION}/jobs/{JOB}:run',
-            json={'overrides': {'containerOverrides': [{'env': [{'name': 'DRAIN_NONCE', 'value': nonce}]}]}}, timeout=30)
-        response.raise_for_status()
-    except Exception:
-        lease.set({'nonce': nonce, 'expires_at': now})
-        raise
+    # This worker and its SQLite state belong to the current API instance.
+    # Original files remain on the phone/Drive and can be re-uploaded after reset.
+    threading.Thread(target=drain, args=(nonce,), daemon=True).start()
 
 
 def status(owner):
     counts = {}
-    query = jobs().where(filter=firestore.FieldFilter('owner', '==', owner))
+    query = jobs().where(filter=documents.FieldFilter('owner', '==', owner))
     for state in ('uploading', 'queued', 'processing', 'complete', 'attention', 'failed'):
-        counts[state] = query.where(filter=firestore.FieldFilter('status', '==', state)).count().get()[0][0].value
-    records = [doc.to_dict() for doc in query.where(filter=firestore.FieldFilter('status', 'in', ['processing', 'attention', 'failed'])).limit(20).stream()]
+        counts[state] = query.where(filter=documents.FieldFilter('status', '==', state)).count().get()[0][0].value
+    records = [doc.to_dict() for doc in query.where(filter=documents.FieldFilter('status', 'in', ['processing', 'attention', 'failed'])).limit(20).stream()]
     if counts.get('queued') or counts.get('processing'):
         kick()
     return {'counts': counts, 'files': [{ 'name': r['memory']['name'], 'status': r['status'],
@@ -131,7 +124,7 @@ def status(owner):
 
 
 def results(owner, account, after=None):
-    query = jobs().where(filter=firestore.FieldFilter('owner', '==', owner)).order_by('__name__')
+    query = jobs().where(filter=documents.FieldFilter('owner', '==', owner)).order_by('__name__')
     if after:
         cursor = jobs().document(after).get()
         if not cursor.exists or cursor.to_dict().get('owner') != owner:
@@ -152,30 +145,32 @@ def results(owner, account, after=None):
     return {'items': items, 'next_cursor': records[-1].id if len(records) == 100 else None}
 
 
-def drain():
+def drain(nonce=None):
     from .drive_index import put_file
-    nonce = os.environ['DRAIN_NONCE']
+    nonce = nonce or os.environ['DRAIN_NONCE']
     lease = db().collection('drive_index_control').document('worker')
     current = lease.get().to_dict() or {}
     if current.get('nonce') != nonce:
         return
 
     def heartbeat(total=None, ref=None):
+        from .runtime_power import RuntimePower
+        RuntimePower().require_enabled()
         lease.update({'expires_at': datetime.now(timezone.utc) + timedelta(minutes=15)})
         if ref is not None:
             ref.update({'chunks': total, 'updated_at': datetime.now(timezone.utc)})
 
     # An execution retry resumes its interrupted file before taking new files.
-    for doc in jobs().where(filter=firestore.FieldFilter('status', '==', 'processing')).stream():
+    for doc in jobs().where(filter=documents.FieldFilter('status', '==', 'processing')).stream():
         if doc.to_dict().get('worker') == nonce:
             doc.reference.update({'status': 'queued'})
     while True:
         heartbeat()
-        pending = list(jobs().where(filter=firestore.FieldFilter('status', '==', 'queued')).limit(1).stream())
+        pending = list(jobs().where(filter=documents.FieldFilter('status', '==', 'queued')).limit(1).stream())
         if not pending:
             break
         doc = pending[0]
-        @firestore.transactional
+        @documents.transactional
         def claim(transaction):
             value = doc.reference.get(transaction=transaction).to_dict() or {}
             if value.get('status') != 'queued':
@@ -185,13 +180,13 @@ def drain():
         value = claim(db().transaction())
         if value is None:
             continue
-        source = Path('/sources') / value['object']
-        if not source.resolve().is_relative_to(Path('/sources')):
+        source = source_root() / value['object']
+        if not source.resolve().is_relative_to(source_root()):
             raise ValueError('Invalid source path')
         try:
             result = put_file(value['owner'], value['memory'], source,
                 progress=lambda total: heartbeat(total, doc.reference))
-            @firestore.transactional
+            @documents.transactional
             def publish(transaction):
                 current = doc.reference.get(transaction=transaction).to_dict() or {}
                 if current.get('object') != value['object'] or current.get('worker') != nonce:
@@ -202,10 +197,14 @@ def drain():
             publish(db().transaction())
             bucket().blob(value['object']).delete()
         except Exception as exc:
+            from .runtime_power import RuntimePower
+            if not RuntimePower().enabled():
+                doc.reference.update({'status': 'queued', 'updated_at': datetime.now(timezone.utc)})
+                break
             # Preserve the staged source for an explicit retry, without losing other files.
             doc.reference.update({'status': 'failed', 'error': str(exc)[:400], 'updated_at': datetime.now(timezone.utc)})
     lease.set({'nonce': nonce, 'expires_at': datetime.now(timezone.utc)})
-    if list(jobs().where(filter=firestore.FieldFilter('status', '==', 'queued')).limit(1).stream()):
+    if list(jobs().where(filter=documents.FieldFilter('status', '==', 'queued')).limit(1).stream()):
         kick()
 
 

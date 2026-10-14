@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-from .file_urls import GOOGLE_FILE_URL_PATTERN
+from .file_urls import MOBILE_FILE_URL_PATTERN
 from .telemetry import TelemetryTiming
 
 from .enums import (
@@ -158,7 +158,7 @@ class FileMemoryReference(BaseModel):
     name: str = Field(max_length=4096)
     mimeType: str = Field(max_length=128)
     caption: str = Field(default="", max_length=32768)
-    url: str = Field(max_length=4096, pattern=GOOGLE_FILE_URL_PATTERN)
+    url: str = Field(max_length=4096, pattern=MOBILE_FILE_URL_PATTERN)
 
 
 class RecalledAnswer(BaseModel):

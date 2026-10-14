@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-from google.cloud import firestore
+from src.services import sqlite_documents as documents
 from .background_tasks import BackgroundTasks
 
 
@@ -27,7 +27,8 @@ class ActivityReminderTimers:
         self.tasks = tasks or BackgroundTasks()
 
     def arm(self, uid, reminder, event, occurred_at):
-        if not self.cloud or not self.tasks.configured:
+        from .mobile_scope import mobile_only
+        if not self.cloud or (not mobile_only() and not self.tasks.configured):
             raise RuntimeError('Durable activity timer delivery is unavailable')
         if (event.get('event_type') not in {'ACTIVITY_ENTER', 'ACTIVITY_TRANSITION'}
                 or event.get('transition') != 'ENTER' or event.get('activity') != reminder.get('activity')):
@@ -37,6 +38,17 @@ class ActivityReminderTimers:
             return
         delay = int(reminder.get('activity_delay_seconds') or 0)
         if not 1 <= delay <= 86400 or not reminder.get('one_shot', True):
+            return
+        if mobile_only():
+            # The trigger is satisfied. Return a clock reminder for Android's
+            # AlarmManager; no server job or continued connection is needed.
+            from .database import DatabaseService
+            updated = {**reminder, 'due_at': (occurred_at + timedelta(seconds=delay)).isoformat(),
+                       'activity': None, 'activity_delay_seconds': 0,
+                       'latitude': None, 'longitude': None, 'location_name': None,
+                       'updated_at': now.isoformat()}
+            DatabaseService().create_reminder(uid, updated)
+            self.cloud.save_reminder(reminder['id'], updated)
             return
         ref = self.cloud._user_collection(uid, 'activity_reminder_timers').document(reminder['id'])
         saved_ref = self.cloud._db.collection('reminders').document(reminder['id'])
@@ -56,7 +68,7 @@ class ActivityReminderTimers:
             else:
                 ref.set(value)
             return value
-        timer = firestore.transactional(reserve)(self.cloud._db.transaction()) if hasattr(self.cloud._db, 'transaction') else reserve()
+        timer = documents.transactional(reserve)(self.cloud._db.transaction()) if hasattr(self.cloud._db, 'transaction') else reserve()
         if timer:
             # Retry the same named task after a crash between reservation and
             # enqueue. Cloud Tasks treats duplicate task names as success.
@@ -65,6 +77,8 @@ class ActivityReminderTimers:
                 datetime.fromisoformat(timer['due_at']))
 
     def reconcile(self, uid, reminder):
+        from .mobile_scope import mobile_only
+        if mobile_only(): return
         if not reminder.get('activity_delay_seconds') or reminder.get('status') != 'ACTIVE':
             return
         timer = self.cloud._user_collection(uid, 'activity_reminder_timers').document(reminder['id']).get().to_dict() or {}
@@ -73,6 +87,8 @@ class ActivityReminderTimers:
                 'timer_id': timer['timer_id']}, 'activity-timer:'+timer['timer_id'], datetime.fromisoformat(timer['due_at']))
 
     def deliver(self, uid, reminder_id, timer_id, automation, now=None):
+        from .runtime_power import RuntimePower
+        RuntimePower().require_enabled()
         ref = self.cloud._user_collection(uid, 'activity_reminder_timers').document(reminder_id)
         timer = ref.get().to_dict() or {}
         reminder = self.cloud._db.collection('reminders').document(reminder_id).get().to_dict() or {}
@@ -98,7 +114,7 @@ class ActivityReminderTimers:
                 else:
                     ref.set({'status': 'COMPLETED'}, merge=True)
             if hasattr(self.cloud._db, 'transaction'):
-                firestore.transactional(complete)(self.cloud._db.transaction())
+                documents.transactional(complete)(self.cloud._db.transaction())
             else:
                 complete()
         return created

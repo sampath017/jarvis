@@ -8,6 +8,6 @@ object ReminderAlertPolicy {
     fun key(id: String, due: String) = "reminder:$id:${epoch(due)}"
     fun ringing(mode: String) = mode == "alarm" || mode == "in_app_call"
     fun timeOnly(mode: String, status: String, due: Long, hasContext: Boolean) =
-        ringing(mode) && status == "ACTIVE" && due > 0 && !hasContext
+        (ringing(mode) || mode == "notification") && status == "ACTIVE" && due > 0 && !hasContext
     fun missed(at: Long, now: Long) = at > 0 && now - at > 15 * 60_000
 }

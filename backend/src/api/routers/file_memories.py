@@ -1,4 +1,4 @@
-"""Drive references in Firestore; approved file analysis uses transient RAM only."""
+"""Drive references in RecordStore; approved file analysis uses transient RAM only."""
 import base64
 import asyncio
 import hashlib
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from ...services.firestore_service import FirestoreService
+from ...services.record_store import RecordStore
 from ...models.file_urls import GOOGLE_FILE_URL_PATTERN
 from ...settings import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_MODEL_MULTIMODAL, OPENROUTER_MODEL_PDF
 from ..rate_limiter import TokenBudgetGuard
@@ -34,9 +34,9 @@ def owner(x_file_memory_session: Annotated[str, Header()] = "") -> str:
 
 
 def collection(uid: str, kind: str = "files"):
-    fs = FirestoreService()
+    fs = RecordStore()
     if not fs.is_available:
-        raise HTTPException(503, "Firebase memory is unavailable")
+        raise HTTPException(503, "File memory cache is unavailable")
     return fs._db.collection("file_memories").document(uid).collection(kind)
 
 
@@ -102,8 +102,8 @@ def native_payload(memory: dict, question: str, raw: bytes) -> dict:
 
 
 def claim_analysis(ref, fingerprint: str):
-    from google.cloud import firestore
-    @firestore.transactional
+    from src.services import sqlite_documents as documents
+    @documents.transactional
     def claim(transaction):
         previous = ref.get(transaction=transaction).to_dict() or {}
         if previous:
@@ -114,7 +114,7 @@ def claim_analysis(ref, fingerprint: str):
             raise HTTPException(409, "Analysis was already started. No automatic paid retry; ask again to retry.")
         transaction.set(ref, {"fingerprint": fingerprint, "status": "started"})
         return None
-    return claim(FirestoreService()._db.transaction())
+    return claim(RecordStore()._db.transaction())
 
 
 @router.post("/{file_id}/analyze")
@@ -152,7 +152,7 @@ async def analyze(file_id: str, request: Request, uid: Annotated[str, Depends(ow
     guard = TokenBudgetGuard()
     # Share the existing chat budget; a new phone capability cannot reset quotas.
     guard.check_request_rate(budget_uid)
-    # No extraction, temporary file, raw Firestore document, or tracing wrapper.
+    # No extraction, temporary file, raw RecordStore document, or tracing wrapper.
     payload = native_payload(memory, question, raw)
     reservation = await run_in_threadpool(guard.check_and_reserve_tokens, budget_uid, 30000 + payload["max_tokens"], model=payload["model"], max_output_tokens=payload["max_tokens"])
     del raw
