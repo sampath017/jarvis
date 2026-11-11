@@ -24,6 +24,8 @@ object AmbientNetworkMonitor {
     }
     private fun changed(c: Context, type: String) {
         if (!ActivityRecognitionRegistrar.isEnabled(c)) return
+        // Reconsider accuracy when a calibrated place network is joined or lost.
+        runCatching { ActivityRecognitionRegistrar.registerPassiveLocation(c) }
         ContextEventQueue.add(c, ContextEventQueue.newEvent(type,
             ContextEventQueue.currentActivity(c).ifEmpty { "UNKNOWN" }, "ENTER"))
     }

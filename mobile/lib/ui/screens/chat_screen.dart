@@ -22,6 +22,7 @@ import '../widgets/chat_archive_confirmation.dart';
 import '../widgets/chat_welcome.dart';
 import '../widgets/chat_message_content.dart';
 import '../../services/google_drive_service.dart';
+import '../../services/voice_service.dart';
 
 /// ChatGPT-like Conversational Agent Screen:
 /// Features multi-session conversation history, rename/edit chat titles,
@@ -36,6 +37,11 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
+  final _voice = VoiceService();
+  Map<String, dynamic> _voiceState = {};
+  Timer? _voiceTimer;
+  String _voiceMessageVersion = '';
+  bool _readingVoice = false;
   Timer? _recoveryTimer;
   Timer? _historyRefreshTimer;
   Timer? _historySearchTimer;
@@ -87,6 +93,73 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     ChatNotificationService.chatVisible.addListener(_onChatVisibilityChanged);
     UsageService.openReport.addListener(_openUsageReport);
     _initChat();
+    _refreshVoice();
+    _voiceTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _refreshVoice(),
+    );
+  }
+
+  Future<void> _refreshVoice() async {
+    if (_readingVoice ||
+        !mounted ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+      return;
+    }
+    _readingVoice = true;
+    try {
+      final next = await _voice.status();
+      if (!mounted) return;
+      final messages = next['messages'] as List? ?? [];
+      final version =
+          '${next['thread']}:${messages.length}:${messages.isEmpty ? '' : (messages.last as Map)['id']}';
+      final changed = version != _voiceMessageVersion;
+      _voiceMessageVersion = version;
+      setState(() => _voiceState = next);
+      final thread = next['thread'];
+      if (thread is String &&
+          messages.isNotEmpty &&
+          (changed || next['openRequested'] == true)) {
+        await _reloadThread(
+          thread,
+          select: next['running'] == true || next['openRequested'] == true,
+          sync: false,
+        );
+      }
+    } catch (_) {
+      // Unsupported platforms and widget tests do not have the native voice capability.
+    } finally {
+      _readingVoice = false;
+    }
+  }
+
+  bool _togglingVoice = false;
+
+  Future<void> _toggleVoice() async {
+    if (_togglingVoice) return;
+    setState(() => _togglingVoice = true);
+    try {
+      final status = await _voice.status();
+      if (status['running'] == true) {
+        await _voice.stop();
+      } else {
+        final started = await _voice.start();
+        if (!started && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Microphone access is needed. Tap the microphone again after allowing access.')),
+          );
+        }
+      }
+      await _refreshVoice();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e is PlatformException ? e.message ?? 'Voice could not start' : e.toString())),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _togglingVoice = false);
+    }
   }
 
   Future<void> _initChat() async {
@@ -395,6 +468,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _voiceTimer?.cancel();
     UsageService.openReport.removeListener(_openUsageReport);
     _apiService.removeListener(_onServiceUpdate);
     LocalDbService().removeListener(_onLocalHistoryChanged);
@@ -1060,6 +1134,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     : WorkspaceBody(
                         child: Column(
                           children: [
+                            if (_voiceState['running'] == true)
+                              ListTile(
+                                dense: true,
+                                leading: const Icon(
+                                  Icons.mic,
+                                  color: AppTheme.green,
+                                ),
+                                title: Text(
+                                  'Voice · ${_voiceState['phase'] ?? 'Listening'}',
+                                ),
+                                trailing: IconButton(
+                                  tooltip: 'Stop listening',
+                                  icon: const Icon(Icons.stop_circle_outlined),
+                                  onPressed: () async {
+                                    await _voice.stop();
+                                    await _refreshVoice();
+                                  },
+                                ),
+                              ),
                             if (_currentSession?.isArchived ?? false)
                               Container(
                                 width: double.infinity,
@@ -1621,6 +1714,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           ),
                         ),
                       ),
+                      const SizedBox(width: 8),
+                    IconButton.filledTonal(
+                      tooltip: _voiceState['running'] == true ? 'Turn voice off' : 'Turn voice on',
+                      icon: Icon(
+                        _voiceState['running'] == true
+                            ? Icons.mic
+                            : Icons.mic_none,
+                        color: _voiceState['running'] == true
+                            ? AppTheme.green
+                            : AppTheme.textPrimary,
+                      ),
+                      onPressed: _togglingVoice ? null : _toggleVoice,
+                    ),
                       const SizedBox(width: 8),
                       ValueListenableBuilder<TextEditingValue>(
                         valueListenable: _inputController,

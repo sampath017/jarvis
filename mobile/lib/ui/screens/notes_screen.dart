@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../services/local_db_service.dart';
 import '../../services/sensor_service.dart';
 import '../../services/sync_service.dart';
+import '../../services/power_state.dart';
 import '../widgets/notes_workspace.dart';
 
 class NotesScreen extends StatefulWidget {
@@ -45,7 +46,7 @@ class _NotesScreenState extends State<NotesScreen> {
 
   Future<void> _refresh() async {
     try {
-      await _sync.syncNow();
+      if (PowerState.enabled.value) await _sync.syncNow();
     } catch (_) {
       // Local edits stay pending and are retried by the sync service.
     }

@@ -16,7 +16,7 @@ Jarvis collects Android activity transitions, qualified activity samples and bou
 
 Each request includes the SQL continuity state for the active reminders it carries. Android joins `record_dynamic_reminder_state` to active, undeleted reminders by ID and owner, rather than selecting an arbitrary recent set of states. This preserves an observed visit (`origin_seen`) across separate requests so a later departure can match. Completed, deleted, orphaned and other-owner states are excluded.
 
-Activity samples are requested every 30 seconds and filtered for confidence/agreement. Location subscriptions request approximately 30 seconds while moving, 120 seconds in ordinary idle mode, or 30 seconds with dynamic monitoring. Distance/minimum-interval gates also apply. Periodic WorkManager checkpoints request 15-minute intervals; dwell follow-up requests 100 seconds. These are requested schedules, not guaranteed delivery deadlines.
+On devices with wake-up motion/step sensors, hardware callbacks immediately initiate context collection before GAR confirmation. Activity samples request 30 seconds while collecting; ordinary idle sampling and location subscriptions stop. Unsupported devices retain polling fallback (30-second activity samples; location approximately 30 seconds moving/dynamic or 120 seconds otherwise). Strong calibrated place Wi-Fi selects balanced-power location. Distance/minimum-interval gates still apply. Periodic WorkManager recovery requests 15-minute intervals and drains work without creating idle GPS requests on supported devices; dwell follow-up requests 100 seconds. These are requested schedules, not delivery deadlines. See [hardware-triggered sensing](hardware-motion-sensing.md).
 
 ## Bounded queue draining
 

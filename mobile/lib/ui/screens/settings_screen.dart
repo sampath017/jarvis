@@ -411,7 +411,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                         ? 'Applying power change to phone background services…'
                         : enabled
                             ? 'Background monitoring, location awareness, and assistant features are active.'
-                            : 'Phone services, sensor tracking, and automations are paused.\nTap the button to power on.',
+                            : 'Assistant, sensor tracking, and automations are paused.\nClock and Notes remain available in Apps.',
                     key: ValueKey('$enabled-$busy'),
                     textAlign: TextAlign.center,
                     style: const TextStyle(

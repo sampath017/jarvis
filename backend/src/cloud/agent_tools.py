@@ -1539,10 +1539,11 @@ def build_agent_tools(db: DatabaseService, uid: str) -> list[Any]:
     from .file_memory_tools import file_memory_tools
     from .web_tools import web_tools
     from .phone_data_tools import phone_data_tools
+    from .clock_tools import clock_tools
     from .chart_tools import chart_tools
     from .context_tools import build_context_tools
     from ..services.mobile_scope import mobile_only
-    return build_context_tools(db, uid) + calendar_tools() + file_memory_tools() + web_tools(uid) + phone_data_tools() + chart_tools() + [
+    return build_context_tools(db, uid) + calendar_tools() + file_memory_tools() + web_tools(uid) + phone_data_tools() + clock_tools() + chart_tools() + [
         create_reminder,
         update_reminder,
         consolidate_reminders,

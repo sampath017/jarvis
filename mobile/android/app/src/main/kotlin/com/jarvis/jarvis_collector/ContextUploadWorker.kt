@@ -160,8 +160,9 @@ class ContextUploadKickWorker(context: Context, params: WorkerParameters) : Work
 class ContextCheckpointWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
         if (JarvisPower.enabled(applicationContext)) {
-            ContextEventQueue.add(applicationContext, ContextEventQueue.newEvent("CONTEXT_CHECKPOINT",
-                ContextEventQueue.currentActivity(applicationContext), "ENTER"))
+            // Stationary recovery drains durable work without starting a new GPS request.
+            if (MotionSensing.collecting(applicationContext)) ContextEventQueue.add(applicationContext,
+                ContextEventQueue.newEvent("CONTEXT_CHECKPOINT", ContextEventQueue.currentActivity(applicationContext), "ENTER"))
             ContextEventQueue.scheduleFlush(applicationContext)
         }
         return Result.success()

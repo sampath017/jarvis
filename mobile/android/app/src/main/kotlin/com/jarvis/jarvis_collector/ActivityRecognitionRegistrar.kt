@@ -17,6 +17,17 @@ import com.google.android.gms.location.Priority
 
 object ActivityRecognitionRegistrar {
     private const val PREFS = "jarvis_monitoring"
+    private var sampling: Boolean? = null
+    private var locationMode: String? = null
+
+    @Synchronized private fun updateSampling(context: Context, active: Boolean) {
+        if (sampling == active) return
+        sampling = active
+        val client = ActivityRecognition.getClient(context)
+        val task = if (active) client.requestActivityUpdates(30_000L, samplePendingIntent(context))
+            else client.removeActivityUpdates(samplePendingIntent(context))
+        task.addOnFailureListener { sampling = null; Log.w("JarvisGAR", "Sampling update failed", it) }
+    }
 
     fun isEnabled(context: Context): Boolean =
         JarvisPower.enabled(context) && context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false)
@@ -55,15 +66,32 @@ object ActivityRecognitionRegistrar {
 
     fun registerPassiveLocation(context: Context) {
         if (!JarvisPower.enabled(context)) return
+        val collecting = MotionSensing.collecting(context)
+        updateSampling(context, collecting)
+        if (!collecting) {
+            if (locationMode != "idle") {
+                locationMode = "idle"
+                LocationServices.getFusedLocationProviderClient(context).removeLocationUpdates(locationPendingIntent(context))
+                    .addOnFailureListener { locationMode = null }
+            }
+            return
+        }
         if (Build.VERSION.SDK_INT >= 29 &&
             context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         val dynamic = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("dynamic", false)
         val moving = ContextEventQueue.currentActivity(context) in setOf("IN_VEHICLE", "ON_BICYCLE", "WALKING", "RUNNING", "ON_FOOT")
-        val request = LocationRequest.Builder(if (moving) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY, if (moving || dynamic) 30_000L else 120_000L)
-            .setMinUpdateIntervalMillis(if (moving || dynamic) 15_000L else 60_000L)
-            .setMinUpdateDistanceMeters(if (moving) 20f else 50f)
+        val hardware = MotionSensing.hardwareAvailable(context)
+        val nearWifi = MotionSensing.nearKnownPlaceWifi(context)
+        val highAccuracy = !nearWifi && (moving || hardware)
+        val frequent = moving || dynamic || hardware
+        val mode = "$highAccuracy:$frequent"
+        if (locationMode == mode) return
+        locationMode = mode
+        val request = LocationRequest.Builder(if (highAccuracy) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY, if (frequent) 30_000L else 120_000L)
+            .setMinUpdateIntervalMillis(if (frequent) 15_000L else 60_000L)
+            .setMinUpdateDistanceMeters(if (moving || hardware) 20f else 50f)
             .setMaxUpdateAgeMillis(0)
             .build()
         LocationServices.getFusedLocationProviderClient(context)
@@ -72,7 +100,7 @@ object ActivityRecognitionRegistrar {
                 if (!JarvisPower.enabled(context)) LocationServices.getFusedLocationProviderClient(context).removeLocationUpdates(locationPendingIntent(context))
                 else Log.i("JarvisPassive", "Passive location registered")
             }
-            .addOnFailureListener { Log.w("JarvisPassive", "Passive location unavailable", it) }
+            .addOnFailureListener { locationMode = null; Log.w("JarvisPassive", "Location subscription unavailable", it) }
     }
 
     fun register(context: Context, onSuccess: () -> Unit = {}, onFailure: (Exception) -> Unit = {}) {
@@ -99,9 +127,8 @@ object ActivityRecognitionRegistrar {
                 AmbientNetworkMonitor.start(context)
                 // Clean up the old app's two-minute activity sampler.
                 client.removeActivityUpdates(pendingIntent(context))
-                client.requestActivityUpdates(30_000L, samplePendingIntent(context))
-                    .addOnSuccessListener { Log.i("JarvisGAR", "Fresh activity samples registered (30s requested)") }
-                    .addOnFailureListener { Log.w("JarvisGAR", "Fresh activity sampling unavailable", it) }
+                sampling = null // Reconcile persisted subscriptions after a process restart.
+                locationMode = null
                 MonitoringService.ensure(context)
                 ContextEventQueue.schedulePeriodic(context)
                 ContextEventQueue.scheduleFlush(context)
@@ -117,6 +144,9 @@ object ActivityRecognitionRegistrar {
 
     fun unregister(context: Context, onSuccess: () -> Unit, onFailure: (Exception) -> Unit) {
         setEnabled(context, false)
+        sampling = null
+        locationMode = null
+        MotionSensing.reset()
         AmbientNetworkMonitor.stop(context)
         ContextEventQueue.stopMonitoring(context)
         val client = ActivityRecognition.getClient(context)

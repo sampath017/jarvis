@@ -300,9 +300,9 @@ Departure requires verified walking/on-foot/running plus positional evidence. An
 
 | Operation | Current source behavior |
 |---|---|
-| Google activity samples | Requested every 30 seconds; confidence/agreement filters gate accepted samples |
+| Google activity samples | Requested every 30 seconds during collection; paused at idle on wake-up-sensor devices; confidence/agreement filters apply |
 | Activity transitions | Event-driven Android ENTER/EXIT delivery |
-| Location updates | Approximately 30 seconds moving/dynamic; 120 seconds ordinary idle, with distance/minimum-interval gates |
+| Location updates | Hardware movement starts collection before GAR; idle subscriptions stop on supported phones; polling fallback remains on unsupported phones |
 | Dwell follow-up / periodic checkpoint | Requested after 100 seconds / every 15 minutes |
 | Live uploads per worker | Up to four HTTP events, processed serially |
 | Worker history archive | Up to 100 per plan, 500 per worker |
@@ -314,7 +314,7 @@ Departure requires verified walking/on-foot/running plus positional evidence. An
 
 Android schedules are requests, not guaranteed delivery deadlines. Unresolved location capture does not prevent later ready events from being selected. The durable queue uses one coalesced KEEP drain and a replaceable wake/watchdog, rather than one upload chain per observation.
 
-`LocalMotionMonitor.kt` is explicitly a shadow evaluator: provisional local motion candidates do not independently change authoritative journeys or fire reminders. Distinguish it from the active evidence and backend reducer paths.
+`LocalMotionMonitor.kt` uses wake-up motion/step callbacks to start the durable context-capture path immediately. Its provisional classifier remains a shadow evaluator: local candidates do not independently change authoritative journeys or fire reminders. See [hardware-triggered sensing](hardware-motion-sensing.md) for idle behavior, calibrated Wi-Fi power preference, and height-sensing limitations.
 
 App usage has its own native history/cache pipeline. The Overview preloads recent daily summaries; chat requests exact structured usage records. Steps and sleep come from Health Connect, not inference from movement or an idle phone. Missing data and denied permissions are unknown rather than zero.
 

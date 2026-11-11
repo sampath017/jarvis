@@ -66,6 +66,16 @@ object MobileRecords {
         JSONObject().put("records",records).put("agent",JSONObject().put("records",recordsState).put("domain",domain)).put("budget",budget)
     }
     fun applied(context:Context,eventId:String):Boolean=open(context).use {db->rows(db,"SELECT operation_id FROM mobile_receipts WHERE operation_id=?",arrayOf("event:$eventId")).length()>0}
+    /** Only networks calibrated by saved-origin evidence, never arbitrary connected Wi-Fi. */
+    fun knownPlaceWifiIds(context: Context): Set<String> = open(context).use { db ->
+        val states = MobileSqlStorage.recordsForActiveReminders(db)
+        buildSet {
+            for (i in 0 until states.length()) {
+                val state = states.getJSONObject(i).getJSONObject("data")
+                if (state.has("origin_seen")) state.optString("home_wifi_id").takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+        }
+    }
     /** Preserve old queued observations as history without replaying live rules or journeys. */
     fun archiveContextEvents(context: Context, events: List<JSONObject>): Int = open(context).use { db ->
         var archived = 0

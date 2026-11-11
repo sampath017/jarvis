@@ -25,6 +25,14 @@ class MainActivity : FlutterFragmentActivity() {
     }
     private var usageChannel: MethodChannel? = null
     private var chatChannel: MethodChannel? = null
+    private var clockChannel: MethodChannel? = null
+    private var voiceChannel: MethodChannel? = null
+    private var clockSoundResult: MethodChannel.Result? = null
+
+    override fun getInitialRoute(): String? = when {
+        intent?.getBooleanExtra("jarvis_clock", false) == true -> "/clock"
+        else -> super.getInitialRoute()
+    }
     private var calendarAuthorization: GoogleAccountAuthorization? = null
     private var driveAuthorization: GoogleAccountAuthorization? = null
     private var attachmentPicker: ChatAttachmentPicker? = null
@@ -34,17 +42,33 @@ class MainActivity : FlutterFragmentActivity() {
         calendarAuthorization?.onActivityResult(requestCode, resultCode, data)
         driveAuthorization?.onActivityResult(requestCode, resultCode, data)
         attachmentPicker?.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 5704) {
+            @Suppress("DEPRECATION")
+            val uri = data?.getParcelableExtra<Uri>(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            clockSoundResult?.success(if(resultCode == RESULT_OK) uri?.toString() ?: "silent" else null)
+            clockSoundResult = null
+        }
     }
 
     override fun onResume() {
         super.onResume()
         isVisible = true
+        if (VoicePolicy.shouldRestore(
+                VoiceChatStore.prefs(this).getBoolean("resumeListening", false),
+                JarvisPower.enabled(this), JarvisVoiceService.running,
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED,
+                getSystemService(NotificationManager::class.java).areNotificationsEnabled())) {
+            runCatching {
+                startForegroundService(Intent(this, JarvisVoiceService::class.java).putExtra("waitForWake", true))
+            }.onFailure { Log.w("JarvisVoice", "Could not restore listening from visible activity", it) }
+        }
         val app = applicationContext
         localWork.execute {
             runCatching {
                 UsageReporting.schedule(app)
                 DatabaseBackup.schedule(app)
                 ReminderAlerts.restore(app)
+                JarvisClock.restore(app, false)
             }.onFailure { Log.w("JarvisStartup", "Could not restore scheduled alerts") }
         }
     }
@@ -53,6 +77,8 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra("jarvis_clock", false)) clockChannel?.invokeMethod("openClock", null)
+        if (intent.getBooleanExtra("jarvis_voice", false)) voiceChannel?.invokeMethod("openVoice", null)
         intent.getStringExtra("jarvis_usage_day")?.let {
             usageChannel?.invokeMethod("openReport", it)
             intent.removeExtra("jarvis_usage_day")
@@ -69,6 +95,74 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        voiceChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jarvis/voice").also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                try {
+                    when(call.method) {
+                        "status" -> {
+                            val state=JarvisVoiceService.status(applicationContext).put("assistantEnabled",JarvisPower.enabled(applicationContext))
+                            state.put("openRequested",intent.getBooleanExtra("jarvis_voice",false))
+                            intent.removeExtra("jarvis_voice")
+                            val thread=VoiceChatStore.prefs(applicationContext).getString("thread",null)
+                            state.put("messages",if(thread==null) org.json.JSONArray() else VoiceChatStore.history(applicationContext,thread))
+                            result.success(state.toString())
+                        }
+                        "start" -> {
+                            check(JarvisPower.enabled(applicationContext)) { "Turn on Jarvis assistant to use hands-free voice. Clock and Notes remain available while it is off." }
+                            check(getSystemService(NotificationManager::class.java).areNotificationsEnabled()) {"Allow Jarvis notifications before enabling hands-free listening."}
+                            if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED) {
+                                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO),5710)
+                                result.success(false)
+                            } else {
+                                VoiceChatStore.thread(applicationContext)
+                                startForegroundService(Intent(this,JarvisVoiceService::class.java));result.success(true)
+                            }
+                        }
+                        "stop" -> {JarvisVoiceService.disable(this);result.success(true)}
+                        "newChat" -> {check(JarvisVoiceService.phase!="Working") {"Wait for the current voice reply."};result.success(VoiceChatStore.newThread(applicationContext))}
+                        "speakReplies" -> {check(VoiceChatStore.prefs(applicationContext).edit().putBoolean("speakReplies",call.arguments==true).commit());result.success(true)}
+                        else -> result.notImplemented()
+                    }
+                } catch(e:Exception){result.error("voice_error",e.message,null)}
+            }
+        }
+        clockChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jarvis/clock").also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                try {
+                    when(call.method) {
+                        "execute" -> {
+                            val args = call.arguments as? Map<*, *> ?: emptyMap<Any,Any>()
+                            val action = args["action"]?.toString() ?: "snapshot"
+                            val body = org.json.JSONObject(args["arguments"] as? Map<*, *> ?: emptyMap<Any,Any>())
+                            result.success(JarvisClock.execute(applicationContext, action, body).toString())
+                        }
+                        "pickSound" -> {
+                            check(clockSoundResult == null) { "Sound picker is already open" }
+                            clockSoundResult=result
+                            @Suppress("DEPRECATION")
+                            startActivityForResult(Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER).putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE,android.media.RingtoneManager.TYPE_ALARM).putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT,true),5704)
+                        }
+                        "permissions" -> {
+                            val kind=call.arguments?.toString()
+                            when(kind) {
+                                "notifications" -> if(Build.VERSION.SDK_INT>=33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),5705) else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,packageName))
+                                "fullScreen" -> if(Build.VERSION.SDK_INT>=34) startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,Uri.parse("package:$packageName")))
+                                "dnd" -> startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                                else -> if(Build.VERSION.SDK_INT>=31) startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,Uri.parse("package:$packageName")))
+                            }
+                            result.success(true)
+                        }
+                        "sleep" -> {
+                            val args=call.arguments as? Map<*,*> ?: emptyMap<Any,Any>()
+                            val i=Intent(this,ClockSleepService::class.java)
+                            if(args["stop"]==true) stopService(i) else startForegroundService(i.putExtra("sound",args["sound"]?.toString() ?: "rain").putExtra("minutes",(args["minutes"] as? Number)?.toInt() ?: 30))
+                            result.success(true)
+                        }
+                        else -> result.notImplemented()
+                    }
+                } catch(e:Exception) { result.error("clock_error", e.message, null) }
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jarvis/context_runtime").setMethodCallHandler { call, result ->
             try {
                 when (call.method) {

@@ -67,7 +67,8 @@ object ContextLocationCapture {
                 val eventAt = occurred(event)
                 val historicalAt = historical?.optString("timestamp")?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
                 val preferFresh = eventAt != null && historicalAt != null && LocationEvidence.preferFresh(
-                    event.optString("activity"), event.optString("event_type"), System.currentTimeMillis()-eventAt, abs(historicalAt-eventAt))
+                    event.optString("activity"), event.optString("event_type"), System.currentTimeMillis()-eventAt, abs(historicalAt-eventAt),
+                    hardwareMotion = event.optString("activity_evidence") == "hardware_motion")
                 if (historical != null && !preferFresh) {
                     event.put("location", historical).put("location_status", "historical_event_fix")
                     false
@@ -87,7 +88,7 @@ object ContextLocationCapture {
             JarvisPower.trackLocation(context, cancellation)
             try {
                 val request = CurrentLocationRequest.Builder()
-                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .setPriority(if (MotionSensing.nearKnownPlaceWifi(context)) Priority.PRIORITY_BALANCED_POWER_ACCURACY else Priority.PRIORITY_HIGH_ACCURACY)
                     .setMaxUpdateAgeMillis(0)
                     .setDurationMillis(durationMs)
                     .build()

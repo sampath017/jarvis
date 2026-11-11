@@ -14,10 +14,25 @@ import 'services/power_state.dart';
 import 'ui/screens/settings_screen.dart';
 import 'ui/screens/main_navigation_screen.dart';
 import 'ui/theme.dart';
+import 'services/clock_service.dart';
+import 'ui/screens/clock_screen.dart';
+import 'ui/screens/apps_screen.dart';
+import 'services/voice_service.dart';
+
+final jarvisNavigator = GlobalKey<NavigatorState>();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   http.mobileChangesWriter = MobileStore.instance.apply;
+  ClockService.initialize(
+    () => jarvisNavigator.currentState?.pushNamed('/clock'),
+  );
+  VoiceService.initialize(() async {
+    final state = await VoiceService().status();
+    jarvisNavigator.currentState?.popUntil((route) => route.isFirst);
+    final thread = state['thread'];
+    if (thread is String) ChatNotificationService.openThread.value = thread;
+  });
 
   // Match the dark, edge-to-edge application surface.
   SystemChrome.setSystemUIOverlayStyle(
@@ -81,6 +96,8 @@ class JarvisCollectorApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Jarvis',
+      navigatorKey: jarvisNavigator,
+      routes: {'/clock': (_) => const ClockScreen()},
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: ListenableBuilder(
@@ -88,7 +105,7 @@ class JarvisCollectorApp extends StatelessWidget {
         builder: (_, _) {
           final power = RuntimePowerService.instance;
           if (power.initialized && !power.enabled) {
-            return const SettingsScreen();
+            return LocalAppsHome(sensorService: sensorService);
           }
           return Stack(
             children: [
@@ -106,4 +123,33 @@ class JarvisCollectorApp extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Assistant power controls backend/sensing; personal local apps stay reachable.
+class LocalAppsHome extends StatefulWidget {
+  const LocalAppsHome({super.key, required this.sensorService});
+  final SensorService sensorService;
+  @override
+  State<LocalAppsHome> createState() => _LocalAppsHomeState();
+}
+
+class _LocalAppsHomeState extends State<LocalAppsHome> {
+  int index = 0;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: index == 0
+        ? AppsScreen(sensorService: widget.sensorService, localOnly: true)
+        : const SettingsScreen(),
+    bottomNavigationBar: NavigationBar(
+      selectedIndex: index,
+      onDestinationSelected: (value) => setState(() => index = value),
+      destinations: const [
+        NavigationDestination(icon: Icon(Icons.apps_outlined), label: 'Apps'),
+        NavigationDestination(
+          icon: Icon(Icons.power_settings_new),
+          label: 'Jarvis settings',
+        ),
+      ],
+    ),
+  );
 }

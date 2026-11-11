@@ -17,6 +17,7 @@ DAILY_BUDGET_NANOS = int((Decimal(str(OPENROUTER_DAILY_BUDGET_USD))
 
 # Pre-seeded pricing cache (USD per 1M tokens)
 PRICES: dict[str, tuple[Decimal, Decimal]] = {
+    'openai/whisper-large-v3-turbo': (Decimal('0'), Decimal('0')),  # Audio duration reserved separately.
     'z-ai/glm-5.3-flash': (Decimal('0.15'), Decimal('0.50')),
     'xiaomi/mimo-v2.6-flash': (Decimal('0.14'), Decimal('0.28')),
     'google/gemini-3.8-flash': (Decimal('0.75'), Decimal('3.75')),

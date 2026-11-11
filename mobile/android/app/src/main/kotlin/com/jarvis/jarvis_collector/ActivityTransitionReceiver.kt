@@ -154,7 +154,7 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
         prefs.edit().putString("candidate", candidate).putInt("confidence", best.confidence).putLong("at", at).commit()
         ContextEventQueue.setCurrentActivity(context, accepted, at)
         Log.i(TAG, "Sample candidate=$candidate confidence=${best.confidence} accepted=$accepted delayMs=${System.currentTimeMillis()-at}")
-        if (!shouldEmit) return null
+        if (!shouldEmit || (accepted == "STILL" && lastEmitted == "STILL")) return null
         val event = ContextEventQueue.newEvent("ACTIVITY_SAMPLE", accepted, "ENTER", at)
             .put("activity_evidence", if (accepted == "UNKNOWN") "uncertain_sample" else "repeated_android_samples")
             .put("activity_confidence", best.confidence)

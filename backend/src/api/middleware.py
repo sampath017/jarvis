@@ -40,7 +40,7 @@ class RequestLimitingMiddleware(BaseHTTPMiddleware):
         if content_length:
             try:
                 size = int(content_length)
-                limit = (128 * 1024 * 1024 if (request.url.path == "/mobile/parse-file" or request.url.path.startswith("/drive-index/files/")) else 8 * 1024 * 1024 if request.method == "POST" and request.url.path in ("/commands/stream", "/commands", "/context-events", "/mobile/activity-history", "/sync/push") else 8 * 1024 * 1024 if request.method == "PUT" and request.url.path.startswith("/drive-index/uploads/") and request.url.path.endswith("/content") else 20 * 1024 * 1024 if request.method == "POST" and
+                limit = (128 * 1024 * 1024 if (request.url.path == "/mobile/parse-file" or request.url.path.startswith("/drive-index/files/")) else 8 * 1024 * 1024 if request.method == "POST" and request.url.path in ("/voice/transcribe", "/commands/stream", "/commands", "/context-events", "/mobile/activity-history", "/sync/push") else 8 * 1024 * 1024 if request.method == "PUT" and request.url.path.startswith("/drive-index/uploads/") and request.url.path.endswith("/content") else 20 * 1024 * 1024 if request.method == "POST" and
                          request.url.path.startswith("/file-memories/") and request.url.path.endswith("/analyze") else 8 * 1024 * 1024 if request.method == 'POST' and
                          request.url.path.startswith('/commands/requests/') and
                          request.url.path.endswith('/calendar-result') else 8 * 1024 * 1024 if request.method == 'POST' and

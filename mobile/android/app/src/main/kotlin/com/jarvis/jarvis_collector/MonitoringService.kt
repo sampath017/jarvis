@@ -20,6 +20,7 @@ class MonitoringService : Service() {
         }
     }
     companion object {
+        @Volatile var running = false
         fun ensure(context: Context) {
             if (!ActivityRecognitionRegistrar.isEnabled(context)) return
             try {
@@ -32,14 +33,8 @@ class MonitoringService : Service() {
     override fun onCreate() {
         super.onCreate()
         if (!JarvisPower.enabled(this)) { stopSelf(); return }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("jarvis_monitoring", "Activity monitoring", NotificationManager.IMPORTANCE_LOW))
-        val tap = PendingIntent.getActivity(this, 1002, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        startForeground(1002, NotificationCompat.Builder(this, "jarvis_monitoring")
-            .setSmallIcon(android.R.drawable.ic_menu_compass).setContentTitle("Jarvis monitoring is on")
-            .setContentText("Listening for activity changes and context requests")
-            .setContentIntent(tap).setOngoing(true).setSilent(true).build())
+        running = true
+        startForeground(JarvisOngoingNotification.ID, JarvisOngoingNotification.build(this))
         motion = LocalMotionMonitor(applicationContext).also { it.start() }
         handler.postDelayed(refreshLocation, 120_000L)
     }
@@ -50,5 +45,12 @@ class MonitoringService : Service() {
         return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { motion?.stop(); handler.removeCallbacks(refreshLocation); super.onDestroy() }
+    override fun onDestroy() {
+        running = false
+        motion?.stop()
+        handler.removeCallbacks(refreshLocation)
+        stopForeground(STOP_FOREGROUND_DETACH)
+        JarvisOngoingNotification.refresh(this)
+        super.onDestroy()
+    }
 }

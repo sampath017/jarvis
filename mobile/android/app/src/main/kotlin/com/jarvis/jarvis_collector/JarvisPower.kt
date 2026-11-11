@@ -61,10 +61,16 @@ object JarvisPower {
             ActivityRecognitionRegistrar.unregister(c, {}, {})
             c.stopService(Intent(c, MonitoringService::class.java))
             c.stopService(Intent(c, TelemetryForegroundService::class.java))
+            JarvisVoiceService.disable(c)
             ReminderAlerts.pause(c)
             UsageReporting.pause(c)
             WorkManager.getInstance(c).cancelAllWork()
-            (c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancelAll()
+            // Clock is an independent local app. Preserve its ringing/sleep notifications.
+            val notifications = c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            for (notification in notifications.activeNotifications) {
+                if (notification.tag != JarvisClock.TAG && notification.id !in setOf(0xC10C, 0xC10D))
+                    notifications.cancel(notification.tag, notification.id)
+            }
         } else {
             UsageReporting.schedule(c)
             DatabaseBackup.schedule(c)

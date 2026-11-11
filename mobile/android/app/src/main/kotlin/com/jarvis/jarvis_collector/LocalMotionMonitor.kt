@@ -15,7 +15,7 @@ import android.util.Log
 import org.json.JSONObject
 import java.util.UUID
 
-/** Shadow evaluation: its candidates cannot change journeys or fire reminders. */
+/** Hardware callbacks start collection immediately; classifier candidates remain diagnostic. */
 class LocalMotionMonitor(private val context: Context) : SensorEventListener {
     private val manager = context.getSystemService(SensorManager::class.java)
     private val thread = HandlerThread("JarvisMotion")
@@ -30,17 +30,33 @@ class LocalMotionMonitor(private val context: Context) : SensorEventListener {
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Jarvis:MotionWindow").apply { setReferenceCounted(false) }
     @Volatile private var running = false
     private val significantMotion = manager.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+    private val motionDetect = manager.getDefaultSensor(Sensor.TYPE_MOTION_DETECT, true)
+    private val hardwareAvailable = MotionSensing.hardwareAvailable(context)
     private val trigger = object : TriggerEventListener() {
         override fun onTrigger(event: TriggerEvent?) {
             if (!running) return
             handler.post {
                 if (!running) return@post
-                fastUntil = SystemClock.elapsedRealtime()+60_000
-                activeWakeLock.acquire(65_000)
-                fast = true; registerAcceleration()
+                activate("significant_motion", event?.timestamp?.div(1_000_000) ?: SystemClock.elapsedRealtime())
                 armMotionTrigger()
             }
         }
+    }
+    private val motionTrigger = object : TriggerEventListener() {
+        override fun onTrigger(event: TriggerEvent?) {
+            if (!running) return
+            handler.post {
+                if (!running) return@post
+                activate("motion", event?.timestamp?.div(1_000_000) ?: SystemClock.elapsedRealtime())
+                armMotionTrigger()
+            }
+        }
+    }
+    private fun activate(reason: String, elapsed: Long) {
+        if (!running || !MotionSensing.observe(context, reason, elapsed)) return
+        fastUntil = SystemClock.elapsedRealtime() + 60_000
+        activeWakeLock.acquire(65_000)
+        if (!fast) { fast = true; registerAcceleration() }
     }
     private val tick = object : Runnable {
         override fun run() {
@@ -55,7 +71,10 @@ class LocalMotionMonitor(private val context: Context) : SensorEventListener {
             // active measurement interval awake after significant motion.
             if (desired) activeWakeLock.acquire(65_000)
             else if (activeWakeLock.isHeld) activeWakeLock.release()
-            if (desired != fast) { fast = desired; registerAcceleration() }
+            if (desired != fast) {
+                fast = desired; registerAcceleration()
+                runCatching { ActivityRecognitionRegistrar.registerPassiveLocation(context) }
+            }
             if (now-lastEmit >= 60_000 || result.candidate != lastCandidate) {
                 val data = JSONObject().apply {
                     put("id", "motion_${UUID.randomUUID()}"); put("timestamp", ContextEventQueue.occurredAt())
@@ -87,7 +106,8 @@ class LocalMotionMonitor(private val context: Context) : SensorEventListener {
         handler.post {
             registerAcceleration()
             armMotionTrigger()
-            manager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)?.let {
+            (manager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR, true)
+                ?: manager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR))?.let {
                 runCatching { manager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, handler) }
             }
             handler.postDelayed(tick, 15_000)
@@ -98,7 +118,7 @@ class LocalMotionMonitor(private val context: Context) : SensorEventListener {
         val sensor = (if (fast) manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true) else null)
             ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         manager.getSensorList(Sensor.TYPE_ACCELEROMETER).forEach { manager.unregisterListener(this, it) }
-        sensor?.let {
+        if (fast || !hardwareAvailable) sensor?.let {
             manager.unregisterListener(this, it)
             manager.registerListener(this, it, if (fast) 40_000 else 200_000, 0, handler)
         }
@@ -109,10 +129,14 @@ class LocalMotionMonitor(private val context: Context) : SensorEventListener {
     }
     private fun armMotionTrigger() {
         significantMotion?.let { runCatching { manager.requestTriggerSensor(trigger, it) } }
+        motionDetect?.let { runCatching { manager.requestTriggerSensor(motionTrigger, it) } }
     }
     override fun onSensorChanged(event: SensorEvent) {
         if (SystemClock.elapsedRealtime() - event.timestamp/1_000_000 !in 0..2_000) return
-        if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) window.step()
+        if (event.sensor.type == Sensor.TYPE_STEP_DETECTOR) {
+            activate("step", event.timestamp / 1_000_000)
+            window.step()
+        }
         else if (event.sensor.type == Sensor.TYPE_GYROSCOPE) window.gyro(
             event.values[0].toDouble(), event.values[1].toDouble(), event.values[2].toDouble())
         else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) window.sample(event.timestamp/1_000_000,
@@ -123,6 +147,8 @@ class LocalMotionMonitor(private val context: Context) : SensorEventListener {
         running = false; manager.unregisterListener(this)
         if (activeWakeLock.isHeld) activeWakeLock.release()
         significantMotion?.let { manager.cancelTriggerSensor(trigger, it) }
+        motionDetect?.let { manager.cancelTriggerSensor(motionTrigger, it) }
+        MotionSensing.reset()
         handler.removeCallbacksAndMessages(null); thread.quitSafely()
     }
 }

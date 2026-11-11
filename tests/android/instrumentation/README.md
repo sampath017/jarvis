@@ -32,3 +32,17 @@ checks or `-e mode archive` for the three historical archival checks.
 The ordinary `tests/run.py --suite android` runs JVM policy tests; it does not run
 this device-only suite. Compiling the test APK does not establish that the actual
 Android SQLite regression has passed.
+
+## Explicit Clock / Voice modes
+
+The default database modes above remain isolated. Additional opt-in modes exercise local app capabilities:
+
+- `-e mode clock`: creates UUID-labelled test timers; checks duplicate protection, pause/resume/extension, native countdown/ringing, and survival across the assistant power-off boundary. Removes its exact test timers and restores the original power setting.
+- `-e mode voice`: uses the bundled Vosk model and synthesized offline English test speech. No microphone recording or backend call. Temporary synthesized WAV files are removed.
+- `-e mode voice-command`: sends a synthetic text connection check through the configured backend, verifies its own temporary voice chat, then removes only that exact UUID-owned test chat. This mode performs real inference and normal usage accounting.
+
+Run these only with an installed matching debug app and a deliberately selected mode. They do not establish real-user microphone accuracy or long-term OEM service survival.
+
+- `-e mode voice-whisper`: sends three synthesized command WAVs through the real backend/OpenRouter Whisper endpoint, checks transcript keywords and offline wake recognition, and executes no commands. Normal transcription costs are retained in the phone budget.
+
+- `-e mode voice-noise`: runs Silero on generated speech, subsequent loud generated noise and steady hum; validates speech detection and noise rejection without microphone capture or cloud requests.

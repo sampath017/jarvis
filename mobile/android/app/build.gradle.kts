@@ -15,6 +15,8 @@ android {
     sourceSets.getByName("androidTest").java.setSrcDirs(
         listOf(rootProject.file("../../tests/android/instrumentation"))
     )
+    // Downloaded speech weights stay in the project's ignored model directory.
+    sourceSets.getByName("main").assets.srcDir(rootProject.file("../../backend/models/voice/android"))
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -50,6 +52,9 @@ kotlin {
 }
 
 dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
     testImplementation("junit:junit:4.13.2")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.google.android.gms:play-services-auth:22.0.0")

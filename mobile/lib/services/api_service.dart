@@ -15,6 +15,7 @@ import 'google_calendar_service.dart';
 import 'google_drive_service.dart';
 import 'conversation_memory.dart';
 import 'phone_data_executor.dart';
+import 'clock_service.dart';
 
 /// Client service that communicates with the Jarvis Cloud Run backend.
 /// Handles sending Low-Telemetry metadata, executing agentic commands,
@@ -428,6 +429,24 @@ class ApiService extends ChangeNotifier with WidgetsBindingObserver {
             'status': 'failed',
             'message':
                 'The requested local records could not be read. Narrow the request and try again.',
+          };
+        }
+      } else if (action['operation'] == 'clock_action') {
+        if (!await active() || !GoogleCalendarService.instance.foreground) {
+          return;
+        }
+        try {
+          _actionResults[id] = await ClockService()
+              .execute(action['clock_action']?.toString() ?? 'snapshot', {
+                ...Map<String, dynamic>.from(action['arguments'] as Map? ?? {}),
+                '__requestId': id,
+              });
+        } catch (error) {
+          _actionResults[id] = {
+            'status': 'failed',
+            'message': error is PlatformException
+                ? error.message
+                : 'The local clock action failed.',
           };
         }
       } else if (action['operation'] == 'app_usage_read' ||

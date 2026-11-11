@@ -35,6 +35,11 @@ class MobileRecordsOpenInstrumentation : Instrumentation() {
             "invalidObservationIsQuarantinedWithoutInventingHistory" to ::quarantineInvalid,
         )
         val tests = when (mode) {
+            "voice-noise" -> listOf("speechDetectorEndsSpeechDespiteLoudNoise" to { VoiceDeviceChecks.run(targetContext, vadCheck=true) })
+            "voice-whisper" -> listOf("whisperTranscribesGeneratedCommandsThroughBackend" to { VoiceDeviceChecks.run(targetContext, true) })
+            "voice-command" -> listOf("voiceCommandUsesBackendAndItsOwnChat" to { VoiceDeviceChecks.command(targetContext) })
+            "voice" -> listOf("offlineSpeechRecognizesWakeGreetingsAndCommands" to { VoiceDeviceChecks.run(targetContext) })
+            "clock" -> listOf("clockTimersSurviveAssistantOffAndRingNatively" to { ClockDeviceChecks.run(targetContext) })
             "open" -> openTests
             "archive" -> archiveTests
             else -> openTests + archiveTests

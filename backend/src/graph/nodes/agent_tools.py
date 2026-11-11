@@ -43,6 +43,7 @@ ROUTINE_WRITE_TOOLS = frozenset({
     'create_task', 'update_task', 'update_task_status',
     'create_reminder', 'update_reminder', 'delete_reminder', 'delete_all_reminders',
     'save_place', 'restore_note', 'restore_reminder', 'save_file_to_drive',
+    'create_clock_timer', 'update_clock',
 })
 
 

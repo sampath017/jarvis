@@ -80,6 +80,7 @@ temp/
 eval_output/
 # Model downloads stay local; keep only the directory's usage guide in Git.
 /backend/models/huggingface/
+/backend/models/voice/
 /models/*
 !/backend/models/README.md
 !/models/README.md

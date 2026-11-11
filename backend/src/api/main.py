@@ -14,7 +14,7 @@ from ..settings import PORT
 from .middleware import RequestLimitingMiddleware, StructuredLoggingMiddleware
 from .mobile_middleware import MobileStateMiddleware
 from .power_middleware import PowerMiddleware
-from .routers import commands, context_events, drive_index, file_memories, mobile_compute, satellite
+from .routers import commands, context_events, drive_index, file_memories, mobile_compute, satellite, voice
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(compute)
     app.include_router(mobile_compute.router)
     app.include_router(satellite.router)
+    app.include_router(voice.router)
     app.add_middleware(MobileStateMiddleware)
     app.add_api_route('/', health_check, methods=['GET'], tags=['monitoring'])
     app.add_api_route('/health', health_check, methods=['GET'], tags=['monitoring'])
